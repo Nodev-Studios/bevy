@@ -1191,12 +1191,9 @@ impl Friend {
                 if path.is_dir() {
                     stack.push(path);
                 } else if path.file_name().is_some_and(|name| name == "log.txt") {
-                    for line in fs::read_to_string(&path).unwrap_or_default().lines() {
-                        if let Some(at) = line.find("FSR: ") {
-                            let line = line[at..].to_owned();
-                            if !lines.contains(&line) {
-                                lines.push(line);
-                            }
+                    for line in fsr_log_lines(&fs::read_to_string(&path).unwrap_or_default()) {
+                        if !lines.contains(&line) {
+                            lines.push(line);
                         }
                     }
                 }
@@ -1309,10 +1306,7 @@ impl Friend {
         let fsr = Self::fsr_lines(&dir);
         if !fsr.is_empty() {
             record["fsr_log"] = json!(fsr);
-            record["fsr_provider"] = json!(fsr
-                .iter()
-                .find_map(|line| line.strip_prefix("FSR: the DLL runs FSR "))
-                .and_then(|rest| rest.split_whitespace().next()));
+            record["fsr_provider"] = json!(fsr_provider(&fsr));
         }
         self.copy_to_look_at(index, adapter, &dir);
         self.summary["adapters"][index] = record;
@@ -1370,6 +1364,21 @@ fn normalise(answer: &str) -> &'static str {
         "?" | "ns" | "no se" | "no sé" => "no sé",
         _ => "sin respuesta",
     }
+}
+
+/// The messages of the lines `bevy_anti_alias`'s FSR code logged, without Bevy's time stamp, level and target.
+fn fsr_log_lines(log: &str) -> Vec<String> {
+    log.lines()
+        .filter_map(|line| line.find("FSR: ").map(|at| line[at..].to_owned()))
+        .collect()
+}
+
+/// The FSR version the DLL picked, from `FSR: the DLL runs FSR <version> (provider id …) on this GPU`.
+fn fsr_provider(lines: &[String]) -> Option<&str> {
+    lines
+        .iter()
+        .find_map(|line| line.strip_prefix("FSR: the DLL runs FSR "))
+        .and_then(|rest| rest.split_whitespace().next())
 }
 
 /// Scrubs every text file under `dir` in place.
@@ -1687,6 +1696,20 @@ mod tests {
         assert!(presets.matrix("NVIDIA GeForce RTX 3060").contains(
             "(name: \"raster-taa\", args: [\"--preset\", \"raster\", \"--upscaler\", \"off\"], warmup: 300, frames: 600)"
         ));
+    }
+
+    #[test]
+    fn the_fsr_provider_is_read_from_the_testbed_log() {
+        // The format of `bevy_anti_alias/src/fsr/mod.rs`, as Bevy's log writes it.
+        let log = "\
+2026-11-24T23:09:09.231748Z  INFO bevy_anti_alias::fsr: FSR: device prepared (VK_KHR_compute_shader_derivatives)
+2026-11-24T23:09:09.531748Z  INFO bevy_anti_alias::fsr: FSR: the DLL runs FSR 4.1.2 (provider id 0x1234) on this GPU
+2026-11-24T23:09:10.082039Z  INFO bevy_pbr::cluster: GPU clustering is supported on this device.
+";
+        let lines = fsr_log_lines(log);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(fsr_provider(&lines), Some("4.1.2"));
+        assert_eq!(fsr_provider(&lines[..1]), None);
     }
 
     #[test]
