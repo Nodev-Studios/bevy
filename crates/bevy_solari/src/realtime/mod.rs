@@ -1,11 +1,15 @@
+mod denoiser;
 mod extract;
 mod node;
 mod prepare;
+
+pub use denoiser::SolariDenoiserInputs;
 
 use crate::{
     scene::{prepare_raytracing_scene_resources, RaytracingSceneBindings},
     SolariPlugins,
 };
+use bevy_anti_alias::ray_reconstruction::DenoiserSystems;
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_asset::embedded_asset;
 use bevy_camera::Hdr;
@@ -33,6 +37,7 @@ use bevy_render::{
     RenderSystems,
 };
 use bevy_shader::load_shader_library;
+use denoiser::{init_solari_compose_pipeline, prepare_solari_denoiser_textures, solari_compose};
 use extract::extract_solari_lighting;
 use node::{init_solari_lighting_pipelines, solari_lighting};
 use prepare::{
@@ -60,6 +65,8 @@ impl Plugin for SolariLightingPlugin {
         embedded_asset!(app, "world_cache_update.wesl");
 
         load_shader_library!(app, "resolve_dlss_rr_textures.wesl");
+        load_shader_library!(app, "denoiser_contract.wesl");
+        embedded_asset!(app, "compose.wesl");
 
         app.insert_resource(DefaultOpaqueRendererMethod::deferred());
     }
@@ -89,23 +96,42 @@ impl Plugin for SolariLightingPlugin {
         app.sub_app_mut(RenderApp)
             .add_systems(
                 RenderStartup,
-                init_solari_lighting_pipelines.after(init_gpu_resource::<RaytracingSceneBindings>),
+                (
+                    init_solari_lighting_pipelines
+                        .after(init_gpu_resource::<RaytracingSceneBindings>),
+                    init_solari_compose_pipeline,
+                ),
             )
             .add_systems(ExtractSchedule, extract_solari_lighting)
             .add_systems(
                 Render,
                 (
                     prepare_solari_lighting_resources,
+                    prepare_solari_denoiser_textures,
                     setup_raytracing_scene_needs_previous_frame_data
                         .before(prepare_raytracing_scene_resources),
                 )
                     .in_set(RenderSystems::PrepareResources),
             )
-            .add_systems(
+            .configure_sets(
                 Core3d,
-                solari_lighting
+                (DenoiserSystems::Denoise, DenoiserSystems::Compose)
+                    .chain()
                     .before(main_opaque_pass_3d)
                     .in_set(Core3dSystems::MainPass),
+            )
+            .add_systems(
+                Core3d,
+                (
+                    // Both sets are named: an order through `Denoise` alone is lost while no
+                    // denoiser has put a system in it.
+                    solari_lighting
+                        .before(DenoiserSystems::Denoise)
+                        .before(DenoiserSystems::Compose)
+                        .before(main_opaque_pass_3d)
+                        .in_set(Core3dSystems::MainPass),
+                    solari_compose.in_set(DenoiserSystems::Compose),
+                ),
             );
     }
 }

@@ -15,6 +15,7 @@ pub mod contrast_adaptive_sharpening;
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 pub mod dlss;
 pub mod fxaa;
+pub mod ray_reconstruction;
 pub mod smaa;
 pub mod taa;
 pub mod tsr;

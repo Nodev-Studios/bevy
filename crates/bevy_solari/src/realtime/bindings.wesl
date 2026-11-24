@@ -38,6 +38,14 @@ enable wgpu_ray_query;
 @group(2) @binding(4) var specular_motion_vectors: texture_storage_2d<rg16float, write>;
 }
 
+// The radiance textures are read back by the ReSTIR shading pass, which adds the reused sample to
+// what the initial pass stored.
+@if(DENOISER_CONTRACT) {
+@group(2) @binding(5) var denoiser_view_depth: texture_storage_2d<r32float, write>;
+@group(2) @binding(6) var denoiser_diffuse_radiance: texture_storage_2d<rgba16float, read_write>;
+@group(2) @binding(7) var denoiser_specular_radiance: texture_storage_2d<rgba16float, read_write>;
+}
+
 fn load_motion_vector(pixel_id: vec2<u32>) -> vec2<f32> {
     @if(MOTION_VECTORS_READ_WRITE)
     return textureLoad(motion_vectors, pixel_id).xy;

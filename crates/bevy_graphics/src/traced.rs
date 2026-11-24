@@ -18,8 +18,11 @@ mod solari {
             restir: false,
             // Read only by ReSTIR.
             confidence_weight_cap: 8.0,
-            // to tune: half of `full`'s light candidates at the primary hit.
-            primary_di_samples: 4,
+            // to tune: a quarter of `full`'s light candidates at the primary hit. With 4 the lighting pass
+            // took 0.57 of `full`'s on `interior` and 0.54 on `many-lights` (RTX 5070, 1920x1080 native,
+            // DLSS-RR, medians of three runs, 2026-11-24); the plan's gate is 0.5. With 2: 0.50 (0.648 against
+            // 1.307 ms) and 0.48 (0.502 against 1.053 ms), same runs and machine.
+            primary_di_samples: 2,
             // Never read: with one bounce there is no second hit to light directly.
             secondary_di_samples: 4,
             // The first bounce is forced to end in the world cache, so one ray per pixel carries all the

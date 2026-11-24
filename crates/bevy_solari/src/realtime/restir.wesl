@@ -12,6 +12,9 @@ import package::scene::sampling::{balance_heuristic, isinf, isnan, LightSample, 
 import package::scene::bindings::{light_sources, LIGHT_NOT_PRESENT_THIS_FRAME, previous_frame_light_id_translations, RAY_T_MAX, RAY_T_MIN, ResolvedMaterial};
 import package::realtime::world_cache_query::{query_world_cache, WORLD_CACHE_CELL_LIFETIME};
 
+@if(DENOISER_CONTRACT)
+import package::realtime::denoiser_contract::{shade_reservoir_into_denoiser_radiance, store_unreused_denoiser_radiance};
+
 enable wgpu_ray_query;
 
 const SPATIAL_REUSE_RADIUS_PIXELS = 30.0;
@@ -32,6 +35,8 @@ fn initial(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_invoc
 
     let initial = generate_initial_path(surface.world_position, surface.world_normal, surface.material, workgroup_id.xy, global_id.xy, &rng);
     textureStore(view_output, global_id.xy, vec4(initial.radiance, 0.0));
+    @if(DENOISER_CONTRACT)
+    store_unreused_denoiser_radiance(global_id.xy, initial.diffuse_radiance, initial.radiance - initial.diffuse_radiance, initial.hit_distances);
     reservoirs_b[pixel_index] = initial.reservoir;
 }
 
@@ -83,6 +88,9 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     pixel_color += textureLoad(view_output, global_id.xy).rgb;
     pixel_color *= view.exposure;
     textureStore(view_output, global_id.xy, vec4(pixel_color, 1.0));
+
+    @if(DENOISER_CONTRACT)
+    shade_reservoir_into_denoiser_radiance(global_id.xy, merge_result.selected_sample_brdf_radiance * merge_result.merged_reservoir.unbiased_contribution_weight, merge_result.selected_sample_world_position, surface.material, surface.world_position, surface.world_normal);
 
     @if(VISUALIZE_WORLD_CACHE)
     textureStore(view_output, global_id.xy, vec4(query_world_cache(surface.world_position, surface.world_normal, view.world_position, RAY_T_MAX, WORLD_CACHE_CELL_LIFETIME, &rng) * view.exposure, 1.0));
@@ -190,6 +198,8 @@ fn jacobian(
 struct ReservoirMergeResult {
     merged_reservoir: Reservoir,
     selected_sample_brdf_radiance: vec3<f32>,
+    /// Where the selected sample lights the surface from, as `ReservoirContribution` gives it.
+    @if(DENOISER_CONTRACT) selected_sample_world_position: vec4<f32>,
 }
 
 fn merge_reservoirs(
@@ -216,6 +226,9 @@ fn merge_reservoirs(
 
     // Skip resampling empty reservoirs
     if other_reservoir.confidence_weight == 0.0 {
+        @if(DENOISER_CONTRACT)
+        return ReservoirMergeResult(canonical_reservoir, canonical_sample_at_canonical.brdf_radiance, canonical_sample_at_canonical.sample_world_position);
+        @else
         return ReservoirMergeResult(canonical_reservoir, canonical_sample_at_canonical.brdf_radiance);
     }
 
@@ -310,6 +323,9 @@ fn merge_reservoirs(
         let inverse_target_function = select(0.0, 1.0 / other_sample_at_canonical.target_function, other_sample_at_canonical.target_function > 0.0);
         combined_reservoir.unbiased_contribution_weight = weight_sum * inverse_target_function;
 
+        @if(DENOISER_CONTRACT)
+        return ReservoirMergeResult(combined_reservoir, other_sample_at_canonical.brdf_radiance, other_sample_at_canonical.sample_world_position);
+        @else
         return ReservoirMergeResult(combined_reservoir, other_sample_at_canonical.brdf_radiance);
     } else {
         combined_reservoir.sample_point_world_position = canonical_reservoir.sample_point_world_position;
@@ -320,6 +336,9 @@ fn merge_reservoirs(
         let inverse_target_function = select(0.0, 1.0 / canonical_sample_at_canonical.target_function, canonical_sample_at_canonical.target_function > 0.0);
         combined_reservoir.unbiased_contribution_weight = weight_sum * inverse_target_function;
 
+        @if(DENOISER_CONTRACT)
+        return ReservoirMergeResult(combined_reservoir, canonical_sample_at_canonical.brdf_radiance, canonical_sample_at_canonical.sample_world_position);
+        @else
         return ReservoirMergeResult(combined_reservoir, canonical_sample_at_canonical.brdf_radiance);
     }
 }

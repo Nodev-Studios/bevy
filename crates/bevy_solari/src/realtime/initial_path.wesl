@@ -13,6 +13,9 @@ import package::realtime::world_cache_query::{get_cell_size, query_world_cache, 
 @if(DLSS_RR_GUIDE_BUFFERS)
 import package::realtime::resolve_dlss_rr_textures::{is_delta_mirror, primary_surface_glossy, psr_bounce_reflectance, psr_chain_mirror, psr_environment_miss, psr_init, replace_primary_surface};
 
+@if(DENOISER_CONTRACT)
+import package::realtime::denoiser_contract::{diffuse_fraction, first_bounce_hit_distances, sampled_direction_diffuse_fraction};
+
 enable wgpu_ray_query;
 
 const RECONNECTION_FOOTPRINT_KAPPA = 0.02;
@@ -29,6 +32,11 @@ const CACHE_TERMINATION_MIN_SOLID_ANGLE = PI;
 struct InitialSamplingResult {
     @if(RESTIR) reservoir: Reservoir,
     radiance: vec3<f32>,
+    /// The part of `radiance` that the primary surface's diffuse lobe reflects.
+    @if(DENOISER_CONTRACT) diffuse_radiance: vec3<f32>,
+    /// Length of the ray traced from the primary surface, in x when it sampled the diffuse lobe and
+    /// in y when it sampled the specular lobe. The other component is 0.
+    @if(DENOISER_CONTRACT) hit_distances: vec2<f32>,
 }
 
 /// Path vertices use the following convention: x0 = camera, x1 = primary ray hit (the G-buffer
@@ -50,6 +58,8 @@ struct PathState {
     @if(RESTIR) x1_brdf: vec3<f32>,
     /// Radiance shaded directly at this pixel
     radiance: vec3<f32>,
+    /// The diffuse lobe's part of the light sampled at x1 and shaded directly at this pixel
+    @if(DENOISER_CONTRACT) x1_nee_diffuse_radiance: vec3<f32>,
     @if(RESTIR) reservoir: Reservoir,
     @if(RESTIR) weight_sum: f32,
     @if(RESTIR) selected_target_function: f32,
@@ -63,6 +73,8 @@ fn new_path_state(world_position: vec3<f32>, world_normal: vec3<f32>, wo: vec3<f
     path.material = material;
     path.throughput_past_first_hit = vec3(1.0);
     path.radiance = vec3(0.0);
+    @if(DENOISER_CONTRACT)
+    path.x1_nee_diffuse_radiance = vec3(0.0);
     @if(RESTIR) {
         path.x1_brdf = vec3(0.0);
         path.x2_position = vec3(0.0);
@@ -86,6 +98,15 @@ fn generate_initial_path(world_position: vec3<f32>, world_normal: vec3<f32>, mat
     @if(DLSS_RR_GUIDE_BUFFERS)
     var psr = psr_init(world_normal, material);
 
+    // Everything shaded after the light sampled at x1 arrives along the direction sampled at x1,
+    // so that direction's share of the diffuse lobe splits all of it.
+    @if(DENOISER_CONTRACT)
+    var x1_nee_radiance = vec3(0.0);
+    @if(DENOISER_CONTRACT)
+    var x1_sampled_diffuse_fraction = vec3(0.0);
+    @if(DENOISER_CONTRACT)
+    var hit_distances = vec2(0.0);
+
     for (var bounce = 0u; bounce < constants.max_bounces; bounce++) {
         let NdotV = max(dot(path.normal, path.wo), 0.0001);
         let F_ab = F_AB(path.material.perceptual_roughness, NdotV);
@@ -93,11 +114,19 @@ fn generate_initial_path(world_position: vec3<f32>, world_normal: vec3<f32>, mat
         // Sample lights via NEE
         let di_samples = select(constants.secondary_di_samples, constants.primary_di_samples, bounce == 0u);
         generate_nee_candidate(&path, F_ab, di_samples, workgroup_id, bounce, rng);
+        @if(DENOISER_CONTRACT)
+        if bounce == 0u { x1_nee_radiance = path.radiance; }
 
         // Sample the BRDF and trace the next ray
         let next_bounce = evaluate_and_sample_brdf(path.wo, path.normal, path.material, F_ab, rng);
         if next_bounce.pdf == 0.0 { break; }
         let ray = trace_ray(path.ray_origin, next_bounce.wi, RAY_T_MIN, RAY_T_MAX, RAY_FLAG_NONE);
+
+        @if(DENOISER_CONTRACT)
+        if bounce == 0u {
+            x1_sampled_diffuse_fraction = sampled_direction_diffuse_fraction(wo, next_bounce.wi, next_bounce.pdf, world_normal, material, primary_F_ab);
+            hit_distances = first_bounce_hit_distances(next_bounce.diffuse_selected, ray.kind == RAY_QUERY_INTERSECTION_NONE, ray.t);
+        }
 
         if ray.kind == RAY_QUERY_INTERSECTION_NONE {
             @if(DLSS_RR_GUIDE_BUFFERS)
@@ -194,6 +223,10 @@ fn generate_initial_path(world_position: vec3<f32>, world_normal: vec3<f32>, mat
 
     var result: InitialSamplingResult;
     result.radiance = path.radiance;
+    @if(DENOISER_CONTRACT) {
+        result.diffuse_radiance = path.x1_nee_diffuse_radiance + (path.radiance - x1_nee_radiance) * x1_sampled_diffuse_fraction;
+        result.hit_distances = hit_distances;
+    }
     @if(RESTIR) {
         if path.selected_target_function > 0.0 {
             path.reservoir.unbiased_contribution_weight = path.weight_sum / path.selected_target_function;
@@ -259,6 +292,10 @@ fn generate_nee_candidate(
             }
         } @else {
             (*path).radiance += di.brdf_radiance * di.unbiased_contribution_weight * nee_mis_weight / p_keep;
+            // Nothing else was shaded yet at bounce 0, so this is all of the radiance.
+            @if(DENOISER_CONTRACT) {
+                (*path).x1_nee_diffuse_radiance = (*path).radiance * diffuse_fraction((*path).wo, di.wi, (*path).normal, (*path).material, F_ab);
+            }
         }
     } else {
         // Deeper bounces: Candidate is the reconnection radiance at x2

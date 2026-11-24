@@ -35,7 +35,6 @@ use bevy_render::{
         raw_vulkan_init::{AdditionalVulkanFeatures, RawVulkanInitSettings},
         RenderDevice, RenderQueue,
     },
-    texture::CachedTexture,
     view::prepare_view_targets,
     ExtractSchedule, Render, RenderApp, RenderSystems,
 };
@@ -354,16 +353,6 @@ impl DlssFeature for DlssRayReconstructionFeature {
             queue.deref(),
         )
     }
-}
-
-/// Additional textures needed as inputs for [`DlssRayReconstructionFeature`].
-#[derive(Component)]
-pub struct ViewDlssRayReconstructionTextures {
-    pub diffuse_albedo: CachedTexture,
-    pub specular_albedo: CachedTexture,
-    pub normal_roughness: CachedTexture,
-    pub depth: CachedTexture,
-    pub specular_motion_vectors: CachedTexture,
 }
 
 #[reflect_remote(DlssPerfQualityMode)]
