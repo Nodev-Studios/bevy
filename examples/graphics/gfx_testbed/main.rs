@@ -89,8 +89,9 @@ gfx_testbed: renders a scene one way, measures it, and writes report.json, scree
 const CALM_FRAMES: u32 = 3;
 /// A scene that is not ready after this long is reported as a failure instead of hanging the run.
 const LOADING_LIMIT: Duration = Duration::from_secs(180);
-/// Screenshots arrive a few frames after they are asked for; this long after the last request, they are lost.
-const CAPTURE_LIMIT: Duration = Duration::from_secs(60);
+/// How long a finished run waits for its screenshots, which arrive a few frames after they are asked for, and
+/// for the renderer to stop compiling pipelines. After it the run ends without them.
+const SETTLE_LIMIT: Duration = Duration::from_secs(60);
 /// Captures an orbit run takes of its measured frames, for the contact sheet.
 const ORBIT_CAPTURES: u32 = 8;
 /// Frames between switching the fixture off and capturing `toggle.png`: a temporal filter's lag shows there.
@@ -579,7 +580,6 @@ fn setup(world: &mut World) {
 
     // A run that cannot be what was asked for stops here, with its reason in the report, and draws nothing.
     let stop = |world: &mut World, failure: String| {
-        error!("{failure}");
         world.resource_mut::<Report>().failures.push(failure);
         world.resource_mut::<Run>().phase = Phase::Finishing;
     };
@@ -886,7 +886,15 @@ fn median(values: &mut [f64]) -> f64 {
 fn finish(world: &mut World) {
     let run = world.resource::<Run>();
     let pending = world.resource::<Captures>().pending;
-    if run.phase != Phase::Finishing || (pending > 0 && run.since.elapsed() < CAPTURE_LIMIT) {
+    // A run that stops in its first frames would exit while pipelines still compile on other threads, and the
+    // process then aborts in its teardown instead of returning its exit code.
+    let compiling = world
+        .resource::<PendingPipelines>()
+        .0
+        .load(Ordering::Relaxed);
+    if run.phase != Phase::Finishing
+        || ((pending > 0 || compiling > 0) && run.since.elapsed() < SETTLE_LIMIT)
+    {
         return;
     }
     let args = world.resource::<Args>().clone();
