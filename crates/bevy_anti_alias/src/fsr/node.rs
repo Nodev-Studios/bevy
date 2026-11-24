@@ -62,7 +62,8 @@ pub fn fsr(
         motion_vector_scale: (-render_size.as_vec2()).to_array(),
         render_size: render_size.to_array(),
         reset: fsr.reset || context.reset,
-        frame_time_delta_ms: time.delta_secs() * 1000.0,
+        // FSR 3.1's source refuses values under 1 ms (TSR clamps the same way), and the first frame's is 0.
+        frame_time_delta_ms: (time.delta_secs() * 1000.0).max(1.0),
         camera_near: near_plane,
         camera_fov_y: fov_y,
     };
