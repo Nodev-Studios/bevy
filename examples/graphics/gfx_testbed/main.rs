@@ -826,7 +826,7 @@ pub fn drive(
         }
     }
     // Walking the allocator's list is not free, so not every frame.
-    if frame % 32 == 0
+    if frame.is_multiple_of(32)
         && let Some(memory) = render_device.wgpu_device().generate_allocator_report()
     {
         let peak = run.peak_memory.get_or_insert((0, 0));
@@ -841,7 +841,7 @@ pub fn drive(
         *transform = (scene.0.orbit)(frame);
         let step = (args.frames / ORBIT_CAPTURES).max(1);
         if measured.contains(&frame)
-            && (frame - args.warmup) % step == 0
+            && (frame - args.warmup).is_multiple_of(step)
             && (frame - args.warmup) / step < ORBIT_CAPTURES
         {
             captures.request(&mut commands, format!("orbit-{frame:05}"), &run);
