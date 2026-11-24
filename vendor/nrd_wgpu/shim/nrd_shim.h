@@ -120,6 +120,9 @@ typedef struct {
     // 0: off; 3: a 3x3 neighbourhood; 5: a 5x5 neighbourhood.
     uint32_t hit_distance_reconstruction;
     uint32_t anti_firefly;
+    float fast_history_clamping_sigma_scale;
+    float antilag_luminance_sigma_scale;
+    float antilag_luminance_sensitivity;
 } NrdwReblurSettings;
 
 typedef struct {

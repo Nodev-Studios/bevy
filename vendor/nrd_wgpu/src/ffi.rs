@@ -102,6 +102,9 @@ pub struct NrdwReblurSettings {
     pub max_blur_radius: f32,
     pub hit_distance_reconstruction: u32,
     pub anti_firefly: u32,
+    pub fast_history_clamping_sigma_scale: f32,
+    pub antilag_luminance_sigma_scale: f32,
+    pub antilag_luminance_sensitivity: f32,
 }
 
 #[repr(C)]
@@ -123,6 +126,7 @@ pub struct NrdwResource {
     pub pool_index: u32,
 }
 
+#[cfg(not(feature = "mock"))]
 unsafe extern "C" {
     pub fn nrdw_create(denoiser: u32, info: *mut NrdwInfo) -> *mut NrdwInstance;
     pub fn nrdw_destroy(instance: *mut NrdwInstance);
@@ -148,4 +152,69 @@ unsafe extern "C" {
         index: u32,
         resource: *mut NrdwResource,
     );
+}
+
+/// Stand-ins for the shim with the `mock` feature: no instance is ever created, so nothing past
+/// [`nrdw_create`] is reached.
+#[cfg(feature = "mock")]
+pub use mock::*;
+
+#[cfg(feature = "mock")]
+#[expect(
+    clippy::missing_safety_doc,
+    reason = "the signatures mirror the shim's"
+)]
+mod mock {
+    use super::*;
+
+    pub unsafe fn nrdw_create(_denoiser: u32, _info: *mut NrdwInfo) -> *mut NrdwInstance {
+        core::ptr::null_mut()
+    }
+    pub unsafe fn nrdw_destroy(_instance: *mut NrdwInstance) {}
+    pub unsafe fn nrdw_sampler_is_linear(_instance: *const NrdwInstance, _index: u32) -> u32 {
+        unreachable!()
+    }
+    pub unsafe fn nrdw_pipeline(
+        _instance: *const NrdwInstance,
+        _index: u32,
+        _pipeline: *mut NrdwPipeline,
+    ) {
+        unreachable!()
+    }
+    pub unsafe fn nrdw_pool_texture(
+        _instance: *const NrdwInstance,
+        _permanent: u32,
+        _index: u32,
+        _texture: *mut NrdwPoolTexture,
+    ) {
+        unreachable!()
+    }
+    pub unsafe fn nrdw_reblur_defaults(_settings: *mut NrdwReblurSettings) {}
+    pub unsafe fn nrdw_set_reblur_settings(
+        _instance: *mut NrdwInstance,
+        _settings: *const NrdwReblurSettings,
+    ) -> u32 {
+        unreachable!()
+    }
+    pub unsafe fn nrdw_set_frame(_instance: *mut NrdwInstance, _frame: *const NrdwFrame) -> u32 {
+        unreachable!()
+    }
+    pub unsafe fn nrdw_begin_dispatches(_instance: *mut NrdwInstance) -> i32 {
+        unreachable!()
+    }
+    pub unsafe fn nrdw_dispatch(
+        _instance: *const NrdwInstance,
+        _index: u32,
+        _dispatch: *mut NrdwDispatch,
+    ) {
+        unreachable!()
+    }
+    pub unsafe fn nrdw_dispatch_resource(
+        _instance: *const NrdwInstance,
+        _dispatch: u32,
+        _index: u32,
+        _resource: *mut NrdwResource,
+    ) {
+        unreachable!()
+    }
 }

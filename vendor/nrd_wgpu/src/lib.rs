@@ -18,11 +18,13 @@ use std::{borrow::Cow, collections::HashMap, ffi::CStr, fmt, num::NonZero, ptr::
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBinding, BufferBindingType,
-    BufferDescriptor, BufferUsages, CommandEncoder, ComputePassDescriptor, ComputePipeline,
-    ComputePipelineDescriptor, Device, Extent3d, Features, FilterMode, PassthroughShaderEntryPoint,
-    PipelineLayoutDescriptor, Queue, Sampler, SamplerBindingType, SamplerDescriptor, ShaderModule,
-    ShaderModuleDescriptorPassthrough, ShaderStages, StorageTextureAccess, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDimension,
+    BufferDescriptor, BufferUsages, CommandEncoder, ComputePassDescriptor,
+    ComputePassTimestampWrites, ComputePipeline, ComputePipelineDescriptor, Device, Extent3d,
+    Features, FilterMode, MapMode, PassthroughShaderEntryPoint, PipelineLayoutDescriptor, PollType,
+    QuerySet, QuerySetDescriptor, QueryType, Queue, Sampler, SamplerBindingType, SamplerDescriptor,
+    ShaderModule, ShaderModuleDescriptorPassthrough, ShaderStages, StorageTextureAccess,
+    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDimension,
 };
 
 /// Bytes of the uniform block shared by the pack and unpack passes.
@@ -31,8 +33,14 @@ const PARAMS_SIZE: u64 = 32;
 /// The format of the two textures of [`DenoiserOutputs`].
 pub const OUTPUT_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
 
+#[cfg(not(feature = "mock"))]
 static PACK_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pack.spv"));
+#[cfg(not(feature = "mock"))]
 static UNPACK_SPIRV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/unpack.spv"));
+#[cfg(feature = "mock")]
+static PACK_SPIRV: &[u8] = &[];
+#[cfg(feature = "mock")]
+static UNPACK_SPIRV: &[u8] = &[];
 
 /// The denoiser a [`Denoiser`] runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,6 +104,22 @@ pub struct ReblurSettings {
     pub hit_distance_reconstruction: HitDistanceReconstruction,
     /// Suppresses isolated very bright pixels.
     pub anti_firefly: bool,
+    /// How far, in standard deviations of the fast history's neighbourhood, the main history may sit from the
+    /// fast one before it is clamped to it (1..=3). Smaller follows a change of light sooner and flickers more.
+    pub fast_history_clamping_sigma_scale: f32,
+    /// ReBLUR's anti-lag, which shortens the history where the luminance moved more than the noise explains.
+    pub antilag: ReblurAntilag,
+}
+
+/// ReBLUR's anti-lag settings. NRD's documentation advises tuning them per renderer, and says history confidence
+/// inputs, which this crate does not take yet, are the better cure for lag.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReblurAntilag {
+    /// The luminance change is first reduced by the local standard deviation times this (above 0). Smaller
+    /// makes the anti-lag react to smaller changes.
+    pub luminance_sigma_scale: f32,
+    /// Sensitivity to the change that remains (above 0); smaller is more sensitive.
+    pub luminance_sensitivity: f32,
 }
 
 impl Default for ReblurSettings {
@@ -114,6 +138,11 @@ impl Default for ReblurSettings {
             max_blur_radius: raw.max_blur_radius,
             hit_distance_reconstruction: HitDistanceReconstruction::Area3x3,
             anti_firefly: raw.anti_firefly != 0,
+            fast_history_clamping_sigma_scale: raw.fast_history_clamping_sigma_scale,
+            antilag: ReblurAntilag {
+                luminance_sigma_scale: raw.antilag_luminance_sigma_scale,
+                luminance_sensitivity: raw.antilag_luminance_sensitivity,
+            },
         }
     }
 }
@@ -149,6 +178,9 @@ impl ReblurSettings {
                 HitDistanceReconstruction::Area5x5 => 5,
             },
             anti_firefly: self.anti_firefly as u32,
+            fast_history_clamping_sigma_scale: self.fast_history_clamping_sigma_scale,
+            antilag_luminance_sigma_scale: self.antilag.luminance_sigma_scale,
+            antilag_luminance_sensitivity: self.antilag.luminance_sensitivity,
         }
     }
 }
@@ -292,6 +324,8 @@ struct CachedPipeline {
 
 /// One recorded dispatch, ready to be issued.
 struct Step {
+    /// NRD's name for the dispatch, or this crate's for the pack and unpack passes.
+    name: &'static CStr,
     pipeline: ComputePipeline,
     resources: BindGroup,
     /// Byte offset of this dispatch's constants in the constant buffer; `None` for the pack and unpack passes.
@@ -345,6 +379,58 @@ pub struct Denoiser {
     denoised_specular: TextureView,
     /// Bound at the binding numbers a shader leaves unused, see [`dense_layout`].
     filler: TextureView,
+    timestamps: Option<Timestamps>,
+}
+
+/// The queries and buffers of [`Denoiser::set_timestamps`].
+struct Timestamps {
+    queries: QuerySet,
+    /// Queries in `queries`: one more than the dispatches of the longest frame recorded so far.
+    capacity: u32,
+    resolved: Buffer,
+    readback: Buffer,
+    /// The dispatches of the last recorded frame, in order.
+    names: Vec<&'static CStr>,
+}
+
+impl Timestamps {
+    fn new(device: &Device, capacity: u32) -> Self {
+        let buffer = |label, usage| {
+            device.create_buffer(&BufferDescriptor {
+                label: Some(label),
+                size: capacity as u64 * 8,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        Self {
+            queries: device.create_query_set(&QuerySetDescriptor {
+                label: Some("nrd_timestamps"),
+                ty: QueryType::Timestamp,
+                count: capacity,
+            }),
+            capacity,
+            resolved: buffer(
+                "nrd_timestamps_resolved",
+                BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC,
+            ),
+            readback: buffer(
+                "nrd_timestamps_readback",
+                BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+            ),
+            names: Vec::new(),
+        }
+    }
+}
+
+/// The GPU time of one dispatch of a frame, from [`Denoiser::read_timestamps`].
+#[derive(Clone, Debug)]
+pub struct DispatchTime {
+    /// NRD's name for the dispatch, or `nrd_wgpu pack` / `nrd_wgpu unpack` for this crate's two passes.
+    pub name: String,
+    /// From the end of the previous dispatch (for the first one, the start of its pass) to the end of this one,
+    /// so the barrier in front of the dispatch and its ramp-up are counted with it.
+    pub milliseconds: f64,
 }
 
 // SAFETY: the NRD instance behind the pointer has no thread affinity, and every call that touches it takes
@@ -388,6 +474,11 @@ impl Denoiser {
         size: [u32; 2],
         precision: TexturePrecision,
     ) -> Result<Self, NrdError> {
+        if cfg!(feature = "mock") {
+            return Err(NrdError::UnsupportedLibrary(
+                "built with the `mock` feature, without NRD",
+            ));
+        }
         let missing = Self::required_features(precision) - device.features();
         if !missing.is_empty() {
             return Err(NrdError::MissingFeatures(missing));
@@ -603,6 +694,7 @@ impl Denoiser {
                 precision.apply(TextureFormat::Rgba16Float),
             ),
             filler: create_texture(device, "nrd_filler", [1, 1], TextureFormat::Rgba8Unorm),
+            timestamps: None,
         };
         let settings = denoiser.settings;
         denoiser.set_reblur_settings(&settings)?;
@@ -685,13 +777,22 @@ impl Denoiser {
                 "max_accumulated_frames is at most 63",
             ));
         }
+        if !(1.0..=3.0).contains(&settings.fast_history_clamping_sigma_scale) {
+            return Err(NrdError::InvalidSettings(
+                "fast_history_clamping_sigma_scale must be within 1..=3",
+            ));
+        }
         if settings
             .hit_distance_parameters
             .iter()
+            .chain([
+                &settings.antilag.luminance_sigma_scale,
+                &settings.antilag.luminance_sensitivity,
+            ])
             .any(|p| p.is_nan() || *p <= 0.0)
         {
             return Err(NrdError::InvalidSettings(
-                "hit_distance_parameters must be positive",
+                "hit_distance_parameters and the anti-lag settings must be positive",
             ));
         }
         let raw = settings.to_raw();
@@ -905,6 +1006,8 @@ impl Denoiser {
                 .collect();
             let cached = self.pipeline(device, PipelineId::Nrd(raw.pipeline), &slots, false)?;
             steps.push(Step {
+                // SAFETY: NRD names every dispatch with a NUL-terminated static string.
+                name: unsafe { CStr::from_ptr(raw.name) },
                 resources: self.resources_bind_group(device, &cached.layout, &slots, false),
                 pipeline: cached.pipeline,
                 constants_offset: Some(constants_offset),
@@ -925,11 +1028,29 @@ impl Denoiser {
             pass_workgroups,
         )?);
 
-        let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
-            label: Some("nrd"),
-            timestamp_writes: None,
-        });
-        for step in &steps {
+        if let Some(timestamps) = &self.timestamps
+            && timestamps.capacity < steps.len() as u32 + 1
+        {
+            self.timestamps = Some(Timestamps::new(device, steps.len() as u32 + 1));
+        }
+        // One compute pass per dispatch. On the RTX 5070 (NVIDIA 620.73, 2026-11-24, 2560x1440, Full, the GPU
+        // shared with a desktop) a frame recorded as one pass took 1.1 to 3.2 ms longer, back to back, than the
+        // same dispatches in passes of their own, in 12 of 12 paired rounds; wgpu inserts the same barriers
+        // either way. See `vendor/nrd_wgpu/README.md`.
+        let queries = self
+            .timestamps
+            .as_ref()
+            .map(|timestamps| &timestamps.queries);
+        for (index, step) in steps.iter().enumerate() {
+            let index = index as u32;
+            let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                label: Some("nrd"),
+                timestamp_writes: queries.map(|query_set| ComputePassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: (index == 0).then_some(0),
+                    end_of_pass_write_index: Some(index + 1),
+                }),
+            });
             pass.set_pipeline(&step.pipeline);
             match step.constants_offset {
                 Some(offset) => {
@@ -941,7 +1062,73 @@ impl Denoiser {
             }
             pass.dispatch_workgroups(step.workgroups[0], step.workgroups[1], 1);
         }
+        if let Some(timestamps) = &mut self.timestamps {
+            let count = steps.len() as u32 + 1;
+            encoder.resolve_query_set(&timestamps.queries, 0..count, &timestamps.resolved, 0);
+            encoder.copy_buffer_to_buffer(
+                &timestamps.resolved,
+                0,
+                &timestamps.readback,
+                0,
+                count as u64 * 8,
+            );
+            timestamps.names = steps.iter().map(|step| step.name).collect();
+        }
         Ok(())
+    }
+
+    /// Starts or stops timing every dispatch of [`denoise`](Self::denoise) on the GPU, for profiling. Needs
+    /// `Features::TIMESTAMP_QUERY`. Each dispatch is in a compute pass of its own whether timing is on or not;
+    /// the timestamps are written at the passes' ends.
+    pub fn set_timestamps(&mut self, device: &Device, enabled: bool) -> Result<(), NrdError> {
+        if !enabled {
+            self.timestamps = None;
+            return Ok(());
+        }
+        let missing = Features::TIMESTAMP_QUERY - device.features();
+        if !missing.is_empty() {
+            return Err(NrdError::MissingFeatures(missing));
+        }
+        if self.timestamps.is_none() {
+            self.timestamps = Some(Timestamps::new(device, 64));
+        }
+        Ok(())
+    }
+
+    /// The time each dispatch of the last recorded frame took on the GPU. Call it after the encoder given to
+    /// [`denoise`](Self::denoise) was submitted, and before `denoise` is called again: it waits for the GPU to
+    /// finish, so it is for profiling, not for every frame of a game. `None` when timing is off or no frame was
+    /// recorded since it was switched on.
+    pub fn read_timestamps(&mut self, device: &Device, queue: &Queue) -> Option<Vec<DispatchTime>> {
+        let timestamps = self.timestamps.as_ref()?;
+        if timestamps.names.is_empty() {
+            return None;
+        }
+        let bytes = (timestamps.names.len() as u64 + 1) * 8;
+        let slice = timestamps.readback.slice(..bytes);
+        slice.map_async(MapMode::Read, |_| {});
+        device.poll(PollType::wait_indefinitely()).ok()?;
+        let ticks: Vec<u64> = slice
+            .get_mapped_range()
+            .ok()?
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|bytes| u64::from_le_bytes(*bytes))
+            .collect();
+        timestamps.readback.unmap();
+        let milliseconds_per_tick = queue.get_timestamp_period() as f64 / 1e6;
+        Some(
+            timestamps
+                .names
+                .iter()
+                .zip(ticks.windows(2))
+                .map(|(name, pair)| DispatchTime {
+                    name: name.to_string_lossy().into_owned(),
+                    milliseconds: pair[1].wrapping_sub(pair[0]) as f64 * milliseconds_per_tick,
+                })
+                .collect(),
+        )
     }
 
     /// Builds the pack or the unpack pass: a uniform block at binding 0, then `views` at bindings 1, 2, ...
@@ -959,6 +1146,10 @@ impl Denoiser {
             .collect();
         let cached = self.pipeline(device, id, &slots, true)?;
         Ok(Step {
+            name: match id {
+                PipelineId::Pack => c"nrd_wgpu pack",
+                _ => c"nrd_wgpu unpack",
+            },
             resources: self.resources_bind_group(device, &cached.layout, &slots, true),
             pipeline: cached.pipeline,
             constants_offset: None,
