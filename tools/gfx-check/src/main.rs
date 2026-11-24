@@ -9,9 +9,11 @@
 extern crate alloc;
 
 mod calibration;
+mod flicker;
 mod log_gate;
 mod metric;
 mod report;
+mod resize;
 mod run;
 mod sheet;
 
@@ -31,7 +33,7 @@ struct Cli {
 enum Command {
     Run(run::RunCommand),
     Image(ImageCommand),
-    Flicker(FlickerCommand),
+    Flicker(flicker::FlickerCommand),
     Motion(MotionCommand),
     Sheet(sheet::SheetCommand),
     Budget(BudgetCommand),
@@ -52,6 +54,7 @@ struct ImageCommand {
 enum ImageSubcommand {
     Stats(ImageStatsCommand),
     Diff(ImageDiffCommand),
+    Resize(resize::ImageResizeCommand),
 }
 
 /// Prints an image's size and brightness, and fails when it is black.
@@ -76,21 +79,6 @@ struct ImageDiffCommand {
     /// the second image
     #[argh(positional)]
     b: PathBuf,
-    /// fail when the difference is above this many points
-    #[argh(option)]
-    max: Option<f64>,
-}
-
-/// Prints the same metric between two consecutive frames of a static camera.
-#[derive(FromArgs)]
-#[argh(subcommand, name = "flicker")]
-struct FlickerCommand {
-    /// a run folder (its `a.png` and `b.png` are compared), or the first of two images
-    #[argh(positional)]
-    a: PathBuf,
-    /// the second image, when the first argument is an image
-    #[argh(positional)]
-    b: Option<PathBuf>,
     /// fail when the difference is above this many points
     #[argh(option)]
     max: Option<f64>,
@@ -171,15 +159,6 @@ fn image_stats(command: ImageStatsCommand) -> Result<bool, String> {
         if black { "BLACK" } else { "ok" }
     );
     Ok(!black)
-}
-
-fn flicker(command: FlickerCommand) -> Result<bool, String> {
-    let (a, b) = match command.b {
-        Some(b) => (command.a, b),
-        None => (command.a.join("a.png"), command.a.join("b.png")),
-    };
-    let points = metric::nrmse_percent_files(&a, &b)?;
-    Ok(gate_points("flicker", points, command.max))
 }
 
 fn motion(command: MotionCommand) -> Result<bool, String> {
@@ -282,7 +261,10 @@ fn main() -> ExitCode {
             command: ImageSubcommand::Diff(command),
         }) => metric::nrmse_percent_files(&command.a, &command.b)
             .map(|points| gate_points("difference", points, command.max)),
-        Command::Flicker(command) => flicker(command),
+        Command::Image(ImageCommand {
+            command: ImageSubcommand::Resize(command),
+        }) => resize::image_resize(command),
+        Command::Flicker(command) => flicker::flicker(command),
         Command::Motion(command) => motion(command),
         Command::Sheet(command) => sheet::sheet(command),
         Command::Budget(command) => budget(command),

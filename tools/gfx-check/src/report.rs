@@ -76,6 +76,9 @@ pub struct Screenshot {
     pub file: String,
     /// The orbit frame the camera stood at when the frame was captured.
     pub orbit_frame: u32,
+    /// The run's frame number at the capture, when the run records it (`gfx_tsr` does); `flicker` uses it to check
+    /// that a sequence of still captures has no gap.
+    pub frame: Option<u32>,
 }
 
 impl Report {
