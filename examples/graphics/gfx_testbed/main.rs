@@ -365,6 +365,9 @@ pub struct Run {
     last_tick: Option<Instant>,
     frame_ms: Vec<f64>,
     pass_ms: BTreeMap<String, Vec<f64>>,
+    /// When each pass's last recorded measurement was taken. A pass that stops running (`blas_build` after the
+    /// load) keeps its last value in the diagnostics store, so only measurements newer than this are recorded.
+    pass_seen: BTreeMap<String, Instant>,
     peak_memory: Option<(u64, u64)>,
 }
 
@@ -536,6 +539,7 @@ fn main() -> AppExit {
         last_tick: None,
         frame_ms: Vec::new(),
         pass_ms: BTreeMap::new(),
+        pass_seen: BTreeMap::new(),
         peak_memory: None,
     })
     .insert_resource(ladder.clone())
@@ -813,16 +817,25 @@ pub fn drive(
     {
         run.frame_ms.push((now - last).as_secs_f64() * 1000.0);
     }
-    if measured.contains(&frame) {
-        for diagnostic in diagnostics.iter() {
-            let path = diagnostic.path().as_str();
-            if let (Some(pass), Some(ms)) = (
-                path.strip_prefix("render/")
-                    .and_then(|path| path.strip_suffix("/elapsed_gpu")),
-                diagnostic.value(),
-            ) {
-                run.pass_ms.entry(pass.to_owned()).or_default().push(ms);
-            }
+    for diagnostic in diagnostics.iter() {
+        let path = diagnostic.path().as_str();
+        let (Some(pass), Some(measurement)) = (
+            path.strip_prefix("render/")
+                .and_then(|path| path.strip_suffix("/elapsed_gpu")),
+            diagnostic.measurement(),
+        ) else {
+            continue;
+        };
+        // Tracked on every frame, so a value left over from the warm-up or the load is not new when measuring.
+        if run.pass_seen.get(pass) == Some(&measurement.time) {
+            continue;
+        }
+        run.pass_seen.insert(pass.to_owned(), measurement.time);
+        if measured.contains(&frame) {
+            run.pass_ms
+                .entry(pass.to_owned())
+                .or_default()
+                .push(measurement.value);
         }
     }
     // Walking the allocator's list is not free, so not every frame.
