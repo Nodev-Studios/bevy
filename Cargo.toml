@@ -1603,7 +1603,7 @@ hidden = true
 name = "gfx_testbed"
 path = "examples/graphics/gfx_testbed/main.rs"
 doc-scrape-examples = true
-required-features = ["bevy_solari", "area_light_luts"]
+required-features = ["bevy_solari", "area_light_luts", "bevy_graphics"]
 
 [package.metadata.example.gfx_testbed]
 hidden = true
