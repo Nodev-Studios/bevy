@@ -108,7 +108,8 @@ pub fn prepare_solari_denoiser_textures(
             view_size = *resolution_override;
         }
 
-        let create_texture = |label, format, extra_usages| {
+        // `COPY_SRC` lets a tool read back what a denoiser is given.
+        let create_texture = |label, format| {
             let texture = render_device.create_texture(&TextureDescriptor {
                 label: Some(label),
                 size: view_size.to_extents(),
@@ -118,7 +119,7 @@ pub fn prepare_solari_denoiser_textures(
                 format,
                 usage: TextureUsages::TEXTURE_BINDING
                     | TextureUsages::STORAGE_BINDING
-                    | extra_usages,
+                    | TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
             let default_view = texture.create_view(&TextureViewDescriptor::default());
@@ -140,27 +141,19 @@ pub fn prepare_solari_denoiser_textures(
                     diffuse_albedo: create_texture(
                         "solari_lighting_diffuse_albedo",
                         TextureFormat::Rgba8Unorm,
-                        TextureUsages::empty(),
                     ),
                     specular_albedo: create_texture(
                         "solari_lighting_specular_albedo",
                         TextureFormat::Rgba8Unorm,
-                        TextureUsages::empty(),
                     ),
                     normal_roughness: create_texture(
                         "solari_lighting_normal_roughness",
                         TextureFormat::Rgba16Float,
-                        TextureUsages::empty(),
                     ),
-                    depth: create_texture(
-                        "solari_lighting_dlss_rr_depth",
-                        TextureFormat::R32Float,
-                        TextureUsages::empty(),
-                    ),
+                    depth: create_texture("solari_lighting_dlss_rr_depth", TextureFormat::R32Float),
                     specular_motion_vectors: create_texture(
                         "solari_lighting_specular_motion_vectors",
                         TextureFormat::Rg16Float,
-                        TextureUsages::empty(),
                     ),
                 });
             }
@@ -173,22 +166,18 @@ pub fn prepare_solari_denoiser_textures(
         match (wants_inputs, inputs) {
             (true, Some(inputs)) if has_size(&inputs.view_depth) => {}
             (true, _) => {
-                // `COPY_SRC` lets a tool read back what a denoiser is given.
                 entity_commands.insert(ViewDenoiserInputTextures {
                     diffuse_radiance_hit_distance: create_texture(
                         "solari_lighting_diffuse_radiance_hit_distance",
                         TextureFormat::Rgba16Float,
-                        TextureUsages::COPY_SRC,
                     ),
                     specular_radiance_hit_distance: create_texture(
                         "solari_lighting_specular_radiance_hit_distance",
                         TextureFormat::Rgba16Float,
-                        TextureUsages::COPY_SRC,
                     ),
                     view_depth: create_texture(
                         "solari_lighting_view_depth",
                         TextureFormat::R32Float,
-                        TextureUsages::COPY_SRC,
                     ),
                 });
             }
