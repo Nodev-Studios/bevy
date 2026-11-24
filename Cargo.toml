@@ -614,6 +614,9 @@ area_light_luts = ["bevy_internal/area_light_luts"]
 # NVIDIA Deep Learning Super Sampling
 dlss = ["bevy_internal/dlss"]
 
+# NVIDIA's NRD denoiser for ray traced lighting (needs the NRD SDK at build time)
+nrd = ["bevy_internal/nrd"]
+
 # Forcibly disable DLSS so that `cargo build --all-features` works without the DLSS SDK being installed. Not meant for users.
 force_disable_dlss = ["bevy_internal/force_disable_dlss"]
 

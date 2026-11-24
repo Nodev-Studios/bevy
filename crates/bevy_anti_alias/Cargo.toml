@@ -15,6 +15,9 @@ webgpu = []
 smaa_luts = ["bevy_image/ktx2", "bevy_image/zstd"]
 dlss = ["dep:dlss_wgpu", "dep:uuid", "bevy_render/raw_vulkan_init"]
 force_disable_dlss = ["dlss_wgpu?/mock"]
+# NVIDIA's NRD (ReBLUR) as the denoiser of ray traced lighting. Needs the NRD SDK at build time: see
+# `vendor/nrd_wgpu/README.md` in the repository.
+nrd = ["dep:nrd_wgpu"]
 
 [dependencies]
 # bevy
@@ -37,6 +40,7 @@ bevy_diagnostic = { path = "../bevy_diagnostic", version = "0.20.1" }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 dlss_wgpu = { version = "6.0.0", optional = true }
 uuid = { version = "1.21.0", optional = true }
+nrd_wgpu = { path = "../../vendor/nrd_wgpu", optional = true }
 
 [lints]
 workspace = true
