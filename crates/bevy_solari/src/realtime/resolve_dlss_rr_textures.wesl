@@ -104,6 +104,9 @@ fn psr_init(world_normal: vec3<f32>, material: ResolvedMaterial) -> PsrState {
     // surface too. The reflection's motion is still tracked.
     @if(DENOISER_CONTRACT)
     psr.replace_fully = false;
+    // `SolariSkipSpecularMotionVectors`: the denoiser reads no specular motion, so nothing is tracked.
+    @if(DENOISER_SKIP_PSR)
+    psr.finished = true;
     // The chain opens with the primary surface's own reflection, so parity starts odd.
     psr.mirror_rotor = mirror_chain_rotor(world_normal, false);
     psr.mirror_parity_odd = true;

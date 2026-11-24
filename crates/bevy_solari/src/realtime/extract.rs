@@ -1,4 +1,7 @@
-use super::{prepare::SolariLightingResources, SolariDenoiserInputs, SolariLighting};
+use super::{
+    prepare::SolariLightingResources, SolariDenoiserInputs, SolariLighting,
+    SolariSkipSpecularMotionVectors,
+};
 use bevy_anti_alias::ray_reconstruction::{ViewDenoiserGuideTextures, ViewDenoiserInputTextures};
 use bevy_camera::Camera;
 use bevy_ecs::{
@@ -14,9 +17,12 @@ pub fn extract_solari_lighting(mut main_world: ResMut<MainWorld>, mut commands: 
         &Camera,
         Option<&mut SolariLighting>,
         Has<SolariDenoiserInputs>,
+        Has<SolariSkipSpecularMotionVectors>,
     )>();
 
-    for (entity, camera, solari_lighting, denoiser_inputs) in cameras_3d.iter_mut(&mut main_world) {
+    for (entity, camera, solari_lighting, denoiser_inputs, skip_specular_motion_vectors) in
+        cameras_3d.iter_mut(&mut main_world)
+    {
         let mut entity_commands = commands
             .get_entity(entity)
             .expect("Camera entity wasn't synced.");
@@ -30,12 +36,18 @@ pub fn extract_solari_lighting(mut main_world: ResMut<MainWorld>, mut commands: 
             } else {
                 entity_commands.remove::<SolariDenoiserInputs>();
             }
+            if denoiser_inputs && skip_specular_motion_vectors {
+                entity_commands.insert(SolariSkipSpecularMotionVectors);
+            } else {
+                entity_commands.remove::<SolariSkipSpecularMotionVectors>();
+            }
         } else {
             entity_commands.remove::<(
                 SolariLighting,
                 SolariLightingResources,
                 SkipDeferredLighting,
                 SolariDenoiserInputs,
+                SolariSkipSpecularMotionVectors,
                 ViewDenoiserGuideTextures,
                 ViewDenoiserInputTextures,
             )>();

@@ -5,7 +5,8 @@
 //! [`GraphicsCapabilities::nrd`](crate::GraphicsCapabilities::nrd) and registers NRD's
 //! [`CameraBackend`](crate::apply::backends::CameraBackend): a camera whose resolved denoiser is
 //! [`ResolvedDenoiser::Nrd`](crate::ResolvedDenoiser::Nrd) gets `bevy_anti_alias`'s `Nrd` and `bevy_solari`'s
-//! `SolariDenoiserInputs`, which makes the lighting pass write what NRD reads. Without the feature it does
+//! `SolariDenoiserInputs`, which makes the lighting pass write what NRD reads, and
+//! `SolariSkipSpecularMotionVectors`, which spares it what NRD does not read. Without the feature it does
 //! nothing, and the capability stays `false`.
 
 use bevy_app::App;
@@ -24,14 +25,20 @@ pub(crate) fn build(app: &mut App) {
     use bevy_anti_alias::nrd::Nrd;
     use bevy_app::PreStartup;
     use bevy_ecs::prelude::*;
-    use bevy_solari::realtime::SolariDenoiserInputs;
+    use bevy_solari::realtime::{SolariDenoiserInputs, SolariSkipSpecularMotionVectors};
 
     app.world_mut().resource_mut::<GraphicsBackends>().nrd = Some(CameraBackend {
+        // NRD reads no specular motion vectors, so the lighting pass skips the mirror tracking that
+        // writes them. `Nrd` cannot require it: `bevy_anti_alias` cannot name `bevy_solari`'s types.
         insert: |camera, _resolved| {
-            camera.insert((Nrd::default(), SolariDenoiserInputs));
+            camera.insert((
+                Nrd::default(),
+                SolariDenoiserInputs,
+                SolariSkipSpecularMotionVectors,
+            ));
         },
         remove: |camera| {
-            camera.remove::<(Nrd, SolariDenoiserInputs)>();
+            camera.remove::<(Nrd, SolariDenoiserInputs, SolariSkipSpecularMotionVectors)>();
         },
     });
     app.add_systems(

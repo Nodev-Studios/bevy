@@ -10,7 +10,9 @@
 //! # Usage
 //! 1. Enable Bevy's `nrd` feature, with the NRD SDK fetched.
 //! 2. Give a camera that has `bevy_solari`'s `SolariLighting` both `SolariDenoiserInputs` (the
-//!    lighting pass then writes [`ViewDenoiserInputTextures`]) and [`Nrd`].
+//!    lighting pass then writes [`ViewDenoiserInputTextures`]) and [`Nrd`]. NRD reads no specular
+//!    motion vectors: `bevy_solari`'s `SolariSkipSpecularMotionVectors` saves the lighting pass the
+//!    work of writing them.
 //! 3. Resolve the denoised frame with temporal anti-aliasing or an upscaler, as with any ray
 //!    traced lighting.
 //!

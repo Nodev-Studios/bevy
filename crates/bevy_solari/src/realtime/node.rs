@@ -3,7 +3,7 @@ use super::{
         SolariLightingResources, LIGHT_TILE_BLOCKS, WORLD_CACHE_ACTIVE_CELLS_COUNT_OFFSET,
         WORLD_CACHE_SIZE,
     },
-    SolariLighting,
+    SolariLighting, SolariSkipSpecularMotionVectors,
 };
 use crate::scene::RaytracingSceneBindings;
 use bevy_anti_alias::ray_reconstruction::{ViewDenoiserGuideTextures, ViewDenoiserInputTextures};
@@ -65,6 +65,7 @@ struct RestirPipelines {
     initial: CachedComputePipelineId,
     initial_with_psr: CachedComputePipelineId,
     initial_with_denoiser_contract: CachedComputePipelineId,
+    initial_with_denoiser_contract_without_psr: CachedComputePipelineId,
     temporal: CachedComputePipelineId,
     spatial_and_shade: CachedComputePipelineId,
     spatial_and_shade_with_denoiser_contract: CachedComputePipelineId,
@@ -74,6 +75,7 @@ struct NoRestirPipelines {
     initial_and_shade: CachedComputePipelineId,
     initial_and_shade_with_psr: CachedComputePipelineId,
     initial_and_shade_with_denoiser_contract: CachedComputePipelineId,
+    initial_and_shade_with_denoiser_contract_without_psr: CachedComputePipelineId,
 }
 
 type SolariLightingViewQuery = (
@@ -87,6 +89,7 @@ type SolariLightingViewQuery = (
     Option<&'static DynamicUniformIndex<GpuAtmosphere>>,
     Option<&'static ViewDenoiserGuideTextures>,
     Option<&'static ViewDenoiserInputTextures>,
+    Has<SolariSkipSpecularMotionVectors>,
 );
 
 pub fn solari_lighting(
@@ -113,6 +116,7 @@ pub fn solari_lighting(
         atmosphere_uniform_index,
         view_denoiser_guide_textures,
         view_denoiser_input_textures,
+        skip_psr,
     ) = view.into_inner();
 
     // The radiance for a denoiser is written together with the guides, never without them.
@@ -147,7 +151,11 @@ pub fn solari_lighting(
 
     let (initial_pipeline_id, reuse_pipeline_ids) = match (restir.is_some(), &denoiser_outputs) {
         (true, DenoiserOutputs::GuidesAndRadiance(..)) => (
-            pipelines.restir.initial_with_denoiser_contract,
+            if skip_psr {
+                pipelines.restir.initial_with_denoiser_contract_without_psr
+            } else {
+                pipelines.restir.initial_with_denoiser_contract
+            },
             Some((
                 pipelines.restir.temporal,
                 pipelines.restir.spatial_and_shade_with_denoiser_contract,
@@ -168,7 +176,13 @@ pub fn solari_lighting(
             )),
         ),
         (false, DenoiserOutputs::GuidesAndRadiance(..)) => (
-            pipelines.no_restir.initial_and_shade_with_denoiser_contract,
+            if skip_psr {
+                pipelines
+                    .no_restir
+                    .initial_and_shade_with_denoiser_contract_without_psr
+            } else {
+                pipelines.no_restir.initial_and_shade_with_denoiser_contract
+            },
             None,
         ),
         (false, DenoiserOutputs::Guides(_)) => {
@@ -770,6 +784,14 @@ pub fn init_solari_lighting_pipelines(
                 ExtraBindGroup::DenoiserContract,
                 vec![],
             ),
+            initial_with_denoiser_contract_without_psr: create_pipeline(
+                "solari_lighting_restir_initial_with_denoiser_contract_without_psr_pipeline",
+                "initial",
+                load_embedded_asset!(asset_server.as_ref(), "restir.wesl"),
+                true,
+                ExtraBindGroup::DenoiserContract,
+                vec!["DENOISER_SKIP_PSR".into()],
+            ),
             temporal: create_pipeline(
                 "solari_lighting_restir_temporal_pipeline",
                 "temporal",
@@ -819,6 +841,14 @@ pub fn init_solari_lighting_pipelines(
                 false,
                 ExtraBindGroup::DenoiserContract,
                 vec![],
+            ),
+            initial_and_shade_with_denoiser_contract_without_psr: create_pipeline(
+                "solari_lighting_initial_and_shade_with_denoiser_contract_without_psr_pipeline",
+                "initial_and_shade",
+                load_embedded_asset!(asset_server.as_ref(), "no_restir.wesl"),
+                false,
+                ExtraBindGroup::DenoiserContract,
+                vec!["DENOISER_SKIP_PSR".into()],
             ),
         },
         resolve_dlss_rr_textures_pipeline: create_pipeline(

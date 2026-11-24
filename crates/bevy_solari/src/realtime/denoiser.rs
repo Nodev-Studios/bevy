@@ -61,6 +61,18 @@ use bevy_utils::default;
 #[reflect(Component, Default, Clone)]
 pub struct SolariDenoiserInputs;
 
+/// Together with [`SolariDenoiserInputs`], stops the lighting pass from following reflections
+/// through mirrors to write [`ViewDenoiserGuideTextures::specular_motion_vectors`], which then
+/// hold no meaningful motion for glossy and mirror pixels. For a denoiser that never reads them,
+/// such as NRD's `ReBLUR`; DLSS Ray Reconstruction does read them.
+///
+/// It saves the mirror-chain tracking (primary surface replacement) in the lighting pass. On the
+/// RTX 5070 at 2560x1440 with NRD (2026-11-24) the denoised image did not change beyond the noise
+/// floor, on the testbed's `interior` and `contract` (flat mirror) scenes.
+#[derive(Component, Reflect, Clone, Copy, Default)]
+#[reflect(Component, Default, Clone)]
+pub struct SolariSkipSpecularMotionVectors;
+
 /// Creates and frees the textures the lighting pass writes for a denoiser.
 pub fn prepare_solari_denoiser_textures(
     #[cfg(any(not(feature = "dlss"), feature = "force_disable_dlss"))] query: Query<
