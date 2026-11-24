@@ -15,6 +15,10 @@ solari = ["dep:bevy_solari"]
 dlss = ["bevy_anti_alias/dlss"]
 # Puts NRD on the ray traced rungs' cameras when DLSS Ray Reconstruction cannot run.
 nrd = ["bevy_anti_alias/nrd", "solari"]
+# Puts FSR on the ladder's cameras when it is asked for by name and runs here (a Radeon under Windows).
+fsr = ["bevy_anti_alias/fsr"]
+# `fsr` built so that FSR never loads: FSR is reported unusable. Not meant for users.
+force_disable_fsr = ["bevy_anti_alias/force_disable_fsr"]
 # `dlss` built without the DLSS SDK (`--all-features`): DLSS is reported unusable. Not meant for users.
 force_disable_dlss = ["bevy_anti_alias/force_disable_dlss"]
 # `nrd` built without the NRD SDK (`--all-features`): NRD is reported unusable. Not meant for users.

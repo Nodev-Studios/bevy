@@ -21,6 +21,11 @@ nrd = ["dep:nrd_wgpu"]
 # Builds `nrd` without the NRD SDK, so that `--all-features` works without it; NRD then never runs. Not meant for
 # users.
 force_disable_nrd = ["nrd_wgpu?/mock"]
+# AMD FSR 4 / 3.1 through the signed Vulkan DLLs of AMD's FSR SDK, on Radeons under Windows; the DLLs are loaded at
+# run time (see `vendor/fsr_wgpu/README.md` in the repository). Elsewhere it does nothing.
+fsr = ["dep:fsr_wgpu", "bevy_render/raw_vulkan_init"]
+# Builds `fsr` so that FSR never loads, even on Windows. Not meant for users.
+force_disable_fsr = ["fsr_wgpu?/mock"]
 
 [dependencies]
 # bevy
@@ -45,6 +50,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 dlss_wgpu = { version = "6.0.0", optional = true }
 uuid = { version = "1.21.0", optional = true }
 nrd_wgpu = { path = "../../vendor/nrd_wgpu", optional = true }
+fsr_wgpu = { path = "../../vendor/fsr_wgpu", optional = true }
 # AMD's FSR 3.1 upscaler for TSR (MIT; vendored, see its README).
 wgpu_ffx = { path = "../../vendor/wgpu_ffx" }
 
