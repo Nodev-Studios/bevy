@@ -111,6 +111,7 @@ force_disable_nrd = [
 force_disable_dlss = [
   "bevy_anti_alias?/force_disable_dlss",
   "bevy_solari?/force_disable_dlss",
+  "bevy_graphics?/force_disable_dlss",
 ]
 
 # Audio format support (vorbis is enabled by default)

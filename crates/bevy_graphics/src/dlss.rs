@@ -21,10 +21,10 @@
 
 #[cfg(doc)]
 use crate::ResolvedGraphics;
-#[cfg(feature = "dlss")]
+#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 pub(crate) use on::*;
 
-#[cfg(feature = "dlss")]
+#[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 mod on {
     use crate::{ResolvedGraphics, ResolvedQuality, ResolvedUpscaler};
     use bevy_anti_alias::dlss::{

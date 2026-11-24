@@ -86,6 +86,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |bevy_gizmos|Adds support for gizmos|
 |bevy_gizmos_render|Adds support for rendering gizmos|
 |bevy_gltf|[glTF](https://www.khronos.org/gltf/) support|
+|bevy_graphics|Tiered graphics settings: the Raster, RtLite and RtFull presets, and the policy that picks one for the machine|
 |bevy_image|Load and access image data. Usually added by an image format|
 |bevy_input_focus|Enable input focus subsystem|
 |bevy_light|Provides light types such as point lights, directional lights, spotlights.|
@@ -136,6 +137,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |file_watcher|Enables watching the filesystem for Bevy Asset hot-reloading|
 |flac|FLAC audio format support (through `claxon`)|
 |force_disable_dlss|Forcibly disable DLSS so that `cargo build --all-features` works without the DLSS SDK being installed. Not meant for users.|
+|force_disable_nrd|Forcibly disable NRD so that `cargo build --all-features` works without the NRD SDK. Not meant for users.|
 |free_camera|Enables the free cam from bevy_camera_controller|
 |gamepad|Gamepad support. Automatically enabled by `bevy_gilrs`.|
 |gestures|Gestures support. Automatically enabled by `bevy_window`.|
@@ -161,6 +163,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |mp3|MP3 audio format support (through `symphonia`)|
 |mp4|MP4 audio format support (through `symphonia`). It also enables AAC support.|
 |multi_threaded|Enables multithreaded parallelism in the engine. Disabling it forces all engine tasks to run on a single thread.|
+|nrd|NVIDIA's NRD denoiser for ray traced lighting (needs the NRD SDK at build time)|
 |pan_camera|Enables the pan camera from bevy_camera_controller|
 |pan_orbit_camera|Enables the pan orbit camera from bevy_camera_controller|
 |pan_orbit_gizmo|Enables the pan orbit camera anchor indicator gizmo|

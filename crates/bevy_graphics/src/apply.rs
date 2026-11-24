@@ -492,7 +492,7 @@ fn shape_anti_aliasing(
         } else {
             camera.remove::<TemporalAntiAliasing>();
         }
-        #[cfg(feature = "dlss")]
+        #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
         crate::dlss::apply(camera, resolved);
     }
 

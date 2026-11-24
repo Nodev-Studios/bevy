@@ -144,7 +144,7 @@ pub(crate) fn detect_capabilities(world: &mut World) {
     if let Some(device) = world.get_resource::<RenderDevice>() {
         capabilities.ray_query = has_ray_tracing_features(device);
     }
-    #[cfg(feature = "dlss")]
+    #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
     {
         use bevy_anti_alias::dlss::{DlssRayReconstructionSupported, DlssSuperResolutionSupported};
         capabilities.dlss_super_resolution =
