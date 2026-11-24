@@ -46,6 +46,10 @@ members = [
 exclude = [
   # Integration tests are not part of the workspace
   "tests-integration",
+  # Bindings to vendor SDKs (NRD, FSR). Their build scripts need an SDK that is fetched outside the repo
+  # (tools/fetch-sdks.sh). Cargo makes every path dependency under the root a workspace member unless it is
+  # excluded, and `cargo check --workspace` must pass without any SDK.
+  "vendor",
 ]
 
 [workspace.lints.clippy]
