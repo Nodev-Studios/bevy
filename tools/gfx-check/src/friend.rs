@@ -548,44 +548,85 @@ fn plan(adapter: &Adapter, traced: bool) -> Vec<Step> {
     steps
 }
 
-/// How long a step is expected to take, in seconds: per run a start-up plus its frames at a guessed frame time.
-fn estimate(step: &Step, profile: &Profile, startup: f64, base_ms: f64) -> f64 {
+/// What the probe measured on one adapter, from which the rest of its sequence is estimated.
+#[derive(Clone, Copy)]
+struct Pace {
+    /// Seconds a run takes besides its frames: start-up, loading, pipelines, screenshots.
+    startup: f64,
+    /// Median frame milliseconds of Raster, `RtLite` and `RtFull` at the probe's size.
+    ms: [f64; 3],
+    /// Pixels of the probe's window.
+    pixels: f64,
+}
+
+impl Pace {
+    /// From the probe's cells and how long the probe took.
+    fn measure(step: &Step, cells: &[Cell], seconds: f64) -> Pace {
+        let pixels = step
+            .resolutions
+            .first()
+            .map_or(1280.0 * 720.0, |res| pixels(res));
+        let ms_of = |name: &str| {
+            cells
+                .iter()
+                .find(|cell| cell.run == name)
+                .and_then(|cell| cell.frame_ms)
+                .map(|frame| frame[0])
+        };
+        // A preset the probe could not time costs, by guess, twice Raster. To tune.
+        let raster = ms_of("raster").or_else(|| ms_of("auto")).unwrap_or(20.0);
+        let ms = [
+            raster,
+            ms_of("rt-lite").unwrap_or(2.0 * raster),
+            ms_of("rt-full").unwrap_or(2.0 * raster),
+        ];
+        let frames: f64 = step
+            .runs
+            .iter()
+            .map(|run| f64::from(run.warmup + run.frames) * ms[preset_index(&run.args)] / 1000.0)
+            .sum();
+        let runs = step.runs.len().max(1) as f64;
+        Pace {
+            startup: ((seconds - frames) / runs).clamp(2.0, 120.0),
+            ms,
+            pixels,
+        }
+    }
+}
+
+fn pixels(resolution: &str) -> f64 {
+    resolution
+        .split_once('x')
+        .and_then(|(w, h)| Some(w.parse::<f64>().ok()? * h.parse::<f64>().ok()?))
+        .unwrap_or(1280.0 * 720.0)
+}
+
+/// Which of Raster, `RtLite` and `RtFull` a run's flags ask for; a cycle counts as `RtLite`, its middle stage.
+fn preset_index(args: &[String]) -> usize {
+    if args.iter().any(|arg| arg == "rt-full") {
+        2
+    } else if args.iter().any(|arg| arg == "rt-lite" || arg == "--cycle") {
+        1
+    } else {
+        0
+    }
+}
+
+/// How long a step is expected to take, in seconds: per run the probe's start-up, plus its frames at the probe's
+/// frame time grown with the window. Frames do not grow with pixels when the CPU bounds them, so the exponent is
+/// under 1. To tune.
+fn estimate(step: &Step, pace: Pace) -> f64 {
     let mut seconds = 0.0;
     for resolution in &step.resolutions {
-        let pixels = resolution
-            .split_once('x')
-            .and_then(|(w, h)| Some(w.parse::<f64>().ok()? * h.parse::<f64>().ok()?))
-            .unwrap_or(1280.0 * 720.0);
+        let scale = (pixels(resolution) / pace.pixels).powf(0.75);
         for _ in &step.scenes {
             for run in &step.runs {
-                // Traced frames cost a few times a raster frame on every card measured so far. To tune.
-                let factor = if run.args.iter().any(|arg| arg == "rt-full") {
-                    4.0
-                } else if run
-                    .args
-                    .iter()
-                    .any(|arg| arg == "rt-lite" || arg == "--cycle")
-                {
-                    2.5
-                } else {
-                    1.0
-                };
-                let ms = base_ms * pixels / (1280.0 * 720.0) * factor;
-                seconds += startup
-                    + f64::from(run.warmup + run.frames) * ms / 1000.0 * profile_slowness(profile);
+                let ms = pace.ms[preset_index(&run.args)] * scale;
+                seconds += pace.startup + f64::from(run.warmup + run.frames) * ms / 1000.0;
             }
         }
     }
     seconds
-}
-
-/// How much slower than the smoke run's adapter a class is assumed to be. To tune.
-fn profile_slowness(profile: &Profile) -> f64 {
-    match profile.name {
-        "small" => 20.0,
-        "cpu" => 200.0,
-        _ => 1.0,
-    }
 }
 
 /// Replaces what would identify the person or the machine in every text file of the results.
@@ -986,7 +1027,7 @@ impl Friend {
 
     /// Step 0: a short Raster run on whatever adapter Bevy picks by default, with every adapter it checks in its
     /// log. Started directly, not through `run`, so it needs no adapter name.
-    fn smoke(&mut self) -> Result<(Vec<Adapter>, f64, f64), String> {
+    fn smoke(&mut self) -> Result<Vec<Adapter>, String> {
         let dir = self.results.join("0-smoke");
         fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
         let size = "1280x720";
@@ -1069,9 +1110,7 @@ impl Friend {
             "frame_ms_median": median,
             "failures": report["failures"],
         });
-        let base_ms = median.unwrap_or(5.0).clamp(0.5, 50.0);
-        let startup = (wall - f64::from(10 + frames) * base_ms / 1000.0).clamp(5.0, 120.0);
-        Ok((adapters, startup, base_ms))
+        Ok(adapters)
     }
 
     /// What the probe's `Auto` run resolved, and whether the device can trace rays.
@@ -1167,21 +1206,13 @@ impl Friend {
         lines
     }
 
-    fn adapter(
-        &mut self,
-        index: usize,
-        total: usize,
-        adapter: &Adapter,
-        startup: f64,
-        base_ms: f64,
-    ) {
+    /// Step 1 on one adapter: the probe. Returns the adapter's record, whether it traces, and its pace.
+    fn probe(&mut self, index: usize, adapter: &Adapter) -> (Value, bool, Pace) {
         let profile = adapter.profile();
         let dir = self.results.join(slug(index, &adapter.name));
         self.say(format!(
-            "\n== Tarjeta {} de {total}: {} ({}) ==",
-            index + 1,
-            adapter.name,
-            adapter.driver_info
+            "  Sonda de {} ({}): qué elige el modo automático y por qué",
+            adapter.name, adapter.driver_info
         ));
         let mut record = json!({
             "name": adapter.name,
@@ -1193,15 +1224,20 @@ impl Friend {
             "folder": slug(index, &adapter.name),
             "steps": [],
         });
-
         let steps = plan(adapter, true);
-        self.say(format!("  Paso 1: {}", steps[0].title));
+        let started = Instant::now();
         let probe = self.run_step(&steps[0], adapter, &dir);
+        let cells: Vec<Cell> = fs::read_to_string(dir.join("probe").join("results.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let pace = Pace::measure(&steps[0], &cells, started.elapsed().as_secs_f64());
         if let Some(steps) = record["steps"].as_array_mut() {
             steps.push(probe);
         }
         let (resolved, ray_query) = self.read_probe(adapter, &dir);
         record["probe"] = resolved;
+        record["pace"] = json!({ "startup_s": pace.startup, "frame_ms": pace.ms });
         let traced = ray_query == Some(true);
         if !profile.traced {
             record["traced_skipped"] = json!("a CPU rasterizer runs Raster only");
@@ -1210,18 +1246,28 @@ impl Friend {
                 Some(_) => "the probe's capabilities say the device has no ray query",
                 None => "the probe wrote no capabilities",
             });
-            self.say("  Esta tarjeta no hace trazado de rayos aquí: solo se prueba Raster.");
+            self.say("    Esta tarjeta no hace trazado de rayos aquí: solo se prueba Raster.");
         }
         self.summary["adapters"][index] = record.clone();
         self.checkpoint();
+        (record, traced, pace)
+    }
 
+    /// Steps 2 to 6 on one adapter.
+    fn rest(
+        &mut self,
+        index: usize,
+        total: usize,
+        adapter: &Adapter,
+        (mut record, traced, pace): (Value, bool, Pace),
+    ) {
+        let dir = self.results.join(slug(index, &adapter.name));
         let steps = plan(adapter, traced);
-        let remaining: f64 = steps[1..]
-            .iter()
-            .map(|step| estimate(step, profile, startup, base_ms))
-            .sum();
+        let remaining: f64 = steps[1..].iter().map(|step| estimate(step, pace)).sum();
         self.say(format!(
-            "  Para esta tarjeta quedan unos {} minutos.",
+            "\n== Tarjeta {} de {total}: {} (unos {} minutos) ==",
+            index + 1,
+            adapter.name,
             (remaining / 60.0).ceil()
         ));
         for (number, step) in steps.iter().enumerate().skip(1) {
@@ -1230,7 +1276,7 @@ impl Friend {
                 number + 1,
                 step.title,
                 step.runs.len() * step.scenes.len() * step.resolutions.len(),
-                (estimate(step, profile, startup, base_ms) / 60.0).ceil()
+                (estimate(step, pace) / 60.0).ceil()
             ));
             let result = self.run_step(step, adapter, &dir);
             if let Some(steps) = record["steps"].as_array_mut() {
@@ -1445,11 +1491,11 @@ pub fn friend(command: FriendCommand) -> Result<bool, String> {
         ));
     }
     friend.say("\nPaso 0: una prueba corta, para tener algo que enviar aunque algo falle después.");
-    let (mut adapters, startup, base_ms) = match friend.smoke() {
+    let mut adapters = match friend.smoke() {
         Ok(found) => found,
         Err(error) => {
             friend.summary["smoke"] = json!({ "error": error });
-            (Vec::new(), 15.0, 5.0)
+            Vec::new()
         }
     };
     if adapters.is_empty() {
@@ -1487,24 +1533,10 @@ pub fn friend(command: FriendCommand) -> Result<bool, String> {
         friend.say("No se encontró ninguna tarjeta gráfica con Vulkan. Envía el zip igualmente.");
     }
 
-    let estimate_all: f64 = adapters
-        .iter()
-        .map(|adapter| {
-            plan(adapter, true)
-                .iter()
-                .map(|step| estimate(step, adapter.profile(), startup, base_ms))
-                .sum::<f64>()
-        })
-        .sum();
     friend.say(format!("\nTarjetas encontradas: {}", adapters.len()));
     for adapter in &adapters {
         friend.say(format!("  - {} ({})", adapter.name, adapter.profile().name));
     }
-    friend.say(format!(
-        "Tiempo estimado: unos {} minutos (una estimación; puede tardar más).",
-        (estimate_all / 60.0).ceil()
-    ));
-    friend.summary["estimated_minutes"] = json!((estimate_all / 60.0).ceil());
     if command.dry_run {
         for adapter in &adapters {
             for step in plan(adapter, true) {
@@ -1520,9 +1552,31 @@ pub fn friend(command: FriendCommand) -> Result<bool, String> {
         return Ok(true);
     }
 
+    // Every probe first: they time each adapter, and the estimate rests on that.
+    friend.say("\nPaso 1: una prueba corta en cada tarjeta, para calcular cuánto tardará todo.");
+    let probes: Vec<_> = adapters
+        .iter()
+        .enumerate()
+        .map(|(index, adapter)| friend.probe(index, adapter))
+        .collect();
+    let estimate_all: f64 = adapters
+        .iter()
+        .zip(&probes)
+        .map(|(adapter, (_, traced, pace))| {
+            plan(adapter, *traced)[1..]
+                .iter()
+                .map(|step| estimate(step, *pace))
+                .sum::<f64>()
+        })
+        .sum();
+    friend.say(format!(
+        "\nTiempo estimado para el resto: unos {} minutos (puede tardar más).",
+        (estimate_all / 60.0).ceil()
+    ));
+    friend.summary["estimated_minutes"] = json!((estimate_all / 60.0).ceil());
     let total = adapters.len();
-    for (index, adapter) in adapters.iter().enumerate() {
-        friend.adapter(index, total, adapter, startup, base_ms);
+    for (index, (adapter, probe)) in adapters.iter().zip(probes).enumerate() {
+        friend.rest(index, total, adapter, probe);
     }
     friend.summary["minutes"] = json!((started.elapsed().as_secs_f64() / 6.0).round() / 10.0);
     // The zip is complete before the questions: a person who walks away still has it.
