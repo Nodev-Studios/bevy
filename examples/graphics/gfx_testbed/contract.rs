@@ -8,12 +8,15 @@
 //! depth and the guides. It checks them and writes the result to the `contract` section of `report.json`; a clause
 //! that fails is a failure of the run. The readback waits for the GPU, which is why it is not in a measured frame.
 
-use crate::{drive, finish, ActiveScene, Args, Flags, Mode, Phase, Report, Run, Scene};
+use crate::{
+    drive, finish, ActiveScene, Args, Flags, Mode, Phase, Report, Run, Scene, TestbedCamera,
+};
 use bevy::{
     anti_alias::ray_reconstruction::{
         DenoiserSystems, ViewDenoiserGuideTextures, ViewDenoiserInputTextures,
         DENOISER_MISS_HIT_DISTANCE, DENOISER_SKY_VIEW_DEPTH,
     },
+    camera::Exposure,
     core_pipeline::{
         core_3d::main_opaque_pass_3d,
         schedule::{Core3d, Core3dSystems},
@@ -434,6 +437,7 @@ fn collect_readback(
     args: Res<Args>,
     scene: Option<Res<ActiveScene>>,
     objects: Query<(&ContractObject, &GlobalTransform)>,
+    camera: Query<Option<&Exposure>, With<TestbedCamera>>,
     mut report: ResMut<Report>,
 ) {
     let Some(result) = state.shared.result.lock().unwrap().take() else {
@@ -450,6 +454,13 @@ fn collect_readback(
         }
     };
 
+    let exposure = camera
+        .single()
+        .ok()
+        .flatten()
+        .copied()
+        .unwrap_or_default()
+        .exposure();
     let objects: Vec<(ContractObject, Vec3)> = objects
         .iter()
         .map(|(object, transform)| (*object, transform.translation()))
@@ -462,7 +473,7 @@ fn collect_readback(
         }),
         _ => None,
     };
-    let (section, failures) = check(&planes, geometry.as_ref(), state.capture_frame);
+    let (section, failures) = check(&planes, geometry.as_ref(), exposure, state.capture_frame);
     report.sections.insert("contract".into(), section);
     report.failures.extend(failures);
     info!(
@@ -779,6 +790,9 @@ fn clause(pass: bool, mut counts: Map<String, Value>) -> Value {
     Value::Object(counts)
 }
 
+/// The largest finite 16-bit float.
+const F16_MAX: f32 = 65504.0;
+
 /// Relative error tolerated between a hit distance read back and the traced one (plan section 5, row B1).
 const HIT_DISTANCE_TOLERANCE: f32 = 0.05;
 /// Relative error tolerated between the view depth read back and the traced one: the sphere is a mesh of 128 by 64
@@ -787,7 +801,12 @@ const VIEW_DEPTH_TOLERANCE: f32 = 0.01;
 /// Fewer checked pixels than this make a clause about a surface meaningless.
 const MIN_PIXELS: usize = 1000;
 
-fn check(planes: &[Plane], geometry: Option<&Geometry>, frame: u32) -> (Value, Vec<String>) {
+fn check(
+    planes: &[Plane],
+    geometry: Option<&Geometry>,
+    exposure: f32,
+    frame: u32,
+) -> (Value, Vec<String>) {
     let plane = |name: &str| {
         planes
             .iter()
@@ -796,27 +815,57 @@ fn check(planes: &[Plane], geometry: Option<&Geometry>, frame: u32) -> (Value, V
     };
     let (legacy, composed) = (plane("legacy"), plane("composed"));
     let (diffuse, specular) = (plane("diffuse"), plane("specular"));
-    let view_depth = plane("view_depth");
+    let (view_depth, normal_roughness) = (plane("view_depth"), plane("normal_roughness"));
     let (width, height) = (legacy.width, legacy.height);
+    // Everything read back about one pixel, for a failure to be diagnosed from the report alone.
+    let texels = |pixel: usize| {
+        json!({
+            "pixel": [pixel as u32 % width, pixel as u32 / width],
+            "legacy": legacy.texel(pixel),
+            "composed": composed.texel(pixel),
+            "diffuse": diffuse.texel(pixel),
+            "specular": specular.texel(pixel),
+            "view_depth": view_depth.texel(pixel),
+            "normal_roughness": normal_roughness.texel(pixel),
+        })
+    };
     let pixels = (width * height) as usize;
 
     let mut clauses = Map::new();
 
     // Plan section 5, row B1: every pixel within 0.01 * max(a, b) + 1e-3, in each colour channel.
-    let (mut outside, mut worst_excess, mut worst_pixel, mut max_difference) =
-        (0usize, 0f32, None, 0f32);
+    //
+    // With ReSTIR, upstream's initial pass parks a pixel's unexposed radiance in the Rgba16Float view target, which
+    // clips it at the largest 16-bit float; the contract splits and exposes it first and does not clip. Where the
+    // legacy colour is at or above that limit times the exposure it may be clipped: there the composed colour may
+    // be brighter, never darker. Everywhere else the tolerance holds as written.
+    // The legacy colour is itself stored as a 16-bit float: rounded, it may land up to half a step (2^-11) below.
+    let clip = F16_MAX * exposure * (1.0 - 1.0 / 2048.0);
+    let (mut outside, mut worst_excess, mut max_difference) = (0usize, 0f32, 0f32);
+    let (mut at_clip, mut outside_at_clip, mut darker_at_clip) = (0usize, 0usize, 0usize);
+    let mut outside_pixels = Vec::new();
     for pixel in 0..pixels {
         for channel in 0..3 {
             let (a, b) = (legacy.texel(pixel)[channel], composed.texel(pixel)[channel]);
             let difference = (a - b).abs();
-            let excess = difference - (0.01 * a.max(b) + 1e-3);
+            let tolerance = 0.01 * a.max(b) + 1e-3;
+            let excess = difference - tolerance;
             max_difference = max_difference.max(difference);
+            if a >= clip {
+                at_clip += 1;
+            }
             // A NaN on either side counts as outside.
             if excess.is_nan() || excess > 0.0 {
                 outside += 1;
-                if excess.is_nan() || excess > worst_excess {
-                    worst_excess = excess;
-                    worst_pixel = Some([pixel as u32 % width, pixel as u32 / width]);
+                worst_excess = worst_excess.max(excess);
+                if a >= clip {
+                    outside_at_clip += 1;
+                    if b < a - tolerance {
+                        darker_at_clip += 1;
+                    }
+                }
+                if outside_pixels.len() < 8 && outside_pixels.last() != Some(&pixel) {
+                    outside_pixels.push(pixel);
                 }
             }
         }
@@ -824,13 +873,19 @@ fn check(planes: &[Plane], geometry: Option<&Geometry>, frame: u32) -> (Value, V
     clauses.insert(
         "legacy_vs_composed".into(),
         clause(
-            outside == 0,
+            outside - outside_at_clip == 0 && darker_at_clip == 0,
             json_map(json!({
                 "channels": pixels * 3,
                 "channels_outside_tolerance": outside,
+                "as_written_pass": outside == 0,
+                "legacy_clip": clip,
+                "channels_at_or_above_legacy_clip": at_clip,
+                "outside_tolerance_at_legacy_clip": outside_at_clip,
+                "outside_tolerance_below_legacy_clip": outside - outside_at_clip,
+                "composed_darker_at_legacy_clip": darker_at_clip,
                 "max_abs_difference": max_difference,
                 "worst_excess": worst_excess,
-                "worst_pixel": worst_pixel,
+                "first_pixels_outside": outside_pixels.iter().map(|pixel| texels(*pixel)).collect::<Vec<_>>(),
             })),
         ),
     );
