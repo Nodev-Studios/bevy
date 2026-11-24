@@ -1,0 +1,48 @@
+[package]
+name = "bevy_graphics"
+version = "0.20.1"
+edition = "2024"
+description = "Provides tiered graphics settings for Bevy Engine"
+homepage = "https://bevy.org"
+repository = "https://github.com/bevyengine/bevy"
+license = "MIT OR Apache-2.0"
+keywords = ["bevy"]
+
+[features]
+# Makes the ray traced presets available (`RtLite`, `RtFull`). Without it every preset resolves to `Raster`.
+solari = ["dep:bevy_solari"]
+# Reads DLSS support from `bevy_anti_alias`.
+dlss = ["bevy_anti_alias/dlss"]
+
+[dependencies]
+# bevy
+bevy_anti_alias = { path = "../bevy_anti_alias", version = "0.20.1" }
+bevy_app = { path = "../bevy_app", version = "0.20.1" }
+bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
+bevy_math = { path = "../bevy_math", version = "0.20.1" }
+bevy_reflect = { path = "../bevy_reflect", version = "0.20.1" }
+bevy_render = { path = "../bevy_render", version = "0.20.1" }
+bevy_solari = { path = "../bevy_solari", version = "0.20.1", optional = true }
+
+# other
+serde = { version = "1", default-features = false, features = ["derive"] }
+wgpu-types = { version = "30", default-features = false }
+
+# Device-local memory is read from the raw Vulkan adapter: wgpu's `AdapterInfo` has no memory field.
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+ash = { version = "0.38", default-features = false }
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+
+[dev-dependencies]
+ron = "0.12"
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+rustdoc-args = [
+  "-Zunstable-options",
+  "--generate-link-to-definition",
+  "--generate-macro-expansion",
+]
+all-features = true
