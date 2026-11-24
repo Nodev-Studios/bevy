@@ -14,10 +14,7 @@ use bevy_core_pipeline::prepass::{
     MOTION_VECTOR_PREPASS_FORMAT,
 };
 use bevy_ecs::{prelude::*, resource::Resource, system::Commands};
-use bevy_pbr::{
-    resources::{AtmosphereTextures, GpuAtmosphere},
-    LinearSampler,
-};
+use bevy_pbr::resources::{AtmosphereSampler, AtmosphereTextures, GpuAtmosphere};
 use bevy_render::{
     diagnostic::RecordDiagnostics as _,
     render_resource::{
@@ -112,7 +109,7 @@ pub fn solari_lighting(
     view_uniforms: Res<ViewUniforms>,
     previous_view_uniforms: Res<PreviousViewUniforms>,
     atmosphere_uniforms: Option<Res<ComponentUniforms<GpuAtmosphere>>>,
-    linear_sampler: Res<LinearSampler>,
+    linear_sampler: Res<AtmosphereSampler>,
     fallback_image: Res<FallbackImage>,
     render_device: Res<RenderDevice>,
     mut ctx: RenderContext,
@@ -295,7 +292,7 @@ pub fn solari_lighting(
             s.world_cache.as_entire_binding(),
             s.constants.as_entire_binding(),
             atmosphere_transmittance_lut,
-            &linear_sampler.0,
+            &**linear_sampler,
             atmosphere.clone(),
         )),
     );
@@ -317,7 +314,7 @@ pub fn solari_lighting(
                     s.world_cache.as_entire_binding(),
                     s.constants.as_entire_binding(),
                     atmosphere_transmittance_lut,
-                    &linear_sampler.0,
+                    &**linear_sampler,
                     atmosphere,
                     previous_gbuffer,
                     previous_depth_buffer,
