@@ -93,9 +93,9 @@ pub fn prepare_tsr(
         // FSR 2's texture LOD bias for this ratio; at native resolution it is TAA's -1.
         mip_bias.0 = (1.0 / upscale.x).log2() - 1.0;
 
-        let fresh = context
-            .as_ref()
-            .is_none_or(|context| context.render_size != render_size || context.output_size != output_size);
+        let fresh = context.as_ref().is_none_or(|context| {
+            context.render_size != render_size || context.output_size != output_size
+        });
         let mut new_context = None;
         let context = match context {
             Some(context) if !fresh => context.into_inner(),
@@ -138,8 +138,11 @@ pub fn prepare_tsr(
         };
         let ycocg_color = texture("tsr_ycocg_color", render_size, TextureFormat::R32Uint);
         let motion_depth = texture("tsr_motion_depth", render_size, TextureFormat::Rgba16Float);
-        let motion_depth_clip =
-            texture("tsr_motion_depth_clip", render_size, TextureFormat::Rgba16Float);
+        let motion_depth_clip = texture(
+            "tsr_motion_depth_clip",
+            render_size,
+            TextureFormat::Rgba16Float,
+        );
         let luma_history_1 = texture("tsr_luma_history_1", render_size, TextureFormat::R32Uint);
         let luma_history_2 = texture("tsr_luma_history_2", render_size, TextureFormat::R32Uint);
         let history_1 = texture("tsr_history_1", output_size, TextureFormat::Rgba16Float);

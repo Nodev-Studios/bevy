@@ -48,6 +48,9 @@ fn insert_tsr(camera: &mut EntityCommands, resolved: &ResolvedGraphics) {
         });
 }
 
-fn detect_tsr(supported: Option<Res<TsrSupported>>, mut capabilities: ResMut<GraphicsCapabilities>) {
+fn detect_tsr(
+    supported: Option<Res<TsrSupported>>,
+    mut capabilities: ResMut<GraphicsCapabilities>,
+) {
     capabilities.tsr = supported.is_some();
 }

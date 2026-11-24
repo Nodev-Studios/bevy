@@ -170,8 +170,8 @@ impl TsrPipelines {
     fn queue(&mut self, pipeline_cache: &PipelineCache) -> TsrPipelineIds {
         *self.ids.get_or_insert_with(|| {
             let queue = |label: &'static str,
-                             layout: &BindGroupLayoutDescriptor,
-                             shader: &Handle<Shader>| {
+                         layout: &BindGroupLayoutDescriptor,
+                         shader: &Handle<Shader>| {
                 pipeline_cache.queue_compute_pipeline(ComputePipelineDescriptor {
                     label: Some(label.into()),
                     layout: vec![layout.clone()],
@@ -180,13 +180,21 @@ impl TsrPipelines {
                 })
             };
             TsrPipelineIds {
-                convert: queue("tsr_convert_pipeline", &self.convert_layout, &self.shaders[0]),
+                convert: queue(
+                    "tsr_convert_pipeline",
+                    &self.convert_layout,
+                    &self.shaders[0],
+                ),
                 activate: queue(
                     "tsr_activate_pipeline",
                     &self.activate_layout,
                     &self.shaders[1],
                 ),
-                upscale: queue("tsr_upscale_pipeline", &self.upscale_layout, &self.shaders[2]),
+                upscale: queue(
+                    "tsr_upscale_pipeline",
+                    &self.upscale_layout,
+                    &self.shaders[2],
+                ),
             }
         })
     }

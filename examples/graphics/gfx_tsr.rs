@@ -120,7 +120,11 @@ fn parse_args() -> Result<Args, String> {
             continue;
         }
         let value = words.next().ok_or(format!("{flag} needs a value"))?;
-        let number = |value: &str| value.parse::<u32>().map_err(|_| format!("{flag}: cannot read {value}"));
+        let number = |value: &str| {
+            value
+                .parse::<u32>()
+                .map_err(|_| format!("{flag}: cannot read {value}"))
+        };
         match flag.as_str() {
             "--scene" => args.scene = value,
             "--aa" => {
@@ -138,7 +142,9 @@ fn parse_args() -> Result<Args, String> {
                     .ok_or(format!("--scale takes a number in (0, 1], not {value}"))?;
             }
             "--res" => {
-                let (w, h) = value.split_once('x').ok_or(format!("--res takes WxH, not {value}"))?;
+                let (w, h) = value
+                    .split_once('x')
+                    .ok_or(format!("--res takes WxH, not {value}"))?;
                 args.res = UVec2::new(number(w)?, number(h)?);
             }
             "--warmup" => args.warmup = number(&value)?,
@@ -266,7 +272,8 @@ fn setup(world: &mut World) {
     let args = world.resource::<Args>().clone();
     if args.tsr && !world.contains_resource::<TsrSupported>() {
         let mut run = world.resource_mut::<Run>();
-        run.failures.push("TSR is not supported on this device".into());
+        run.failures
+            .push("TSR is not supported on this device".into());
         run.phase = Phase::Finishing;
         return;
     }
