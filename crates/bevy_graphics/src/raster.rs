@@ -98,7 +98,14 @@ mod tests {
 
     #[test]
     fn overrides_switch_single_effects() {
-        let all_on = raster_with(&GraphicsOverrides::default());
+        // Forced on, an effect is on whether or not the table has it.
+        let all_on = raster_with(&GraphicsOverrides {
+            ssao: Some(true),
+            ssr: Some(true),
+            contact_shadows: Some(true),
+            bloom: Some(true),
+            ..Default::default()
+        });
         assert!(all_on.contact_shadows.is_some());
         assert!(all_on.ambient_occlusion.is_some());
         assert!(all_on.reflections.is_some());
