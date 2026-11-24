@@ -1,0 +1,17 @@
+[package]
+name = "nrd_wgpu"
+version = "0.1.0"
+edition = "2024"
+description = "Runs NVIDIA's NRD denoisers as ordinary wgpu compute pipelines"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+
+[build-dependencies]
+cc = "1"
+cmake = "0.1"
+
+[dev-dependencies]
+pollster = "0.4"
