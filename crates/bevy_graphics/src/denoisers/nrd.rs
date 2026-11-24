@@ -1,11 +1,12 @@
 //! NRD, the denoiser of the ray traced rungs where DLSS Ray Reconstruction cannot run, on the ladder's
 //! cameras.
 //!
-//! Built with the `nrd` feature, this module sets [`GraphicsCapabilities::nrd`] and registers NRD's
-//! [`CameraBackend`]: a camera whose resolved denoiser is [`ResolvedDenoiser::Nrd`](crate::ResolvedDenoiser::Nrd)
-//! gets `bevy_anti_alias`'s [`Nrd`](bevy_anti_alias::nrd::Nrd) and `bevy_solari`'s
-//! [`SolariDenoiserInputs`](bevy_solari::realtime::SolariDenoiserInputs), which makes the lighting pass write
-//! what NRD reads. Without the feature it does nothing, and [`GraphicsCapabilities::nrd`] stays `false`.
+//! Built with the `nrd` feature, this module sets
+//! [`GraphicsCapabilities::nrd`](crate::GraphicsCapabilities::nrd) and registers NRD's
+//! [`CameraBackend`](crate::apply::backends::CameraBackend): a camera whose resolved denoiser is
+//! [`ResolvedDenoiser::Nrd`](crate::ResolvedDenoiser::Nrd) gets `bevy_anti_alias`'s `Nrd` and `bevy_solari`'s
+//! `SolariDenoiserInputs`, which makes the lighting pass write what NRD reads. Without the feature it does
+//! nothing, and the capability stays `false`.
 
 use bevy_app::App;
 

@@ -1,4 +1,4 @@
-//! NVIDIA's Real-time Denoisers (NRD): ReBLUR as the denoiser of ray traced lighting.
+//! NVIDIA's Real-time Denoisers (NRD): `ReBLUR` as the denoiser of ray traced lighting.
 //!
 //! NRD runs on any GPU the renderer drives through Vulkan, NVIDIA or not. It is the denoiser for
 //! a ray traced lighting pass where DLSS Ray Reconstruction cannot run.
@@ -72,14 +72,14 @@ impl Plugin for NrdPlugin {
 }
 
 /// A component for a 3d camera with ray traced lighting, to denoise that lighting with NRD's
-/// ReBLUR.
+/// `ReBLUR`.
 ///
 /// The camera must also make its lighting pass write [`ViewDenoiserInputTextures`]
 /// (`bevy_solari`'s `SolariDenoiserInputs`); without them NRD does nothing.
 #[derive(Component, Reflect, Clone, Default)]
 #[reflect(Component, Default, Clone)]
 pub struct Nrd {
-    /// The precision of the textures ReBLUR keeps its history in.
+    /// The precision of the textures `ReBLUR` keeps its history in.
     pub precision: NrdPrecision,
     /// Set to true to drop the accumulated history, after a camera cut for example. It is set
     /// back to false after the frame it applied to.
@@ -90,12 +90,17 @@ pub struct Nrd {
 #[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[reflect(Default, Clone, PartialEq)]
 pub enum NrdPrecision {
-    /// 16-bit floats, as NRD asks for. Measured on the RTX 5070 and on Mesa RADV, both drivers
-    /// round toward zero when they store a 16-bit float, so ReBLUR's history settles below its
-    /// target: the denoised light comes out a few percent dark (`vendor/nrd_wgpu/README.md`).
+    /// 16-bit floats, as NRD asks for. Both drivers tried (NVIDIA 620.73, Mesa RADV 26.3) round
+    /// toward zero when they store a 16-bit float, so `ReBLUR`'s history settles below its target.
+    /// Behind TAA on the RTX 5070 at 2560x1440 (2026-11-24) the frame's mean luma came out 1.2 to
+    /// 2.0 points darker than with [`Self::Full`] on three scenes, and its error against the
+    /// path-traced reference 0.03 to 0.38 points higher.
     Half,
-    /// 32-bit floats wherever NRD asks for 16-bit ones: no darkening, about 1.6 times the memory
-    /// of [`Self::Half`]. Needs `WgpuFeatures::FLOAT32_FILTERABLE`.
+    /// 32-bit floats wherever NRD asks for 16-bit ones. Measured as for [`Self::Half`], the mean
+    /// luma was within 0.4 % of the reference on two scenes and 1.6 % dark on the third, where
+    /// DLSS Ray Reconstruction is 1.5 % dark. About 1.6 times the memory of [`Self::Half`]: 647
+    /// against 401 MiB of textures at 2560x1440, 288 MiB at 1707x960. Needs
+    /// `WgpuFeatures::FLOAT32_FILTERABLE`.
     #[default]
     Full,
 }
