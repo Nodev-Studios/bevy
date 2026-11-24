@@ -2091,6 +2091,15 @@ required-features = ["bevy_graphics"]
 [package.metadata.example.gfx_caps]
 hidden = true
 
+[[example]]
+name = "gfx_tsr"
+path = "examples/graphics/gfx_tsr.rs"
+doc-scrape-examples = true
+required-features = ["area_light_luts"]
+
+[package.metadata.example.gfx_tsr]
+hidden = true
+
 # Assets
 [[example]]
 name = "alter_mesh"
