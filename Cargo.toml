@@ -1597,6 +1597,15 @@ wasm = false
 hidden = true
 
 [[example]]
+name = "gfx_testbed"
+path = "examples/graphics/gfx_testbed/main.rs"
+doc-scrape-examples = true
+required-features = ["bevy_solari", "area_light_luts"]
+
+[package.metadata.example.gfx_testbed]
+hidden = true
+
+[[example]]
 name = "spherical_area_lights"
 path = "examples/3d/spherical_area_lights.rs"
 doc-scrape-examples = true
