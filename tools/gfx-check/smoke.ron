@@ -1,0 +1,31 @@
+#![enable(implicit_some)]
+// The smoke matrix: every raw mode of the testbed on both scenes, short. Run it from the repository root:
+//
+//   cargo build --release --example gfx_testbed --features bevy_solari,area_light_luts
+//   cargo run --release -p gfx-check -- run tools/gfx-check/smoke.ron
+//
+// Every run must exit cleanly, pass the log gate and draw a frame that is not black. The reference must also
+// match itself, and the filtered Solari frame must stay near the reference.
+(
+    adapters: [
+        (name: "NVIDIA", resolutions: ["1280x720"]),
+        // The Ryzen's integrated GPU (Mesa RADV) is about 80 times slower than the RTX 5070: a small frame.
+        (name: "AMD", resolutions: ["640x360"]),
+    ],
+    scenes: ["interior", "many-lights"],
+    warmup: 30,
+    frames: 60,
+    seconds: 240,
+    runs: [
+        (name: "raster", args: ["--mode", "raster"]),
+        (name: "raster-taa", args: ["--mode", "raster", "--taa"]),
+        (name: "no-rt", args: ["--mode", "raster", "--force-no-rt"]),
+        (name: "reference", args: ["--mode", "reference"], frames: 600),
+        // The same accumulation started seven frames later: other noise, the same image.
+        (name: "reference-again", args: ["--mode", "reference"], warmup: 37, frames: 600, reference: "reference", max_error: 1.0),
+        (name: "solari", args: ["--mode", "solari"], reference: "reference"),
+        (name: "solari-restir-taa", args: ["--mode", "solari", "--restir", "--taa"], reference: "reference"),
+        (name: "orbit", args: ["--mode", "solari", "--restir", "--taa", "--camera", "orbit"]),
+        (name: "light-toggle", args: ["--mode", "solari", "--restir", "--taa", "--light-toggle-at", "20"]),
+    ],
+)
