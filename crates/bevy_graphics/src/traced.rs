@@ -13,26 +13,38 @@ mod solari {
     use bevy_solari::realtime::SolariLighting;
 
     /// The parameter set of [`GraphicsRung::RtLite`].
+    ///
+    /// Measured on the testbed's `interior` and `many-lights` at 1920x1080 output, Balanced (58 %), on the
+    /// RTX 5070 (2026-11-24, medians of three runs, error against Solari's path tracer with bloom off on both).
+    /// The first set (2 light candidates, 1 bounce) erred 2.85 / 4.08 % with DLSS-RR and 2.98 / 4.00 % with
+    /// NRD + TSR; this one errs 2.02 / 2.79 % and 2.55 / 3.56 %, for 0.43 ms of lighting pass instead of 0.22 on
+    /// `interior`. The rung's whole frame stays far under its gate; what makes it lighter than `full` is now the
+    /// internal resolution, one bounce fewer and no ReSTIR.
     pub fn lite() -> SolariLighting {
         SolariLighting {
+            // Off: with DLSS-RR on `interior` it nearly doubles the still camera's flicker (0.14 → 0.24 %)
+            // without lowering the error (2.02 → 2.04 %), for 0.7-0.85 ms more lighting. On `many-lights` it
+            // brings 4 candidates to 2.73 %, which 8 candidates without it nearly match (2.79 %) for 0.05 ms.
+            // Under NRD it changes nothing (B3).
             restir: false,
             // Read only by ReSTIR.
             confidence_weight_cap: 8.0,
-            // to tune: a quarter of `full`'s light candidates at the primary hit. With 4 the lighting pass
-            // took 0.57 of `full`'s on `interior` and 0.54 on `many-lights` (RTX 5070, 1920x1080 native,
-            // DLSS-RR, medians of three runs, 2026-11-24); the plan's gate is 0.5. With 2: 0.50 (0.648 against
-            // 1.307 ms) and 0.48 (0.502 against 1.053 ms), same runs and machine.
-            primary_di_samples: 2,
-            // Never read: with one bounce there is no second hit to light directly.
+            // 8, as `full`: against 4 it lowers `many-lights`' error from 3.33 to 2.79 % (DLSS-RR) and 3.65 to
+            // 3.56 % (NRD) for 0.05 ms, and leaves `interior` where it is. Against 2, `many-lights` 4.08 → 2.79.
+            primary_di_samples: 8,
             secondary_di_samples: 4,
-            // The first bounce is forced to end in the world cache, so one ray per pixel carries all the
-            // indirect light and reflections.
-            max_bounces: 1,
+            // 2: a second bounce before the world cache takes `interior`'s error from 2.85 to 2.02 % (DLSS-RR) and
+            // 2.98 to 2.55 % (NRD) for 0.14 ms; a third adds 0.02 ms and moves it 0.07 points (DLSS-RR) or nothing.
+            max_bounces: 2,
             world_cache_max_temporal_samples: 32.0,
             world_cache_direct_light_sample_count: 32,
             world_cache_max_gi_ray_distance: 50.0,
-            // to tune: half of `full`'s, so the cache takes twice as long to follow a change of light.
+            // Half of `full`'s. Updating as many cells as `full` does not shorten the lag after a light switches
+            // off (1.22 against 1.06 % five frames after, DLSS-RR; 5.83 against 5.74 % with NRD) nor change
+            // the world cache pass's time (C1).
             world_cache_cell_updates_soft_target: 20_000,
+            // 0.15 m, as `full`: 0.3 m raises `interior`'s error from 2.85 to 4.51 % for 0.01 ms; 0.1 m lowers it
+            // 0.03 points for 0.02 ms.
             world_cache_position_base_cell_size: 0.15,
             world_cache_position_lod_scale: 15.0,
             world_cache_force_opaque: true,
@@ -45,7 +57,10 @@ mod solari {
     /// upstream shows up here as a decision and not as a silent change of the rung.
     pub fn full() -> SolariLighting {
         SolariLighting {
-            // to tune: whether reuse pays for itself depends on the denoiser.
+            // Off with either denoiser. With NRD it changes neither error nor flicker (B3, and 2.32 against 2.30 %
+            // on `interior` at 2560x1440 Quality here). With DLSS-RR at 2560x1440 Quality (2026-11-24, RTX 5070)
+            // it lowers `many-lights`' error from 2.55 to 2.23 % but doubles `interior`'s flicker (0.13 → 0.24 %)
+            // without lowering its error (1.91 → 1.94 %), and `interior` is the scene shaped like the game's rooms.
             restir: false,
             confidence_weight_cap: 8.0,
             primary_di_samples: 8,
@@ -128,15 +143,11 @@ mod solari {
         }
 
         #[test]
-        fn lite_is_one_bounce_without_restir() {
-            let lite = lite();
+        fn lite_traces_less_than_full() {
+            let (lite, full) = (lite(), full());
             assert!(!lite.restir);
-            assert_eq!(lite.max_bounces, 1);
-            assert!(lite.primary_di_samples < full().primary_di_samples);
-            assert_eq!(
-                lite.world_cache_cell_updates_soft_target * 2,
-                full().world_cache_cell_updates_soft_target
-            );
+            assert!(lite.max_bounces < full.max_bounces);
+            assert!(lite.primary_di_samples <= full.primary_di_samples);
         }
 
         #[test]

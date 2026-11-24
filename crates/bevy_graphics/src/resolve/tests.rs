@@ -268,7 +268,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("2060", 5.9),
             P1080,
-            (RtLite, D_RR, U_RR, Balanced),
+            (RtLite, D_RR, U_RR, Quality),
             &[F::VideoMemoryBelowRtFull],
         ),
         row(
@@ -276,7 +276,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("4060", 7.9),
             P1080,
-            (RtLite, D_RR, U_RR, Balanced),
+            (RtLite, D_RR, U_RR, Quality),
             &[F::VideoMemoryBelowRtFull],
         ),
         row(
@@ -284,7 +284,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("4070", 10.9),
             P1080,
-            (RtLite, D_RR, U_RR, Balanced),
+            (RtLite, D_RR, U_RR, Quality),
             &[F::VideoMemoryBelowRtFull],
         ),
         row(
@@ -308,7 +308,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("3060", 11.9),
             P1080,
-            (RtLite, D_RR, U_RR, Balanced),
+            (RtLite, D_RR, U_RR, Quality),
             &[F::NotOnFastRtList],
         ),
         row(
@@ -316,7 +316,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("5060 Ti", 15.9),
             P1080,
-            (RtLite, D_RR, U_RR, Balanced),
+            (RtLite, D_RR, U_RR, Quality),
             &[F::NotOnFastRtList],
         ),
         row(
@@ -324,7 +324,7 @@ fn rows() -> Vec<Row> {
             auto(),
             radeon("9060 XT", 15.9),
             P1080,
-            (RtLite, D::Nrd, U::Tsr, Balanced),
+            (RtLite, D::Nrd, U::Tsr, Quality),
             &[F::NotOnFastRtList],
         ),
         row(
@@ -348,7 +348,7 @@ fn rows() -> Vec<Row> {
             auto(),
             radeon("7900 GRE", 15.9),
             P1440,
-            (RtLite, D::Nrd, U::Tsr, Performance),
+            (RtLite, D::Nrd, U::Tsr, Balanced),
             &[F::NotOnFastRtList],
         ),
         // The rules are tried in order: the first that fails gives the reason.
@@ -418,7 +418,7 @@ fn rows() -> Vec<Row> {
             preset(P::RtLite),
             llvmpipe(),
             P1080,
-            (RtLite, D::Nrd, U::Tsr, Balanced),
+            (RtLite, D::Nrd, U::Tsr, Quality),
             &[],
         ),
         row(
@@ -434,7 +434,7 @@ fn rows() -> Vec<Row> {
             preset(P::RtLite),
             rtx_5070(),
             P1080,
-            (RtLite, D_RR, U_RR, Balanced),
+            (RtLite, D_RR, U_RR, Quality),
             &[],
         ),
         row(
@@ -782,19 +782,19 @@ fn rows() -> Vec<Row> {
             &[],
         ),
         row(
-            "RtLite 1080p: Balanced",
+            "RtLite 1080p: Quality",
             preset(P::RtLite),
             radeon("7700 XT", 11.9),
             P1080,
-            (RtLite, D::Nrd, U::Tsr, Balanced),
+            (RtLite, D::Nrd, U::Tsr, Quality),
             &[],
         ),
         row(
-            "RtLite 1440p: Performance",
+            "RtLite 1440p: Balanced",
             preset(P::RtLite),
             radeon("7700 XT", 11.9),
             P1440,
-            (RtLite, D::Nrd, U::Tsr, Performance),
+            (RtLite, D::Nrd, U::Tsr, Balanced),
             &[],
         ),
         row(
