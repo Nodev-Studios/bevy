@@ -18,7 +18,7 @@ use bevy_render::{
     texture::{CachedTexture, TextureCache},
     view::ExtractedView,
 };
-use tracing::warn;
+use tracing::info;
 
 /// `TsrParams` in `params.wesl`.
 #[derive(ShaderType, Clone, Default)]
@@ -121,8 +121,8 @@ pub fn prepare_tsr(
                 }
                 continue;
             }
-            bevy_utils::once!(warn!(
-                "TSR's FSR 3.1 cannot run on this device (it needs Vulkan): SGSR 2 runs instead"
+            bevy_utils::once!(info!(
+                "TSR runs SGSR 2: its FSR 3.1 needs Vulkan, with wgpu's SPIR-V passthrough"
             ));
         }
         entity_commands.remove::<TsrFsrView>();

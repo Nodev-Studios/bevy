@@ -163,14 +163,18 @@ impl Default for Tsr {
 }
 
 /// The upscaler behind [`Tsr`].
+///
+/// FSR 3.1 is the default: on an RTX 5070 at 2560x1440 output it flickered 0.7 to 0.9 times as much as native TAA
+/// on still frames where SGSR 2 flickered 2.4 to 4.5 times as much, and it stayed closer to a supersampled frame
+/// (the D1 upscaler race, 2026-11-24).
 #[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[reflect(Default, Clone, PartialEq)]
 pub enum TsrAlgorithm {
     /// Snapdragon Game Super Resolution 2: three compute passes in WESL, on every device TSR supports.
-    #[default]
     Sgsr2,
     /// AMD's FSR 3.1 (`FidelityFX` Super Resolution): seven compute passes of AMD's SPIR-V, on Vulkan only
-    /// ([`TsrSupported::fsr3`]). Where it cannot run, SGSR 2 runs instead and a warning is logged once.
+    /// ([`TsrSupported::fsr3`]). Where it cannot run, SGSR 2 runs instead, and that is logged once.
+    #[default]
     Fsr3,
 }
 

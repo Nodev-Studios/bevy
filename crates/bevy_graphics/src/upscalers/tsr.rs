@@ -2,7 +2,8 @@
 //!
 //! [`Tsr`] lives in `bevy_anti_alias` and is in every build. [`GraphicsCapabilities::tsr`] is true when
 //! `bevy_anti_alias` found the device able to run it ([`TsrSupported`]): compute shaders and write-only storage
-//! textures of `R32Uint` and `Rgba16Float`, which is every device but WebGL 2's.
+//! textures of `R32Uint` and `Rgba16Float`, which is every device but WebGL 2's. The camera gets `Tsr`'s default
+//! algorithm, AMD's FSR 3.1, which needs Vulkan; elsewhere TSR runs SGSR 2 in its place.
 
 use crate::{
     apply::{
