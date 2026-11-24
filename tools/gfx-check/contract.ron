@@ -1,0 +1,19 @@
+#![enable(implicit_some)]
+// B1's gates on the denoiser contract (plan section 5 row B1, section 10 items 1 and 3). From the repository root:
+//   target/release/gfx-check run <this file> --testbed <gfx_testbed built without dlss> --out <dir>
+// Every --contract-check run fails (exit 1) when one of its clauses fails; the clauses are in report.json, "contract".
+(
+    adapters: [(name: "NVIDIA", resolutions: ["1280x720"]), (name: "AMD", resolutions: ["640x360"])],
+    scenes: ["contract", "interior"],
+    warmup: 60,
+    frames: 30,
+    seconds: 240,
+    runs: [
+        (name: "contract-check", args: ["--mode", "solari", "--contract-check"]),
+        (name: "contract-check-restir", args: ["--mode", "solari", "--restir", "--contract-check"]),
+        (name: "debug-diffuse", args: ["--mode", "solari", "--debug", "diffuse"], adapters: ["NVIDIA"]),
+        (name: "debug-specular", args: ["--mode", "solari", "--debug", "specular"], adapters: ["NVIDIA"]),
+        (name: "debug-hitdist", args: ["--mode", "solari", "--debug", "hitdist"], adapters: ["NVIDIA"]),
+        (name: "debug-hitdist-restir", args: ["--mode", "solari", "--restir", "--debug", "hitdist"], adapters: ["NVIDIA"]),
+    ],
+)
