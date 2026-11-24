@@ -5,7 +5,9 @@
 //! `VK_EXT_shader_float8`, `VK_KHR_shader_float16_int8`, `VK_EXT_subgroup_size_control`,
 //! `VK_KHR_synchronization2`, ...), and the device AMD's own sample creates
 //! (`Kits/Cauldron2/framework/render/vk/device_vk.cpp`), which also asks for `VK_KHR_compute_shader_derivatives`
-//! because FSR 4's INT8 model uses quad operations in compute shaders.
+//! because FSR 4's INT8 model uses quad operations in compute shaders. That sample also turns on every Vulkan 1.2
+//! feature the device has; the ones wgpu never chains (8-bit storage, scalar block layout, standard uniform buffer
+//! layout, subgroup extended types, separate depth/stencil layouts) are turned on here the same way.
 //!
 //! wgpu builds the feature structs of the extensions it enables itself *before* this callback runs, and their
 //! fields are private. Chaining a second struct of the same type is invalid Vulkan, so a feature whose struct
@@ -186,7 +188,72 @@ pub unsafe fn register_device_extensions(
         }
     }
 
+    // Vulkan 1.2 features AMD's sample turns on wholesale (it chains the whole `VkPhysicalDeviceVulkan12Features`
+    // back as queried) and wgpu 30 never chains: chained here with every bit the device reports.
+    if api_version >= vk::API_VERSION_1_2 {
+        // SAFETY: each is a 1.2 core feature struct no one else chains, holding only bits the device supports.
+        unsafe {
+            chain_supported::<vk::PhysicalDevice8BitStorageFeatures>(
+                instance,
+                physical_device,
+                args,
+                &mut changes,
+                "8-bit storage",
+            );
+            chain_supported::<vk::PhysicalDeviceScalarBlockLayoutFeatures>(
+                instance,
+                physical_device,
+                args,
+                &mut changes,
+                "scalarBlockLayout",
+            );
+            chain_supported::<vk::PhysicalDeviceUniformBufferStandardLayoutFeatures>(
+                instance,
+                physical_device,
+                args,
+                &mut changes,
+                "uniformBufferStandardLayout",
+            );
+            chain_supported::<vk::PhysicalDeviceShaderSubgroupExtendedTypesFeatures>(
+                instance,
+                physical_device,
+                args,
+                &mut changes,
+                "shaderSubgroupExtendedTypes",
+            );
+            chain_supported::<vk::PhysicalDeviceSeparateDepthStencilLayoutsFeatures>(
+                instance,
+                physical_device,
+                args,
+                &mut changes,
+                "separateDepthStencilLayouts",
+            );
+        }
+    }
+
     changes
+}
+
+/// Queries a core feature struct and chains it as queried: every bit the device supports turned on.
+///
+/// # Safety
+/// `T` must be a Vulkan feature struct whose `Default` sets its `sType`, of the device's core version, that no
+/// other struct in the chain duplicates.
+unsafe fn chain_supported<T: Default + 'static>(
+    instance: &ash::Instance,
+    physical_device: vk::PhysicalDevice,
+    args: &mut CreateDeviceCallbackArgs,
+    changes: &mut DeviceChanges,
+    name: &'static str,
+) {
+    let mut feature = T::default();
+    // SAFETY: forwarded; the struct's `pNext` is null from `Default`, and reset after the query.
+    unsafe {
+        query_features(instance, physical_device, (&raw mut feature).cast());
+        (*(&raw mut feature).cast::<vk::BaseOutStructure>()).p_next = core::ptr::null_mut();
+        chain_feature(args, None, feature, changes);
+    }
+    changes.features.push(name);
 }
 
 fn float8_features(

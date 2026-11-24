@@ -44,8 +44,11 @@ The SDK documents no Vulkan device requirement. `register_device_extensions`, ca
 device, enables what the DLL names in its binary and what AMD's sample device enables
 (`Kits/Cauldron2/framework/render/vk/device_vk.cpp`), where the adapter has it and wgpu does not already chain the
 feature struct (a second struct of the same type is invalid Vulkan): `VK_KHR_cooperative_matrix`,
-`VK_EXT_shader_float8` (with `shaderFloat8CooperativeMatrix`), `VK_KHR_compute_shader_derivatives` and
-`synchronization2`. What it cannot enable, because wgpu owns those structs and their fields are private, is listed
+`VK_EXT_shader_float8` (with `shaderFloat8CooperativeMatrix`), `VK_KHR_compute_shader_derivatives`,
+`synchronization2`, and the Vulkan 1.2 features the sample turns on wholesale that wgpu never chains (8-bit storage,
+scalar block layout, standard uniform buffer layout, subgroup extended types, separate depth/stencil layouts). Bevy
+asks wgpu for every adapter feature, so `SHADER_F16` (float16 and 16-bit storage) and, where wgpu reports it,
+`EXPERIMENTAL_COOPERATIVE_MATRIX` (which makes wgpu enable `cooperativeMatrix` itself) are on already. What it cannot enable, because wgpu owns those structs and their fields are private, is listed
 in `src/device.rs`; the first a Windows run may miss is `computeFullSubgroups`.
 
 `examples/device_probe.rs` creates a device the way Bevy does with that callback, under Vulkan's validation

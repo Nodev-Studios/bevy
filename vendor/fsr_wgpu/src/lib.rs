@@ -614,10 +614,13 @@ mod tests {
 
     #[test]
     fn provider_major_version() {
+        // The providers' names are `MAKE_VERSION_STRING(major, minor, patch)` in the SDK's open API code
+        // (v1.1.4 `ffx-api/src/ffx_provider_fsr3upscale.cpp`); these three are the strings inside FSR SDK 2.4.0's
+        // `amd_fidelityfx_upscaler_vk.dll`.
         for (name, major) in [
             ("4.1.2", Some(4)),
-            ("FSR 3.1.6", Some(3)),
-            ("AMD FSR Upscaler 4.0.3", Some(4)),
+            ("3.1.6", Some(3)),
+            ("2.3.4", Some(2)),
             ("", None),
         ] {
             let version = ProviderVersion {
