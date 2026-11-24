@@ -2065,6 +2065,15 @@ category = "Application"
 wasm = false
 
 [[example]]
+name = "gfx_apply"
+path = "examples/graphics/gfx_apply.rs"
+doc-scrape-examples = true
+required-features = ["bevy_graphics", "bevy_solari"]
+
+[package.metadata.example.gfx_apply]
+hidden = true
+
+[[example]]
 name = "gfx_caps"
 path = "examples/graphics/gfx_caps.rs"
 doc-scrape-examples = true
