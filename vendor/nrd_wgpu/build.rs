@@ -24,10 +24,31 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let lib_dir = out_dir.join("lib");
+    let shader_dir = out_dir.join("nrd-shaders");
 
     // NRD's CMake project builds its shader compiler driver (ShaderMake) for the host, downloads a DXC binary,
     // compiles NRD's shaders to SPIR-V and embeds them in the library.
-    let cmake_dir = cmake::Config::new(&sdk)
+    let mut config = cmake::Config::new(&sdk);
+    #[cfg(unix)]
+    if env::var("CARGO_CFG_TARGET_OS").unwrap() == "windows" {
+        // Cross-building for Windows. Two things in NRD's project assume a Windows host:
+        // - ShaderMake is still built for this machine, as `ShaderMake`, but is then called by the target's name
+        //   for an executable, `ShaderMake.exe`. Give it that name.
+        let tool_dir = out_dir.join("build/_deps/shadermake-build/build");
+        fs::create_dir_all(&tool_dir).unwrap();
+        let alias = tool_dir.join("ShaderMake.exe");
+        if alias.symlink_metadata().is_err() {
+            std::os::unix::fs::symlink("ShaderMake", alias).unwrap();
+        }
+        // - its resource script includes `version.h`, and the file is `Version.h`: a different file on a
+        //   case-sensitive file system. The folder the shaders are generated into is on the include path.
+        fs::create_dir_all(&shader_dir).unwrap();
+        let alias = shader_dir.join("version.h");
+        if alias.symlink_metadata().is_err() {
+            std::os::unix::fs::symlink(sdk.join("Resources/Version.h"), alias).unwrap();
+        }
+    }
+    config
         // Always the release build: a debug build links the debug C runtime on Windows, which Rust never does.
         .profile("Release")
         .define("NRD_STATIC_LIBRARY", "ON")
@@ -38,13 +59,18 @@ fn main() {
         .define("NRD_EMBEDS_SPIRV_SHADERS", "ON")
         .define("NRD_EMBEDS_DXIL_SHADERS", "OFF")
         .define("NRD_EMBEDS_DXBC_SHADERS", "OFF")
-        .define("NRD_SHADERS_PATH", out_dir.join("nrd-shaders"))
+        .define("SHADERMAKE_FIND_FXC", "OFF")
+        .define("NRD_SHADERS_PATH", &shader_dir)
         .define("CMAKE_ARCHIVE_OUTPUT_DIRECTORY", &lib_dir)
         .define("CMAKE_LIBRARY_OUTPUT_DIRECTORY", &lib_dir)
         .define("CMAKE_RUNTIME_OUTPUT_DIRECTORY", &lib_dir)
-        .build_target("NRD")
-        .build()
-        .join("build");
+        .build_target("NRD");
+    if cc::Build::new().cpp(true).get_compiler().is_like_clang_cl() {
+        // NRD's math library uses SSSE3 intrinsics. NRD's project enables them for GCC and Clang and relies on
+        // MSVC not asking; clang-cl does ask.
+        config.cxxflag("-mssse3");
+    }
+    let cmake_dir = config.build().join("build");
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     // Where a multi-configuration generator (Visual Studio) puts the libraries.
