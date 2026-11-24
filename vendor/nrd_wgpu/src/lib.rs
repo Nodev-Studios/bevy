@@ -614,6 +614,29 @@ impl Denoiser {
         self.size
     }
 
+    /// Bytes of GPU memory in the textures this denoiser owns: NRD's two pools and the packed and denoised
+    /// copies around them.
+    pub fn texture_bytes(&self) -> u64 {
+        self.permanent_pool
+            .iter()
+            .chain(&self.transient_pool)
+            .chain([
+                &self.packed_diffuse,
+                &self.packed_specular,
+                &self.packed_normal_roughness,
+                &self.packed_view_z,
+                &self.packed_motion_vectors,
+                &self.denoised_diffuse,
+                &self.denoised_specular,
+            ])
+            .map(|view| {
+                let texture = view.texture();
+                let texel = texture.format().block_copy_size(None).unwrap_or(0);
+                texture.width() as u64 * texture.height() as u64 * texel as u64
+            })
+            .sum()
+    }
+
     /// The version of the NRD library this crate was built against, as `[major, minor, build]`.
     pub fn library_version() -> [u32; 3] {
         // The version is a property of the library, but NRD only reports it through an instance.
@@ -662,7 +685,11 @@ impl Denoiser {
                 "max_accumulated_frames is at most 63",
             ));
         }
-        if settings.hit_distance_parameters.iter().any(|p| !(*p > 0.0)) {
+        if settings
+            .hit_distance_parameters
+            .iter()
+            .any(|p| p.is_nan() || *p <= 0.0)
+        {
             return Err(NrdError::InvalidSettings(
                 "hit_distance_parameters must be positive",
             ));
@@ -720,7 +747,7 @@ impl Denoiser {
         if frame.motion_vector_scale.contains(&0.0) {
             return Err(NrdError::InvalidSettings("motion_vector_scale cannot be 0"));
         }
-        if !(frame.denoising_range > 0.0) {
+        if frame.denoising_range.is_nan() || frame.denoising_range <= 0.0 {
             return Err(NrdError::InvalidSettings(
                 "denoising_range must be positive",
             ));
@@ -1180,8 +1207,10 @@ fn passthrough_module(
 
 fn spirv_words(bytes: &[u8]) -> Vec<u32> {
     bytes
-        .chunks_exact(4)
-        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
         .collect()
 }
 

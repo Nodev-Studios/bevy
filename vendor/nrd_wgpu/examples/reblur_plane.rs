@@ -20,6 +20,12 @@
 //! `--hit-distance random` reproduce the two ways the mean was seen to drift (see the README).
 //! Exit code 0 when every check passes.
 
+#![allow(
+    clippy::disallowed_methods,
+    clippy::needless_range_loop,
+    reason = "a standalone check outside Bevy's workspace: no bevy_math, and the two lobes are indexed together"
+)]
+
 use nrd_wgpu::{
     Denoiser, DenoiserInputs, DenoiserKind, DenoiserOutputs, FrameSettings,
     HitDistanceReconstruction, ReblurSettings, TexturePrecision, OUTPUT_FORMAT,
@@ -318,8 +324,11 @@ struct Run {
     denoised: [Vec<[f32; 3]>; 2],
     non_finite: u64,
     shaders: Vec<(String, bool)>,
-    /// Wall-clock time of a frame with no upload and no readback, from submission to an idle GPU.
-    milliseconds_per_frame: f64,
+    /// Wall-clock time of a frame with no upload and no readback, from recording it to an idle GPU: the
+    /// denoiser's three passes and the CPU work of recording them. The median and the fastest of the timed
+    /// frames: the GPU is shared with the desktop, and the fastest frame is the one least disturbed.
+    frame_milliseconds: [f64; 2],
+    texture_bytes: u64,
 }
 
 fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
@@ -409,7 +418,8 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
         denoised: [vec![[0.0; 3]; pixels], vec![[0.0; 3]; pixels]],
         non_finite: 0,
         shaders: Vec::new(),
-        milliseconds_per_frame: 0.0,
+        frame_milliseconds: [0.0; 2],
+        texture_bytes: denoiser.texture_bytes(),
     };
     let mut diffuse_texels = vec![[0u16; 4]; pixels];
     let mut specular_texels = vec![[0u16; 4]; pixels];
@@ -542,13 +552,16 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
         .collect();
 
     // The cost of a frame, measured on frames of their own: the last inputs again, nothing uploaded or read.
-    const TIMED_FRAMES: u32 = 20;
+    // The frames before the timed ones give the GPU time to leave its power-saving clocks.
+    const WARM_UP_FRAMES: u32 = 60;
+    const TIMED_FRAMES: u32 = 60;
     let camera = Camera {
         x: speed * (frames - 1) as f32,
         aspect,
     };
-    let started = Instant::now();
-    for frame in frames..frames + TIMED_FRAMES {
+    let mut timings = Vec::new();
+    for frame in frames..frames + WARM_UP_FRAMES + TIMED_FRAMES {
+        let started = Instant::now();
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
         denoiser
             .denoise(
@@ -562,8 +575,12 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
             .expect("the frame could not be recorded");
         gpu.queue.submit([encoder.finish()]);
         gpu.device.poll(PollType::wait_indefinitely()).unwrap();
+        if frame >= frames + WARM_UP_FRAMES {
+            timings.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
     }
-    result.milliseconds_per_frame = started.elapsed().as_secs_f64() * 1000.0 / TIMED_FRAMES as f64;
+    timings.sort_by(f64::total_cmp);
+    result.frame_milliseconds = [timings[timings.len() / 2], timings[0]];
     result
 }
 
@@ -697,8 +714,13 @@ fn main() -> ExitCode {
     println!("\n== still: uniform light, camera at rest ==");
     let still = run(&gpu, options, Scenario::Still);
     println!(
-        "{:.2} ms per frame (wall clock from submission to an idle GPU, 20 frames, no upload or readback)",
-        still.milliseconds_per_frame
+        "{:.2} ms per frame, median of 60 frames after 60 warm-up frames; fastest {:.2} ms \
+         (wall clock from recording a frame to an idle GPU, no upload or readback)",
+        still.frame_milliseconds[0], still.frame_milliseconds[1]
+    );
+    println!(
+        "{:.1} MiB in the denoiser's textures",
+        still.texture_bytes as f64 / (1024.0 * 1024.0)
     );
     println!("lobe     channel  truth   noisy mean  noisy var   denoised mean  denoised var  mean error  var ratio");
     let mut worst_mean_error: f64 = 0.0;
