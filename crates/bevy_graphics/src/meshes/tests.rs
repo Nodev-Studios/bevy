@@ -19,7 +19,7 @@ fn solari_traces(mesh: &Mesh) -> bool {
 
 fn copy_of(mesh: &Mesh, needs: MeshRaytracingFlags) -> Mesh {
     match fit(mesh, needs) {
-        Ok(Fitted::Copy(copy)) => copy,
+        Ok(Fitted::Copy(copy)) => *copy,
         other => panic!("expected a fitted copy, got {other:?}"),
     }
 }

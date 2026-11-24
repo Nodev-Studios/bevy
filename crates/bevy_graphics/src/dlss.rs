@@ -19,6 +19,8 @@
 //! - Only one of the two features is on a camera at a time, and both are removed when neither is the
 //!   resolved upscaler.
 
+#[cfg(doc)]
+use crate::ResolvedGraphics;
 #[cfg(feature = "dlss")]
 pub(crate) use on::*;
 

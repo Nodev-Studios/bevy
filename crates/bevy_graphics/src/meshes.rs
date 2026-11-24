@@ -24,6 +24,8 @@
 //! mode changes afterwards is not noticed. On `Raster` the ladder's `RaytracingMesh3d`s and the fitted assets
 //! are removed, so nothing is kept for a renderer that is not running, and both counts are 0.
 
+#[cfg(doc)]
+use crate::ResolvedGraphics;
 use bevy_asset::RenderAssetUsages;
 use bevy_mesh::{
     Indices, Mesh, MeshRaytracingFlags, MeshVertexAttribute, PrimitiveTopology,
@@ -49,7 +51,7 @@ pub enum Fitted {
     /// The mesh can be traced as it is.
     AsIs,
     /// The mesh needs this copy to be traced.
-    Copy(Mesh),
+    Copy(Box<Mesh>),
 }
 
 /// Why a mesh cannot be made ray traceable.
@@ -185,7 +187,7 @@ pub fn fit(mesh: &Mesh, needs: MeshRaytracingFlags) -> Result<Fitted, Unfit> {
             );
         }
     }
-    Ok(Fitted::Copy(fitted))
+    Ok(Fitted::Copy(Box::new(fitted)))
 }
 
 /// Called by the apply layer when [`GraphicsPlugin`](crate::GraphicsPlugin) is built.
@@ -355,7 +357,7 @@ mod systems {
                 None => {
                     let fitted = match fit(mesh, key.1) {
                         Ok(Fitted::AsIs) => Ok(None),
-                        Ok(Fitted::Copy(copy)) => Ok(Some(meshes.add(copy))),
+                        Ok(Fitted::Copy(copy)) => Ok(Some(meshes.add(*copy))),
                         Err(reason) => {
                             warn!(
                                 "graphics: mesh {source} cannot be ray traced and is missing from traced \

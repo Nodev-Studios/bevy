@@ -22,7 +22,7 @@ use bevy::{
     asset::RenderAssetUsages,
     camera::{visibility::NoFrustumCulling, CameraMainTextureUsages},
     core_pipeline::tonemapping::Tonemapping,
-    diagnostic::{DiagnosticPath, DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    diagnostic::{Diagnostic, DiagnosticPath, DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     graphics::{
         GraphicsCamera, GraphicsCapabilities, GraphicsOverrides, GraphicsPlugin, GraphicsPreset,
         GraphicsSettings, ResolvedGraphics, UpscaleQuality, UpscalerChoice,
@@ -77,7 +77,7 @@ struct Args {
     /// frames each stage is held before its screenshot (default 120)
     #[argh(option, default = "120")]
     frames: u32,
-    /// the window's size as WIDTHxHEIGHT (default 1280x720)
+    /// the window's size as `WIDTHxHEIGHT` (default 1280x720)
     #[argh(option, default = "String::from(\"1280x720\")")]
     res: String,
     /// the folder the screenshots and `report.txt` go to (default `gfx_apply_out`)
@@ -573,7 +573,7 @@ fn finish_stage(
     let milliseconds = |path: &'static str| {
         diagnostics
             .get(&DiagnosticPath::new(path))
-            .and_then(|diagnostic| diagnostic.average())
+            .and_then(Diagnostic::average)
     };
     if let Some(frame) = milliseconds("frame_time") {
         line += &format!("\n  frame: {frame:.2} ms");
@@ -584,7 +584,7 @@ fn finish_stage(
             let path = format!("render/solari_lighting/{pass}/elapsed_gpu");
             let ms = diagnostics
                 .get(&DiagnosticPath::new(path))
-                .and_then(|diagnostic| diagnostic.average())?;
+                .and_then(Diagnostic::average)?;
             Some((pass, ms))
         })
         .collect();

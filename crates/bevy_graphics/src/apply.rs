@@ -22,7 +22,7 @@
 //!   shadows are switched on for the lights that cast shadow maps. What the game set is remembered on the
 //!   light ([`LightShadowState`]) and restored. A flag the game changes while the ladder holds another value
 //!   is taken as the game's new wish, unless it is set to the very value the ladder had written.
-//! - **[`GraphicsOverrides`](crate::GraphicsOverrides)**: `ssao`, `ssr`, `contact_shadows` and `bloom`
+//! - **[`GraphicsOverrides`]**: `ssao`, `ssr`, `contact_shadows` and `bloom`
 //!   switch that effect whatever the table says (the first three exist on `Raster` only); `restir` and
 //!   `max_bounces` change the traced parameter set; `shadows: Some(false)` switches every shadow map off on
 //!   `Raster`, while `Some(true)` is the same as `None`: a light the game left without shadows gets none.

@@ -1,8 +1,8 @@
 //! What the `RtLite` and `RtFull` rungs put on a camera: the two parameter sets of `SolariLighting`.
 //!
-//! Both rungs are one renderer, `bevy_solari`'s realtime path. [`lite`] cuts every light path at its first
+//! Both rungs are one renderer, `bevy_solari`'s realtime path. `lite()` cuts every light path at its first
 //! bounce, which then ends in the world cache, and spends less on direct light and on keeping the cache
-//! fresh; [`full`] is the renderer as its authors ship it.
+//! fresh; `full()` is the renderer as its authors ship it.
 
 #[cfg(feature = "solari")]
 pub use solari::*;
