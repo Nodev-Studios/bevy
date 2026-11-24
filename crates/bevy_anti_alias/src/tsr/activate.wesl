@@ -12,6 +12,7 @@
 // - Motion is SGSR 2's clip-space motion, written by `convert.wesl`; its non-Y-up branch applies.
 // - Reads at a texel the original gathers from are `textureLoad`s; its `textureGatherOffset`s over the
 //   motion-depth texture stay gathers, in the original's order, unrolled because WGSL wants constant offsets.
+// - Luma is decoded with `convert.wesl`'s rounded steps.
 // - The translucency mask is zero (see `convert.wesl`), so the fourth channel written here holds only the luma
 //   flag, as 0 or 1, instead of `floor(mask) + 0.5 * flag`.
 //
@@ -58,7 +59,7 @@ import package::tsr::params::TsrParams;
 const EPSILON: f32 = 1.19e-07;
 
 fn decode_color_y(sample32: u32) -> f32 {
-    return f32(sample32 >> 21u) * (1.0 / 2047.5);
+    return f32(sample32 >> 21u) * (1.0 / 2047.0);
 }
 
 // How well a previous depth explains the current one, after Akeley and Su's minimum triangle separation, as in

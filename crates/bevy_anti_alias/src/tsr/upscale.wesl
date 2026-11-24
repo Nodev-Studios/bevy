@@ -11,6 +11,7 @@
 //   weight it carries in the history's alpha (`Wfactor`, the larger of the mask and the previous weight) stays
 //   zero from the first frame on. Both are dropped, with every term they scale: `kernelfactor` is the reset
 //   flag, `OneMinusWfactor` is 1, and `lerpcontribution` is not reduced by the mask.
+// - Colour is decoded with `convert.wesl`'s rounded steps.
 // - The luma flag from `activate.wesl` arrives as 0 or 1, not as half of it in a fractional part.
 // - Pre-exposure is 1 (see `convert.wesl`), and the output's alpha is 1.
 //
@@ -68,9 +69,9 @@ fn decode_color(sample32: u32) -> vec3<f32> {
     let y11 = sample32 & (2047u << 10u);
     let z10 = sample32 & 1023u;
     return vec3(
-        f32(x11) * (1.0 / 2047.5),
-        f32(y11) * 4.76953602e-7 - 0.5,
-        f32(z10) * (1.0 / 1023.5) - 0.5,
+        f32(x11) * (1.0 / 2047.0),
+        f32(y11) * (1.0 / (2046.0 * 1024.0)) - 0.5,
+        f32(z10) * (1.0 / 1022.0) - 0.5,
     );
 }
 

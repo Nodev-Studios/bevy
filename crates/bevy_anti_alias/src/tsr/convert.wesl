@@ -15,6 +15,10 @@
 //   the motion-depth texture is left zero.
 // - Bevy's input textures are output-sized and only their top-left render rectangle is drawn, so every read is
 //   a `textureLoad` clamped to that rectangle instead of SGSR 2's gathers in uv.
+// - Quantization: SGSR 2 truncates (`uint(v * 2047.5)`) and decodes by dividing by 2047.5 (1023.5), so the
+//   neutral chroma 0.5 comes back as 0.4996 and 0.4993: black turns about (1, 0, 5) / 255 purple after Bevy's
+//   tonemapping, which shows in dark scenes. Here each channel is rounded onto steps of 1/2047 (luma), 1/2046
+//   and 1/1022 (chroma), which keep 0.5 exact; `activate.wesl` and `upscale.wesl` decode with the same steps.
 // - Pre-exposure is 1: Bevy applies the camera's exposure while lighting, so the main texture is already
 //   exposed.
 //
@@ -84,9 +88,10 @@ fn convert(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let luma = 0.25 * (color.r + 2.0 * color.g + color.b);
     let co = clamp(0.5 * color.r + 0.5 - 0.5 * color.b, 0.0, 1.0);
     let cg = clamp(luma + co - color.r, 0.0, 1.0);
-    let x11 = u32(luma * 2047.5);
-    let y11 = u32(co * 2047.5);
-    let z10 = u32(cg * 1023.5);
+    // Rounded onto steps that hold 0.5 exactly (see the header).
+    let x11 = u32(round(luma * 2047.0));
+    let y11 = u32(round(co * 2046.0));
+    let z10 = u32(round(cg * 1022.0));
 
     textureStore(ycocg_color, pos, vec4((x11 << 21u) | (y11 << 10u) | z10));
     textureStore(motion_depth, pos, vec4(motion, nearest_z, 0.0));
