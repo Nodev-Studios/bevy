@@ -18,14 +18,32 @@ dlss = ["bevy_anti_alias/dlss"]
 # bevy
 bevy_anti_alias = { path = "../bevy_anti_alias", version = "0.20.1" }
 bevy_app = { path = "../bevy_app", version = "0.20.1" }
+bevy_asset = { path = "../bevy_asset", version = "0.20.1" }
+bevy_camera = { path = "../bevy_camera", version = "0.20.1" }
+bevy_core_pipeline = { path = "../bevy_core_pipeline", version = "0.20.1" }
 bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
+bevy_light = { path = "../bevy_light", version = "0.20.1" }
+bevy_material = { path = "../bevy_material", version = "0.20.1" }
 bevy_math = { path = "../bevy_math", version = "0.20.1" }
+# Mesh fitting generates missing tangents and skips morphed meshes.
+bevy_mesh = { path = "../bevy_mesh", version = "0.20.1", features = [
+  "bevy_mikktspace",
+  "morph",
+] }
+bevy_pbr = { path = "../bevy_pbr", version = "0.20.1" }
+bevy_platform = { path = "../bevy_platform", version = "0.20.1", default-features = false, features = [
+  "std",
+] }
+bevy_post_process = { path = "../bevy_post_process", version = "0.20.1" }
 bevy_reflect = { path = "../bevy_reflect", version = "0.20.1" }
 bevy_render = { path = "../bevy_render", version = "0.20.1" }
 bevy_solari = { path = "../bevy_solari", version = "0.20.1", optional = true }
+bevy_utils = { path = "../bevy_utils", version = "0.20.1" }
+bevy_window = { path = "../bevy_window", version = "0.20.1" }
 
 # other
 serde = { version = "1", default-features = false, features = ["derive"] }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 wgpu-types = { version = "30", default-features = false }
 
 # Device-local memory is read from the raw Vulkan adapter: wgpu's `AdapterInfo` has no memory field.
@@ -34,6 +52,7 @@ ash = { version = "0.38", default-features = false }
 wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 
 [dev-dependencies]
+bevy_shape = { path = "../bevy_shape", version = "0.20.1" }
 ron = "0.12"
 
 [lints]
