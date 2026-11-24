@@ -1034,7 +1034,7 @@ impl Denoiser {
             self.timestamps = Some(Timestamps::new(device, steps.len() as u32 + 1));
         }
         // One compute pass per dispatch. On the RTX 5070 (NVIDIA 620.73, 2026-11-24, 2560x1440, Full, the GPU
-        // shared with a desktop) a frame recorded as one pass took 1.1 to 3.2 ms longer, back to back, than the
+        // shared with a desktop) a frame recorded as one pass took 0.9 to 3.2 ms longer, back to back, than the
         // same dispatches in passes of their own, in 12 of 12 paired rounds; wgpu inserts the same barriers
         // either way. See `vendor/nrd_wgpu/README.md`.
         let queries = self

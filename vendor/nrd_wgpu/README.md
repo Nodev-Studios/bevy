@@ -107,7 +107,7 @@ GPU (Mesa RADV 26.3.1), both through Vulkan.
   card ratio predicts; `Full` adds about 1 ms. Quad intrinsics are off (`build.rs`) and were not measured: turning
   them on needs `VK_KHR_compute_shader_derivatives`, which wgpu cannot enable.
 - **One compute pass per dispatch.** The GPU here is shared with a desktop, and with the dispatches recorded in one
-  compute pass, a frame took 1.1 to 3.2 ms longer, back to back, than the same dispatches in passes of their own
+  compute pass, a frame took 0.9 to 3.2 ms longer, back to back, than the same dispatches in passes of their own
   (12 of 12 paired rounds in one process). Writing a timestamp after each dispatch inside one pass gave the same
   gain. Why is not known: wgpu inserts the same barriers either way. `denoise` records a pass per dispatch.
 - **History confidence.** NRD's README says ReBLUR's anti-lag (`ReblurSettings::antilag`,
