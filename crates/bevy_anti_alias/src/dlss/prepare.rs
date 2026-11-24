@@ -61,7 +61,9 @@ pub fn prepare_dlss<F: DlssFeature>(
         mut dlss_context,
     ) in &mut query
     {
-        camera_main_texture_usages.0 |= TextureUsages::STORAGE_BINDING;
+        // DLSS writes its output as a storage image, and Super Resolution also clears it with
+        // `vkCmdClearColorImage`, which Vulkan only allows on an image created with `TRANSFER_DST`.
+        camera_main_texture_usages.0 |= TextureUsages::STORAGE_BINDING | TextureUsages::COPY_DST;
 
         let mut depth_texture_usages = TextureUsages::from(camera_3d.depth_texture_usages);
         depth_texture_usages |= TextureUsages::TEXTURE_BINDING;
