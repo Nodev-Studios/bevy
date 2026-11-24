@@ -1,0 +1,21 @@
+[package]
+name = "fsr_wgpu"
+version = "0.1.0"
+edition = "2024"
+description = "AMD FSR 4 / 3.1 upscaling for wgpu on Vulkan, through the signed DLLs of AMD's FSR SDK"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+# Never loads FSR: `FsrSdk::new` always fails. For builds that turn every feature on, as `dlss_wgpu`'s `mock`.
+mock = []
+
+[dependencies]
+ash = "0.38"
+libloading = "0.8"
+log = "0.4"
+thiserror = "2"
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+
+[dev-dependencies]
+pollster = "0.4"
