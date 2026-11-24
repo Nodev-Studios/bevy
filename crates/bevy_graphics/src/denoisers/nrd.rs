@@ -58,5 +58,8 @@ fn detect_nrd(
             .features()
             .contains(Nrd::required_wgpu_features(NrdPrecision::default()))
     });
-    capabilities.nrd = capabilities.vulkan && capabilities.ray_query && has_features;
+    capabilities.nrd = !cfg!(feature = "force_disable_nrd")
+        && capabilities.vulkan
+        && capabilities.ray_query
+        && has_features;
 }

@@ -15,6 +15,8 @@ solari = ["dep:bevy_solari"]
 dlss = ["bevy_anti_alias/dlss"]
 # Puts NRD on the ray traced rungs' cameras when DLSS Ray Reconstruction cannot run.
 nrd = ["bevy_anti_alias/nrd", "solari"]
+# `nrd` built without the NRD SDK (`--all-features`): NRD is reported unusable. Not meant for users.
+force_disable_nrd = ["bevy_anti_alias/force_disable_nrd"]
 
 [dependencies]
 # bevy

@@ -18,6 +18,9 @@ force_disable_dlss = ["dlss_wgpu?/mock"]
 # NVIDIA's NRD (ReBLUR) as the denoiser of ray traced lighting. Needs the NRD SDK at build time: see
 # `vendor/nrd_wgpu/README.md` in the repository.
 nrd = ["dep:nrd_wgpu"]
+# Builds `nrd` without the NRD SDK, so that `--all-features` works without it; NRD then never runs. Not meant for
+# users.
+force_disable_nrd = ["nrd_wgpu?/mock"]
 
 [dependencies]
 # bevy
