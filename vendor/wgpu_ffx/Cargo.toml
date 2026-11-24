@@ -1,0 +1,17 @@
+[package]
+name = "wgpu_ffx"
+version = "0.1.0"
+edition = "2024"
+description = "AMD FidelityFX FSR 3.1 upscaler for wgpu 30 on Vulkan, trimmed from wgpu-ffx for Bevy's TSR"
+authors = ["wgpu-ffx developers", "Advanced Micro Devices, Inc."]
+license = "MIT"
+publish = false
+
+[dependencies]
+bytemuck = { version = "1.14", features = ["derive"] }
+thiserror = "2"
+wgpu = { version = "30", default-features = false }
+
+[dev-dependencies]
+pollster = "0.4"
+wgpu = { version = "30", default-features = false, features = ["vulkan"] }

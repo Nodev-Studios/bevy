@@ -16,7 +16,8 @@ Every subcommand exits with 0 when its gate passes, 1 when it fails and 2 when i
 | `run <matrix.ron> [--out DIR] [--adapter NAME] [--testbed PATH] [--windowed]` | The testbed once per adapter × scene × resolution × flag set; `results.csv`, `results.md`, `results.json` and one folder per run. Each run must exit cleanly, pass the log gate and not be black, and keep under the limits its matrix entry sets |
 | `image stats <png> [--min-luma X]` | Size and mean luma; fails on a black frame |
 | `image diff <a> <b> [--max X]` | The metric between two images |
-| `flicker <run folder>` or `flicker <a> <b>` `[--max X]` | The metric between two consecutive frames of a still camera (`a.png`, `b.png`) |
+| `image resize <in> <out> --size WxH\|<image> --filter bilinear\|area` | Resizes a frame to the output's size: `bilinear` enlarges a lower-resolution run (an upscaler's bilinear baseline), `area` reduces a higher-resolution one (the supersampled baseline) |
+| `flicker <run folder>` or `flicker <frame> <frame>...` `[--max X] [--pairs]` | The metric between consecutive frames of a still camera, over every pair: prints the mean and the largest pair, and `--max` gates the mean. A run folder gives its `still-*` captures (from its `report.json`, which must be on consecutive frames) or else `a.png` and `b.png` |
 | `motion <orbit run> <still run> [--max X]` | The metric between an orbit run's capture and a still run at the same pose (`--pose K`) |
 | `sheet <orbit run> [--out FILE]` | The orbit run's captures tiled into one image; `run` writes it for every orbit run |
 | `budget <report.json> [--max-frame-ms X] [--max-pass NAME=Y]...` | Median frame time and median GPU time of a pass, from the run's report |
@@ -35,6 +36,16 @@ start without it unless `--windowed` is given. On Windows there is no wrapper an
 
 **Timings need a quiet machine.** Frame times are wall-clock: a build running beside the testbed inflates every
 run that is not bound by the GPU.
+
+**Resizing** works on the encoded 8-bit values, like the metric. `bilinear` interpolates between the four nearest
+pixel centres with the edges repeated, as a GPU's linear sampler does; `area` averages the input area each output
+pixel covers, partly covered pixels by their share (a 2x2 box at a ratio of 2). On D1's frames they match
+`magick -filter Triangle -resize` within 0.012 points and `magick -filter Box -resize` exactly (2026-11-24).
+
+**Flicker over one pair is noisy.** A temporal method jitters its camera over a cycle (TAA 8 frames; TSR and DLSS
+SR `8 x upscale^2`, 32 at 50 %), and two frames differ more or less depending on where in the cycle they fall. Gate
+on a sequence covering the longest cycle (`gfx_tsr --still-frames 33`). `run` and `calibration` still use `a.png`
+and `b.png`, which is all the testbed writes.
 
 ## Files
 

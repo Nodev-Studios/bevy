@@ -20,6 +20,7 @@ pub mod nrd;
 pub mod ray_reconstruction;
 pub mod smaa;
 pub mod taa;
+pub mod tsr;
 
 /// Adds fxaa, smaa, taa, contrast aware sharpening, and optional dlss support.
 #[derive(Default)]
@@ -32,6 +33,7 @@ impl Plugin for AntiAliasPlugin {
             SmaaPlugin,
             TemporalAntiAliasPlugin,
             CasPlugin,
+            tsr::TsrPlugin,
             #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
             dlss::DlssPlugin,
             #[cfg(feature = "nrd")]

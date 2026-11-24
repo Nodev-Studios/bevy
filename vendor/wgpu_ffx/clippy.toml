@@ -1,0 +1,3 @@
+# Stops clippy from reading the workspace's clippy.toml, whose disallowed f32 methods ask Bevy's crates to use
+# bevy_math's libm wrappers for cross-platform determinism. This crate does not depend on Bevy, and the few f32
+# functions it calls only set up per-frame constants and a lookup table on the CPU.
