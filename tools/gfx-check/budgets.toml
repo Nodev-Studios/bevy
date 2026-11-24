@@ -18,9 +18,10 @@ run = "raster-taa"
 resolution = "1920x1080"
 max_frame_ms = 2.8
 
-# TSR at Quality (67 %): what `Auto` runs on a card without DLSS from 1440p up. At 1080p `Auto` keeps Raster at
-# native with TAA; TSR at native (`raster-tsr-native` in budget.ron) is a player's explicit choice, recorded and
-# not gated (it is FSR 3.1 as anti-aliasing only, about 0.45 ms over TAA on this card).
+# TSR with the quality on `Auto`, as plan section 10 item 6 states the gate: at 1080p that is TSR at native (FSR 3.1
+# as anti-aliasing only, about 0.45 ms over TAA on this card). It is not what `Auto` runs at 1080p (TAA at native,
+# which the gate above covers) and it misses this gate: see E2's report. TSR at Quality, what `Auto` runs from
+# 1440p up and a player's choice to upscale at 1080p, is `raster-tsr-quality` in budget.ron, recorded.
 [[gate]]
 run = "raster-tsr"
 resolution = "1920x1080"

@@ -127,12 +127,14 @@ fn gpu_sum(cell: &Cell) -> f64 {
         .sum()
 }
 
-/// Groups cells by (adapter, scene, resolution, config), in the order they ran.
+/// Groups cells by (adapter as the matrix names it, scene, resolution, config), in the order they ran. The
+/// matrix's name and not the reported one: a repeat that crashed before writing its report, or ran on another
+/// card, must stay in its group and fail it, not fall out of it.
 fn groups(cells: &[Cell]) -> Vec<((String, String, String, String), Vec<&Cell>)> {
     let mut groups: Vec<((String, String, String, String), Vec<&Cell>)> = Vec::new();
     for cell in cells {
         let key = (
-            cell.adapter_reported.clone(),
+            cell.adapter.clone(),
             cell.scene.clone(),
             cell.resolution.clone(),
             config(cell).to_owned(),
@@ -143,6 +145,20 @@ fn groups(cells: &[Cell]) -> Vec<((String, String, String, String), Vec<&Cell>)>
         }
     }
     groups
+}
+
+/// The adapter a group's runs reported, and whether any of them is the one named `gated`.
+fn reported(members: &[&Cell], gated: &str) -> (String, bool) {
+    let name = members
+        .iter()
+        .map(|cell| cell.adapter_reported.as_str())
+        .find(|name| !name.is_empty())
+        .unwrap_or("(no report)")
+        .to_owned();
+    let is_gated = members
+        .iter()
+        .any(|cell| cell.adapter_reported.contains(gated));
+    (name, is_gated)
 }
 
 /// `budget --table`: every gate of `budgets.toml` against a results folder.
@@ -156,7 +172,8 @@ pub fn table(results: &Path, table: &Path) -> Result<bool, String> {
     let mut gated = 0;
     println!("| adapter | scene | resolution | run | repeats | median frame ms (min–max) | GPU ms | limit | result |");
     println!("|---|---|---|---|---|---|---|---|---|");
-    for ((adapter, scene, resolution, run), members) in groups(&cells) {
+    for ((_, scene, resolution, run), members) in groups(&cells) {
+        let (adapter, on_gated) = reported(&members, &budgets.adapter);
         let frames: Vec<f64> = members
             .iter()
             .filter_map(|cell| cell.frame_ms.map(|frame| frame[0]))
@@ -170,9 +187,10 @@ pub fn table(results: &Path, table: &Path) -> Result<bool, String> {
             _ => String::new(),
         };
         let frame = median(frames);
-        let gate = budgets.gate.iter().find(|gate| {
-            gate.run == run && gate.resolution == resolution && adapter.contains(&budgets.adapter)
-        });
+        let gate = budgets
+            .gate
+            .iter()
+            .find(|gate| on_gated && gate.run == run && gate.resolution == resolution);
         let failed_runs = members
             .iter()
             .filter(|cell| !cell.failures.is_empty())
@@ -273,7 +291,8 @@ pub fn golden(results: &Path, dir: &Path) -> Result<bool, String> {
     let mut gated = 0;
     println!("| adapter | scene | resolution | run | repeats | difference from golden (median, min–max) | tolerance | result |");
     println!("|---|---|---|---|---|---|---|---|");
-    for ((adapter, scene, resolution, run), members) in groups(&cells) {
+    for ((_, scene, resolution, run), members) in groups(&cells) {
+        let (adapter, on_gated) = reported(&members, &goldens.adapter);
         let Some(golden) = goldens
             .image
             .iter()
@@ -287,20 +306,27 @@ pub fn golden(results: &Path, dir: &Path) -> Result<bool, String> {
         };
         let reference = metric::load(&dir.join(&golden.file))?;
         let mut differences = Vec::new();
+        let mut unreadable = 0;
         for cell in &members {
-            differences.push(metric::nrmse_percent(
-                &reduced(&run_dir(results, cell), goldens.size)?,
-                &reference,
-            )?);
+            match reduced(&run_dir(results, cell), goldens.size)
+                .and_then(|image| metric::nrmse_percent(&image, &reference))
+            {
+                Ok(difference) => differences.push(difference),
+                Err(error) => {
+                    println!("{} on {scene}: {error}", cell.run);
+                    unreadable += 1;
+                }
+            }
         }
         let low = differences.iter().copied().fold(f64::INFINITY, f64::min);
         let high = differences.iter().copied().fold(0.0, f64::max);
         let difference = median(differences).unwrap_or(f64::NAN);
-        let gate = adapter.contains(&goldens.adapter) && resolution == goldens.resolution;
-        let failed_runs = members
-            .iter()
-            .filter(|cell| !cell.failures.is_empty())
-            .count();
+        let gate = on_gated && resolution == goldens.resolution;
+        let failed_runs = unreadable
+            + members
+                .iter()
+                .filter(|cell| !cell.failures.is_empty())
+                .count();
         let verdict = if !gate {
             "recorded".to_owned()
         } else {
