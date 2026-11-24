@@ -11,7 +11,6 @@ extern crate alloc;
 mod budgets;
 mod calibration;
 mod flicker;
-mod friend;
 mod log_gate;
 mod metric;
 mod report;
@@ -41,7 +40,6 @@ enum Command {
     Budget(BudgetCommand),
     LogGate(LogGateCommand),
     Calibration(calibration::CalibrationCommand),
-    Friend(friend::FriendCommand),
 }
 
 /// Measures one image, or two against each other.
@@ -308,7 +306,6 @@ fn main() -> ExitCode {
         Command::Budget(command) => budget(command),
         Command::LogGate(command) => log_gate(command),
         Command::Calibration(command) => calibration::calibration(command),
-        Command::Friend(command) => friend::friend(command),
     };
     match result {
         Ok(true) => ExitCode::SUCCESS,
