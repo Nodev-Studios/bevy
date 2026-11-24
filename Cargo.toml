@@ -617,6 +617,12 @@ dlss = ["bevy_internal/dlss"]
 # NVIDIA's NRD denoiser for ray traced lighting (needs the NRD SDK at build time)
 nrd = ["bevy_internal/nrd"]
 
+# AMD FSR 4 / 3.1 on Radeons under Windows, through the DLLs of AMD's FSR SDK (loaded at run time)
+fsr = ["bevy_internal/fsr"]
+
+# Forcibly disable FSR, so that it never loads even on Windows. Not meant for users.
+force_disable_fsr = ["bevy_internal/force_disable_fsr"]
+
 # Forcibly disable NRD so that `cargo build --all-features` works without the NRD SDK. Not meant for users.
 force_disable_nrd = ["bevy_internal/force_disable_nrd"]
 

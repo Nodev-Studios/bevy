@@ -5,6 +5,9 @@
     html_favicon_url = "https://bevy.org/assets/icon.png"
 )]
 
+#[cfg(feature = "fsr")]
+extern crate alloc;
+
 use bevy_app::Plugin;
 use contrast_adaptive_sharpening::CasPlugin;
 use fxaa::FxaaPlugin;
@@ -14,6 +17,8 @@ use taa::TemporalAntiAliasPlugin;
 pub mod contrast_adaptive_sharpening;
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 pub mod dlss;
+#[cfg(feature = "fsr")]
+pub mod fsr;
 pub mod fxaa;
 #[cfg(feature = "nrd")]
 pub mod nrd;
@@ -38,6 +43,8 @@ impl Plugin for AntiAliasPlugin {
             dlss::DlssPlugin,
             #[cfg(feature = "nrd")]
             nrd::NrdPlugin,
+            #[cfg(feature = "fsr")]
+            fsr::FsrPlugin,
         ));
     }
 }
