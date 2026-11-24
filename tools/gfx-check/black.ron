@@ -1,0 +1,12 @@
+#![enable(implicit_some)]
+// The harness's own failure case: a frame with no light in it. `gfx-check run` must fail this matrix.
+(
+    adapters: [(name: "NVIDIA", resolutions: ["1280x720"])],
+    scenes: ["interior"],
+    warmup: 10,
+    frames: 20,
+    seconds: 120,
+    runs: [
+        (name: "black", args: ["--mode", "raster", "--force-black"]),
+    ],
+)

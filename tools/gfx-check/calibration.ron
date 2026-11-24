@@ -1,0 +1,43 @@
+#![enable(implicit_some)]
+// The calibration matrix: how noisy each way of showing Solari's frame is on `interior` at 2560x1440 with a still
+// camera, on the RTX 5070. `gfx-check calibration` turns its results into calibration.toml, the file later gates
+// are relative to. From the repository root, with the DLSS SDK fetched:
+//
+//   eval "$(tools/fetch-sdks.sh dlss)"      # DLSS also finds its libraries through DLSS_SDK when it runs
+//   cargo build --release --example gfx_testbed --features bevy_solari,area_light_luts,dlss
+//   cargo run --release -p gfx-check -- run tools/gfx-check/calibration.ron
+//   cargo run --release -p gfx-check -- calibration target/gfx-check/calibration
+//
+// Each configuration runs three times with warm-ups of 300, 301 and 307 frames. Solari's noise depends only on
+// the frame number, so three identical runs would measure nothing; the spread of these three is the noise floor.
+// Both DLSS rows set the mode to DLAA: native resolution, like every other row.
+(
+    adapters: [(name: "NVIDIA", resolutions: ["2560x1440"])],
+    scenes: ["interior"],
+    warmup: 300,
+    frames: 300,
+    seconds: 300,
+    runs: [
+        (name: "reference", args: ["--mode", "reference"], warmup: 0, frames: 8000),
+        // The reference against itself, started seven frames later: how far from converged it is.
+        (name: "reference@again", args: ["--mode", "reference"], warmup: 7, frames: 8000, reference: "reference"),
+        (name: "raw@300", args: ["--mode", "solari"], warmup: 300, reference: "reference"),
+        (name: "raw@301", args: ["--mode", "solari"], warmup: 301, reference: "reference"),
+        (name: "raw@307", args: ["--mode", "solari"], warmup: 307, reference: "reference"),
+        (name: "raw-restir@300", args: ["--mode", "solari", "--restir"], warmup: 300, reference: "reference"),
+        (name: "raw-restir@301", args: ["--mode", "solari", "--restir"], warmup: 301, reference: "reference"),
+        (name: "raw-restir@307", args: ["--mode", "solari", "--restir"], warmup: 307, reference: "reference"),
+        (name: "taa@300", args: ["--mode", "solari", "--taa"], warmup: 300, reference: "reference"),
+        (name: "taa@301", args: ["--mode", "solari", "--taa"], warmup: 301, reference: "reference"),
+        (name: "taa@307", args: ["--mode", "solari", "--taa"], warmup: 307, reference: "reference"),
+        (name: "taa-restir@300", args: ["--mode", "solari", "--restir", "--taa"], warmup: 300, reference: "reference"),
+        (name: "taa-restir@301", args: ["--mode", "solari", "--restir", "--taa"], warmup: 301, reference: "reference"),
+        (name: "taa-restir@307", args: ["--mode", "solari", "--restir", "--taa"], warmup: 307, reference: "reference"),
+        (name: "dlss-rr@300", args: ["--mode", "solari", "--dlss-rr", "--dlss-mode", "dlaa"], warmup: 300, reference: "reference"),
+        (name: "dlss-rr@301", args: ["--mode", "solari", "--dlss-rr", "--dlss-mode", "dlaa"], warmup: 301, reference: "reference"),
+        (name: "dlss-rr@307", args: ["--mode", "solari", "--dlss-rr", "--dlss-mode", "dlaa"], warmup: 307, reference: "reference"),
+        (name: "dlss-rr-restir@300", args: ["--mode", "solari", "--restir", "--dlss-rr", "--dlss-mode", "dlaa"], warmup: 300, reference: "reference"),
+        (name: "dlss-rr-restir@301", args: ["--mode", "solari", "--restir", "--dlss-rr", "--dlss-mode", "dlaa"], warmup: 301, reference: "reference"),
+        (name: "dlss-rr-restir@307", args: ["--mode", "solari", "--restir", "--dlss-rr", "--dlss-mode", "dlaa"], warmup: 307, reference: "reference"),
+    ],
+)

@@ -323,6 +323,9 @@ bevy_gilrs = ["gamepad", "bevy_internal/bevy_gilrs"]
 # [glTF](https://www.khronos.org/gltf/) support
 bevy_gltf = ["bevy_internal/bevy_gltf"]
 
+# Tiered graphics settings: the Raster, RtLite and RtFull presets, and the policy that picks one for the machine
+bevy_graphics = ["bevy_internal/bevy_graphics"]
+
 # Adds PBR rendering
 bevy_pbr = ["bevy_internal/bevy_pbr"]
 
@@ -1597,6 +1600,15 @@ wasm = false
 hidden = true
 
 [[example]]
+name = "gfx_testbed"
+path = "examples/graphics/gfx_testbed/main.rs"
+doc-scrape-examples = true
+required-features = ["bevy_solari", "area_light_luts"]
+
+[package.metadata.example.gfx_testbed]
+hidden = true
+
+[[example]]
 name = "spherical_area_lights"
 path = "examples/3d/spherical_area_lights.rs"
 doc-scrape-examples = true
@@ -2060,6 +2072,15 @@ name = "Without Winit"
 description = "Create an application without winit (runs single time, no event loop)"
 category = "Application"
 wasm = false
+
+[[example]]
+name = "gfx_caps"
+path = "examples/graphics/gfx_caps.rs"
+doc-scrape-examples = true
+required-features = ["bevy_graphics"]
+
+[package.metadata.example.gfx_caps]
+hidden = true
 
 # Assets
 [[example]]

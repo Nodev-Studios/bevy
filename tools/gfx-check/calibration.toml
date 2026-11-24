@@ -1,0 +1,94 @@
+# Written by `gfx-check calibration` from a run of tools/gfx-check/calibration.ron; do not edit by hand.
+#
+# How noisy each way of showing Solari's frame is on the testbed's own scene. Later gates are relative to
+# these numbers and hold only on the same scene, adapter class and resolution.
+#
+# error:   normalised RMSE of the tonemapped 8-bit frame against the `reference` run, percent of full scale.
+# flicker: the same metric between two consecutive frames of the still camera.
+# *_runs:  one value per repeat; the repeats differ only in warm-up length (`warmup`).
+# *_noise_floor: the larger of the repeats' spread (max - min) and 0.1. A difference under it is noise.
+#
+# No timings here: the frame and pass times of these runs are in their report.json.
+
+[meta]
+date = "2026-11-24"
+adapter = "NVIDIA GeForce RTX 5070 (620.73.04)"
+scene = "interior"
+resolution = "2560x1440"
+
+[dlss-rr]
+args = "--mode solari --dlss-rr --dlss-mode dlaa"
+warmup = [300, 301, 307]
+frames = 300
+error = 1.978
+error_runs = [1.975, 1.981, 1.977]
+error_noise_floor = 0.100
+flicker = 0.207
+flicker_runs = [0.195, 0.230, 0.194]
+flicker_noise_floor = 0.100
+
+[dlss-rr-restir]
+args = "--mode solari --restir --dlss-rr --dlss-mode dlaa"
+warmup = [300, 301, 307]
+frames = 300
+error = 1.972
+error_runs = [1.970, 1.976, 1.969]
+error_noise_floor = 0.100
+flicker = 0.288
+flicker_runs = [0.287, 0.278, 0.300]
+flicker_noise_floor = 0.100
+
+[raw]
+args = "--mode solari"
+warmup = [300, 301, 307]
+frames = 300
+error = 13.672
+error_runs = [13.686, 13.665, 13.665]
+error_noise_floor = 0.100
+flicker = 17.321
+flicker_runs = [17.338, 17.320, 17.306]
+flicker_noise_floor = 0.100
+
+[raw-restir]
+args = "--mode solari --restir"
+warmup = [300, 301, 307]
+frames = 300
+error = 6.819
+error_runs = [6.813, 6.821, 6.822]
+error_noise_floor = 0.100
+flicker = 8.198
+flicker_runs = [8.197, 8.177, 8.222]
+flicker_noise_floor = 0.100
+
+[reference]
+args = "--mode reference"
+warmup = [0, 7]
+frames = 8000
+error = 0.071
+error_runs = [0.071]
+error_noise_floor = 0.100
+flicker = 0.039
+flicker_runs = [0.039, 0.039]
+flicker_noise_floor = 0.100
+
+[taa]
+args = "--mode solari --taa"
+warmup = [300, 301, 307]
+frames = 300
+error = 5.117
+error_runs = [5.118, 5.095, 5.138]
+error_noise_floor = 0.100
+flicker = 0.951
+flicker_runs = [0.944, 0.962, 0.947]
+flicker_noise_floor = 0.100
+
+[taa-restir]
+args = "--mode solari --restir --taa"
+warmup = [300, 301, 307]
+frames = 300
+error = 3.349
+error_runs = [3.343, 3.351, 3.353]
+error_noise_floor = 0.100
+flicker = 0.510
+flicker_runs = [0.485, 0.529, 0.516]
+flicker_noise_floor = 0.100
