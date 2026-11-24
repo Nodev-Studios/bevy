@@ -4,7 +4,7 @@ use super::Tsr;
 use bevy_camera::MainPassResolutionOverride;
 use bevy_core_pipeline::prepass::ViewPrepassTextures;
 use bevy_ecs::prelude::*;
-use bevy_math::UVec2;
+use bevy_math::{ops, UVec2};
 use bevy_render::{
     camera::TemporalJitter,
     diagnostic::RecordDiagnostics,
@@ -66,7 +66,7 @@ pub fn tsr_fsr(
     // Bevy's reverse-Z perspective projections, the only ones `extract_tsr` lets through, keep the near plane in
     // `w_axis.z` and 1 / tan(vertical fov / 2) in `y_axis.y`.
     let near_plane = view.clip_from_view.w_axis.z;
-    let fov_y = 2.0 * (1.0 / view.clip_from_view.y_axis.y).atan();
+    let fov_y = 2.0 * ops::atan(1.0 / view.clip_from_view.y_axis.y);
 
     let info = FsrDispatchInfo {
         color: (**view_target.source_texture).clone(),

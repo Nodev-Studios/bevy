@@ -5,7 +5,7 @@
 //! compute shaders and no vendor SDK. It runs one of two algorithms ([`TsrAlgorithm`]):
 //! - Qualcomm's Snapdragon Game Super Resolution 2 (SGSR 2), its 3-pass compute variant, ported to WESL from
 //!   <https://github.com/SnapdragonStudios/snapdragon-gsr> (BSD-3-Clause; the notice is in each shader file).
-//! - AMD's FidelityFX Super Resolution 3.1 (FSR 3.1) upscaler, from the MIT GLSL of AMD's FidelityFX SDK v1.1.4
+//! - AMD's FSR 3.1 (`FidelityFX` Super Resolution) upscaler, from the MIT GLSL of AMD's `FidelityFX` SDK v1.1.4
 //!   through `vendor/wgpu_ffx`, a trimmed copy of cwfitzgerald's `wgpu-ffx` (MIT). It runs on Vulkan only.
 //!
 //! # Usage
@@ -169,7 +169,7 @@ pub enum TsrAlgorithm {
     /// Snapdragon Game Super Resolution 2: three compute passes in WESL, on every device TSR supports.
     #[default]
     Sgsr2,
-    /// AMD FidelityFX Super Resolution 3.1: seven compute passes of AMD's SPIR-V, on Vulkan only
+    /// AMD's FSR 3.1 (`FidelityFX` Super Resolution): seven compute passes of AMD's SPIR-V, on Vulkan only
     /// ([`TsrSupported::fsr3`]). Where it cannot run, SGSR 2 runs instead and a warning is logged once.
     Fsr3,
 }
