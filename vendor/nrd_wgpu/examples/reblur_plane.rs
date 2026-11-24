@@ -588,22 +588,25 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
     let mut timings = Vec::new();
     let mut dispatch_timings: Vec<(String, Vec<f64>)> = Vec::new();
     let mut outer_timings = Vec::new();
-    let outer_queries = gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
-        label: None,
-        ty: wgpu::QueryType::Timestamp,
-        count: 2,
-    });
-    let outer_resolved = gpu.device.create_buffer(&BufferDescriptor {
-        label: None,
-        size: 16,
-        usage: BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    });
-    let outer_readback = gpu.device.create_buffer(&BufferDescriptor {
-        label: None,
-        size: 16,
-        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
-        mapped_at_creation: false,
+    // Two timestamps around the whole denoiser, with `--timestamps`.
+    let outer_timer = (timestamps != Timestamps::Off).then(|| {
+        let buffer = |usage| {
+            gpu.device.create_buffer(&BufferDescriptor {
+                label: None,
+                size: 16,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        (
+            gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: None,
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            }),
+            buffer(BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC),
+            buffer(BufferUsages::COPY_DST | BufferUsages::MAP_READ),
+        )
     });
     for frame in frames..frames + WARM_UP_FRAMES + TIMED_FRAMES {
         let timed = frame >= frames + WARM_UP_FRAMES;
@@ -612,11 +615,11 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
                 .set_timestamps(&gpu.device, true)
                 .expect("timestamps were refused");
         }
-        let outer = timestamps != Timestamps::Off && timed;
+        let outer = outer_timer.as_ref().filter(|_| timed);
         let started = Instant::now();
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
-        if outer {
-            encoder.write_timestamp(&outer_queries, 0);
+        if let Some((queries, ..)) = outer {
+            encoder.write_timestamp(queries, 0);
         }
         denoiser
             .denoise(
@@ -628,19 +631,19 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
                 &denoiser_outputs,
             )
             .expect("the frame could not be recorded");
-        if outer {
-            encoder.write_timestamp(&outer_queries, 1);
-            encoder.resolve_query_set(&outer_queries, 0..2, &outer_resolved, 0);
-            encoder.copy_buffer_to_buffer(&outer_resolved, 0, &outer_readback, 0, 16);
+        if let Some((queries, resolved, readback)) = outer {
+            encoder.write_timestamp(queries, 1);
+            encoder.resolve_query_set(queries, 0..2, resolved, 0);
+            encoder.copy_buffer_to_buffer(resolved, 0, readback, 0, 16);
         }
         gpu.queue.submit([encoder.finish()]);
         gpu.device.poll(PollType::wait_indefinitely()).unwrap();
-        if outer {
-            outer_readback
+        if let Some((_, _, readback)) = outer {
+            readback
                 .slice(..)
                 .map_async(MapMode::Read, |result| result.unwrap());
             gpu.device.poll(PollType::wait_indefinitely()).unwrap();
-            let ticks: Vec<u64> = outer_readback
+            let ticks: Vec<u64> = readback
                 .slice(..)
                 .get_mapped_range()
                 .unwrap()
@@ -649,7 +652,7 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
                 .iter()
                 .map(|bytes| u64::from_le_bytes(*bytes))
                 .collect();
-            outer_readback.unmap();
+            readback.unmap();
             outer_timings.push(
                 ticks[1].wrapping_sub(ticks[0]) as f64 * gpu.queue.get_timestamp_period() as f64
                     / 1e6,
