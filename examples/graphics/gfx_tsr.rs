@@ -18,7 +18,7 @@ mod scenes;
 use bevy::{
     anti_alias::{
         taa::TemporalAntiAliasing,
-        tsr::{Tsr, TsrSupported},
+        tsr::{Tsr, TsrAlgorithm, TsrSupported},
     },
     app::AppExit,
     camera::{Hdr, MainPassResolutionOverride},
@@ -62,6 +62,7 @@ gfx_tsr: renders a gfx_testbed scene on the rasterizer with TAA or TSR, and writ
 
   --scene interior|many-lights   the scene (default interior)
   --aa taa|tsr|dlss              TAA at the output's resolution, TSR, or DLSS Super Resolution (default taa)
+  --algorithm sgsr2|fsr3         tsr: SGSR 2 or AMD's FSR 3.1 (default sgsr2)
   --scale F                      tsr, dlss: the render resolution as a share of the output's (default 0.5); dlss
                                  takes 0.5 (Performance), 0.58 (Balanced), 0.6667 (Quality) or 1 (DLAA)
   --res WxH                      window size in pixels (default 1280x720)
@@ -115,6 +116,7 @@ struct Args {
     command_line: Vec<String>,
     scene: String,
     aa: Aa,
+    algorithm: TsrAlgorithm,
     scale: f32,
     res: UVec2,
     warmup: u32,
@@ -135,6 +137,7 @@ fn parse_args() -> Result<Args, String> {
         command_line: command_line.clone(),
         scene: "interior".into(),
         aa: Aa::Taa,
+        algorithm: TsrAlgorithm::Sgsr2,
         scale: 0.5,
         res: UVec2::new(1280, 720),
         warmup: 60,
@@ -168,6 +171,13 @@ fn parse_args() -> Result<Args, String> {
                     "tsr" => Aa::Tsr,
                     "dlss" => Aa::Dlss,
                     _ => return Err(format!("--aa takes taa|tsr|dlss, not {value}")),
+                }
+            }
+            "--algorithm" => {
+                args.algorithm = match value.as_str() {
+                    "sgsr2" => TsrAlgorithm::Sgsr2,
+                    "fsr3" => TsrAlgorithm::Fsr3,
+                    _ => return Err(format!("--algorithm takes sgsr2|fsr3, not {value}")),
                 }
             }
             "--scale" => {
@@ -331,8 +341,13 @@ fn record_render_size(views: Query<&MainPassResolutionOverride>, size: Res<Rende
 fn unsupported(world: &World, args: &Args) -> Option<String> {
     match args.aa {
         Aa::Taa => None,
-        Aa::Tsr => (!world.contains_resource::<TsrSupported>())
-            .then_some("TSR is not supported on this device".into()),
+        Aa::Tsr => match world.get_resource::<TsrSupported>() {
+            None => Some("TSR is not supported on this device".into()),
+            Some(supported) if args.algorithm == TsrAlgorithm::Fsr3 && !supported.fsr3 => {
+                Some("TSR's FSR 3.1 is not supported on this device: it needs Vulkan".into())
+            }
+            Some(_) => None,
+        },
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
         Aa::Dlss => {
             if dlss_mode(args.scale).is_none() {
@@ -412,6 +427,7 @@ fn setup(world: &mut World) {
         Aa::Tsr => {
             camera.insert(Tsr {
                 render_scale: args.scale,
+                algorithm: args.algorithm,
                 ..default()
             });
         }
@@ -639,6 +655,7 @@ fn finish(
         "scene": args.scene,
         "mode": "raster",
         "aa": format!("{:?}", args.aa).to_lowercase(),
+        "algorithm": (args.aa == Aa::Tsr).then(|| format!("{:?}", args.algorithm).to_lowercase()),
         "render_scale": if args.aa == Aa::Taa { 1.0 } else { args.scale },
         "render_resolution": render_resolution,
         "align": args.align,
