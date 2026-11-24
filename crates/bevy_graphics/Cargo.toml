@@ -13,6 +13,8 @@ keywords = ["bevy"]
 solari = ["dep:bevy_solari"]
 # Reads DLSS support from `bevy_anti_alias`.
 dlss = ["bevy_anti_alias/dlss"]
+# Puts NRD on the ray traced rungs' cameras when DLSS Ray Reconstruction cannot run.
+nrd = ["bevy_anti_alias/nrd", "solari"]
 
 [dependencies]
 # bevy
