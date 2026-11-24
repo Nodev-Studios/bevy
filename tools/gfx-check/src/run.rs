@@ -388,10 +388,11 @@ pub fn run(command: RunCommand) -> Result<bool, String> {
             testbed.display()
         ));
     }
-    // A run must never put a window on the desktop of whoever works at this machine by accident: off Windows
-    // it is the wrapper, or a real window asked for by name.
+    // A run must never put a window on the desktop of whoever works at this machine by accident: it is the
+    // wrapper, or a real window asked for by name. Windows has no wrapper, so there a window it is.
     let headless = cwd.join("tools/gfx-headless.sh");
-    if !command.windowed && (cfg!(windows) || !headless.exists()) {
+    let windowed = command.windowed || cfg!(windows);
+    if !windowed && !headless.exists() {
         return Err(format!(
             "{} is not here: run from the repository root, or pass --windowed to open a real window",
             headless.display()
@@ -436,7 +437,7 @@ pub fn run(command: RunCommand) -> Result<bool, String> {
                     let warmup = entry.warmup.unwrap_or(matrix.warmup);
                     let frames = entry.frames.unwrap_or(matrix.frames);
 
-                    let mut process = if command.windowed {
+                    let mut process = if windowed {
                         Command::new(&testbed)
                     } else {
                         let mut process = Command::new(&headless);
@@ -482,7 +483,7 @@ pub fn run(command: RunCommand) -> Result<bool, String> {
                         failures: Vec::new(),
                     };
                     // The wrapper has its own limit; ours also covers its wait for the GPU lock, generously.
-                    let limit = matrix.seconds + if command.windowed { 0 } else { 3600 };
+                    let limit = matrix.seconds + if windowed { 0 } else { 3600 };
                     let exit = launch(&mut process, &dir.join("console.txt"), limit)?;
                     if !exit.is_empty() {
                         cell.failures

@@ -238,7 +238,7 @@ fn many_lights(
 
     for x in 0..16 {
         for z in 0..16 {
-            commands.spawn((
+            let mut light = commands.spawn((
                 PointLight {
                     color: Color::hsl(rng.random_range(0.0..360.0), 0.9, 0.6),
                     intensity: 300_000.0,
@@ -248,6 +248,10 @@ fn many_lights(
                 },
                 Transform::from_xyz((x as f32 - 7.5) * 7.0, 3.0, (z as f32 - 7.5) * 7.0),
             ));
+            // One light beside the centre of the field, in front of the still camera.
+            if (x, z) == (8, 8) {
+                light.insert(ToggleLight);
+            }
         }
     }
 

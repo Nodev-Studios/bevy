@@ -119,7 +119,8 @@ pub fn calibration(command: CalibrationCommand) -> Result<bool, String> {
          # flicker: the same metric between two consecutive frames of the still camera.\n\
          # *_runs:  one value per repeat; the repeats differ only in warm-up length (`warmup`).\n\
          # *_noise_floor: the larger of the repeats' spread (max - min) and {MIN_NOISE_FLOOR}. A difference under it is noise.\n\
-         # frame_ms: median frame time, vsync off, mean of the repeats.\n\n\
+         #\n\
+         # No timings here: the frame and pass times of these runs are in their report.json.\n\n\
          [meta]\n\
          date = \"{}\"\n\
          adapter = \"{}\"\n\
@@ -141,14 +142,6 @@ pub fn calibration(command: CalibrationCommand) -> Result<bool, String> {
         };
         metric_lines(&mut toml, "error", &collect(|run| run.error));
         metric_lines(&mut toml, "flicker", &collect(|run| run.flicker));
-        let frame_ms = collect(|run| run.frame_ms.map(|frame| frame[0]));
-        if !frame_ms.is_empty() {
-            let _ = writeln!(
-                toml,
-                "frame_ms = {:.3}",
-                frame_ms.iter().sum::<f64>() / frame_ms.len() as f64
-            );
-        }
     }
     fs::write(&command.out, toml).map_err(|error| format!("{}: {error}", command.out.display()))?;
     println!(

@@ -657,7 +657,9 @@ fn raw_camera(
     }
     if (args.dlss_rr && !capabilities.dlss_rr) || (args.dlss_sr && !capabilities.dlss_sr) {
         return Err(if cfg!(feature = "dlss") {
-            "the DLSS feature asked for is not supported on this device".into()
+            "the DLSS feature asked for is not supported here: it needs an RTX card, and at run time its \
+             libraries beside the binary or in $DLSS_SDK"
+                .into()
         } else {
             "this binary was built without the `dlss` feature".into()
         });
