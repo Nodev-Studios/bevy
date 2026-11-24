@@ -1,0 +1,44 @@
+#![enable(implicit_some)]
+// The golden images: one per preset and scene at 1920x1080 on the RTX 5070, checked by
+// `gfx-check budget --golden tools/gfx-check/golden <results>`. The flags are pinned to the path every vendor
+// runs (Raster with TAA; the traced rungs with NRD and TSR), so they run on a Radeon too and do not move when
+// `Auto` changes. Seven warm-ups spread over the temporal filters' jitter cycles; the integrated Radeon runs
+// once at 640x360 and records its difference, ungated.
+//
+//   target/release/gfx-check run tools/gfx-check/golden.ron
+//   target/release/gfx-check budget --golden tools/gfx-check/golden target/gfx-check/golden
+//   # after an intended change of the image, with the change's reason in the commit:
+//   target/release/gfx-check budget --golden tools/gfx-check/golden --write-golden target/gfx-check/golden
+(
+    adapters: [
+        (name: "NVIDIA", resolutions: ["1920x1080"]),
+        (name: "AMD", resolutions: ["640x360"]),
+    ],
+    scenes: ["interior", "many-lights"],
+    warmup: 300,
+    frames: 30,
+    seconds: 300,
+    runs: [
+        (name: "raster@1", args: ["--preset", "raster", "--upscaler", "off"], warmup: 300),
+        (name: "rt-lite@1", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 300),
+        (name: "rt-full@1", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 300),
+        (name: "raster@2", args: ["--preset", "raster", "--upscaler", "off"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "rt-lite@2", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "rt-full@2", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "raster@3", args: ["--preset", "raster", "--upscaler", "off"], warmup: 303, adapters: ["NVIDIA"]),
+        (name: "rt-lite@3", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 303, adapters: ["NVIDIA"]),
+        (name: "rt-full@3", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 303, adapters: ["NVIDIA"]),
+        (name: "raster@4", args: ["--preset", "raster", "--upscaler", "off"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-lite@4", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-full@4", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "raster@5", args: ["--preset", "raster", "--upscaler", "off"], warmup: 311, adapters: ["NVIDIA"]),
+        (name: "rt-lite@5", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 311, adapters: ["NVIDIA"]),
+        (name: "rt-full@5", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 311, adapters: ["NVIDIA"]),
+        (name: "raster@6", args: ["--preset", "raster", "--upscaler", "off"], warmup: 316, adapters: ["NVIDIA"]),
+        (name: "rt-lite@6", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 316, adapters: ["NVIDIA"]),
+        (name: "rt-full@6", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 316, adapters: ["NVIDIA"]),
+        (name: "raster@7", args: ["--preset", "raster", "--upscaler", "off"], warmup: 322, adapters: ["NVIDIA"]),
+        (name: "rt-lite@7", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 322, adapters: ["NVIDIA"]),
+        (name: "rt-full@7", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 322, adapters: ["NVIDIA"]),
+    ],
+)

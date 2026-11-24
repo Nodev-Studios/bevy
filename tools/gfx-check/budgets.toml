@@ -1,0 +1,49 @@
+# The ladder's frame-time gates on the RTX 5070 (plan section 2), as data. Checked against a run of budget.ron:
+#
+#   target/release/gfx-check run tools/gfx-check/budget.ron
+#   target/release/gfx-check budget --table tools/gfx-check/budgets.toml target/gfx-check/budget
+#
+# A gate reads the median, over a run's repeats (`name@1`, `@2`, `@3`), of each repeat's median wall-clock frame;
+# it applies on both scenes, and only on an adapter whose name contains `adapter`. Every other cell is printed
+# and not gated. Each gate scales a 16.6 ms frame by the card class's speed against the RTX 5070 (plan section 2:
+# GTX 1060 0.17, RTX 3060 0.36, RX 6600 XT 0.35); a gate moves only when that ratio is corrected. When a preset
+# misses its gate, its resolution and parameters change (`bevy_graphics`' `raster.rs`, `traced.rs` and the
+# `auto_quality` rows of `resolve.rs`), not this file.
+
+adapter = "RTX 5070"
+
+# Raster: the GTX 1060 class at 1080p, which has no DLSS, so Raster is gated with TAA at native and with TSR.
+[[gate]]
+run = "raster-taa"
+resolution = "1920x1080"
+max_frame_ms = 2.8
+
+# TSR at Quality (67 %): what `Auto` runs on a card without DLSS from 1440p up. At 1080p `Auto` keeps Raster at
+# native with TAA; TSR at native (`raster-tsr-native` in budget.ron) is a player's explicit choice, recorded and
+# not gated (it is FSR 3.1 as anti-aliasing only, about 0.45 ms over TAA on this card).
+[[gate]]
+run = "raster-tsr"
+resolution = "1920x1080"
+max_frame_ms = 2.8
+
+# RtLite: the RTX 3060 / RX 6600 XT class at 1080p output.
+[[gate]]
+run = "rt-lite-auto"
+resolution = "1920x1080"
+max_frame_ms = 6.0
+
+[[gate]]
+run = "rt-lite-nrd-tsr"
+resolution = "1920x1080"
+max_frame_ms = 5.8
+
+# RtFull: 16.6 ms at 1440p output on the RTX 4070 / 5070 class, with either denoiser.
+[[gate]]
+run = "rt-full-auto"
+resolution = "2560x1440"
+max_frame_ms = 10.0
+
+[[gate]]
+run = "rt-full-nrd-tsr"
+resolution = "2560x1440"
+max_frame_ms = 10.0

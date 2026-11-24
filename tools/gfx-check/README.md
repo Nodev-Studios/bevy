@@ -21,6 +21,8 @@ Every subcommand exits with 0 when its gate passes, 1 when it fails and 2 when i
 | `motion <orbit run> <still run> [--max X]` | The metric between an orbit run's capture and a still run at the same pose (`--pose K`) |
 | `sheet <orbit run> [--out FILE]` | The orbit run's captures tiled into one image; `run` writes it for every orbit run |
 | `budget <report.json> [--max-frame-ms X] [--max-pass NAME=Y]...` | Median frame time and median GPU time of a pass, from the run's report |
+| `budget --table budgets.toml <results folder>` | Every frame-time gate of the ladder against a run of `budget.ron`: the median over a run's repeats (`name@k`) of each repeat's median frame, on the adapter the gates are set for; other cells are printed, not gated |
+| `budget --golden golden <results folder> [--write-golden]` | Every run of `golden.ron` against its golden image (`golden/golden.toml`): `a.png` reduced to the golden's size with the area filter, the median difference over the repeats under the golden's tolerance. `--write-golden` makes the images and tolerances from the folder instead |
 | `log-gate <run folder>` or `log-gate <log> [--traced]` | Fails on "panicked", "failed to process shader" and wgpu errors, and on "not loaded" when the run is traced. The `@invariant` validation warning of the stock deferred path passes |
 | `calibration <results folder> [--out FILE]` | Writes `calibration.toml` from a run of `calibration.ron` |
 
@@ -51,6 +53,10 @@ and `b.png`, which is all the testbed writes.
 
 - `smoke.ron`: every raw mode on both scenes, on both adapters of the project's machine. It must pass.
 - `black.ron`: a frame with no light. It must fail.
+- `budget.ron` and `budgets.toml`: every preset on both scenes at 1080p and 1440p, and the frame-time gates of plan
+  section 2 as data (E2). Time on a quiet machine: the gates read wall-clock frames.
+- `golden.ron` and `golden/`: one golden image per preset and scene at 1080p on the RTX 5070, on the path every
+  vendor runs (Raster with TAA, the traced rungs with NRD and TSR), with tolerances from seven repeats (E2).
 - `calibration.ron` and `calibration.toml`: the error against the reference and the flicker of six ways of
   showing Solari's frame on `interior` at 2560x1440, with their noise floor. Later gates are relative to it.
 
