@@ -7,6 +7,11 @@ import package::realtime::bindings::{gbuffer, depth_buffer, load_motion_vector, 
 import package::scene::brdf::{evaluate_specular_brdf, F_AB, lobe_reflectances};
 import package::scene::bindings::{MIRROR_ROUGHNESS_THRESHOLD, resolve_previous_frame_world_position, ResolvedMaterial, ResolvedRayHitFull};
 
+@if(DENOISER_CONTRACT)
+import bevy_render::view::depth_ndc_to_view_z;
+@if(DENOISER_CONTRACT)
+import package::realtime::bindings::{denoiser_diffuse_radiance, denoiser_specular_radiance, denoiser_view_depth};
+
 enable wgpu_ray_query;
 
 /// A surface is replaced outright only when nearly all of its reflectance leaves through the delta
@@ -24,6 +29,10 @@ const NORMAL_QUANTIZATION_FLOOR = 0.002;
 /// Distance, in meters, standing in for "infinitely far" when a mirror ray finds nothing.
 const ENVIRONMENT_VIRTUAL_DISTANCE = 10000.0;
 
+/// Keep in sync with `bevy_anti_alias::ray_reconstruction::DENOISER_SKY_VIEW_DEPTH`.
+@if(DENOISER_CONTRACT)
+const DENOISER_SKY_VIEW_DEPTH = 1.0e6;
+
 @compute @workgroup_size(8, 8, 1)
 fn resolve_dlss_rr_textures(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pixel_id = global_id.xy;
@@ -33,6 +42,8 @@ fn resolve_dlss_rr_textures(@builtin(global_invocation_id) global_id: vec3<u32>)
     let surface_motion_vector = load_motion_vector(pixel_id);
 
     textureStore(dlss_rr_depth, pixel_id, vec4(depth));
+    @if(DENOISER_CONTRACT)
+    resolve_denoiser_inputs(pixel_id, depth);
 
     // The DLSS-RR integration guide's sky defaults: diffuse albedo 0.5, and specular albedo,
     // normal and roughness 0.
@@ -89,6 +100,10 @@ fn psr_init(world_normal: vec3<f32>, material: ResolvedMaterial) -> PsrState {
     var psr: PsrState;
     psr.finished = !needs_specular_motion_vector(material.roughness);
     psr.replace_fully = is_delta_mirror(material);
+    // The radiance a denoiser is given is split at this surface, so its guides must describe this
+    // surface too. The reflection's motion is still tracked.
+    @if(DENOISER_CONTRACT)
+    psr.replace_fully = false;
     // The chain opens with the primary surface's own reflection, so parity starts odd.
     psr.mirror_rotor = mirror_chain_rotor(world_normal, false);
     psr.mirror_parity_odd = true;
@@ -268,4 +283,17 @@ fn env_brdf_approx2(specular_color: vec3<f32>, alpha: f32, N: vec3<f32>, V: vec3
     bias *= saturate(specular_color.g * 50.0);
 
     return fma(specular_color, vec3(max(0.0, scale)), vec3(max(0.0, bias)));
+}
+
+/// Writes the view-space depth, and clears the radiance where the lighting passes shade nothing.
+@if(DENOISER_CONTRACT)
+fn resolve_denoiser_inputs(pixel_id: vec2<u32>, depth: f32) {
+    if depth == 0.0 {
+        textureStore(denoiser_view_depth, pixel_id, vec4(DENOISER_SKY_VIEW_DEPTH));
+        textureStore(denoiser_diffuse_radiance, pixel_id, vec4(0.0));
+        textureStore(denoiser_specular_radiance, pixel_id, vec4(0.0));
+        return;
+    }
+    let view_depth = -depth_ndc_to_view_z(depth, view.clip_from_view, view.view_from_clip);
+    textureStore(denoiser_view_depth, pixel_id, vec4(min(view_depth, DENOISER_SKY_VIEW_DEPTH)));
 }

@@ -12,6 +12,9 @@ import package::scene::sampling::{balance_heuristic, isinf, isnan, LightSample, 
 import package::scene::bindings::{light_sources, LIGHT_NOT_PRESENT_THIS_FRAME, previous_frame_light_id_translations, RAY_T_MAX, RAY_T_MIN, ResolvedMaterial};
 import package::realtime::world_cache_query::{query_world_cache, WORLD_CACHE_CELL_LIFETIME};
 
+@if(DENOISER_CONTRACT)
+import package::realtime::denoiser_contract::{shade_reservoir_into_denoiser_radiance, store_unreused_denoiser_radiance};
+
 enable wgpu_ray_query;
 
 const SPATIAL_REUSE_RADIUS_PIXELS = 30.0;
@@ -32,6 +35,8 @@ fn initial(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_invoc
 
     let initial = generate_initial_path(surface.world_position, surface.world_normal, surface.material, workgroup_id.xy, global_id.xy, &rng);
     textureStore(view_output, global_id.xy, vec4(initial.radiance, 0.0));
+    @if(DENOISER_CONTRACT)
+    store_unreused_denoiser_radiance(global_id.xy, initial.diffuse_radiance, initial.radiance - initial.diffuse_radiance, initial.hit_distances);
     reservoirs_b[pixel_index] = initial.reservoir;
 }
 
@@ -83,6 +88,9 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     pixel_color += textureLoad(view_output, global_id.xy).rgb;
     pixel_color *= view.exposure;
     textureStore(view_output, global_id.xy, vec4(pixel_color, 1.0));
+
+    @if(DENOISER_CONTRACT)
+    shade_reservoir_into_denoiser_radiance(global_id.xy, merge_result.merged_reservoir, merge_result.selected_sample_brdf_radiance, surface.material, surface.world_position, surface.world_normal);
 
     @if(VISUALIZE_WORLD_CACHE)
     textureStore(view_output, global_id.xy, vec4(query_world_cache(surface.world_position, surface.world_normal, view.world_position, RAY_T_MAX, WORLD_CACHE_CELL_LIFETIME, &rng) * view.exposure, 1.0));
