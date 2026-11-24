@@ -2,9 +2,11 @@
 //!
 //! TSR renders the frame below the output's resolution with a moving sub-pixel jitter and rebuilds the full
 //! resolution from the current frame and the reprojected history, like DLSS Super Resolution, on any GPU with
-//! compute shaders and no vendor SDK. It is Qualcomm's Snapdragon Game Super Resolution 2 (SGSR 2), its 3-pass
-//! compute variant, ported to WESL from <https://github.com/SnapdragonStudios/snapdragon-gsr> (BSD-3-Clause; the
-//! notice is in each shader file).
+//! compute shaders and no vendor SDK. It runs one of two algorithms ([`TsrAlgorithm`]):
+//! - Qualcomm's Snapdragon Game Super Resolution 2 (SGSR 2), its 3-pass compute variant, ported to WESL from
+//!   <https://github.com/SnapdragonStudios/snapdragon-gsr> (BSD-3-Clause; the notice is in each shader file).
+//! - AMD's FidelityFX Super Resolution 3.1 (FSR 3.1) upscaler, from the MIT GLSL of AMD's FidelityFX SDK v1.1.4
+//!   through `vendor/wgpu_ffx`, a trimmed copy of cwfitzgerald's `wgpu-ffx` (MIT). It runs on Vulkan only.
 //!
 //! # Usage
 //! 1. Check for `Option<Res<TsrSupported>>` at run time: it exists when the device can run TSR.
@@ -13,11 +15,12 @@
 //! 3. Custom rendering code, including third party crates, should account for the optional
 //!    `MainPassResolutionOverride`, as with DLSS (see the `custom_render_phase` example).
 //!
-//! SGSR 2 compares the frame before and after its transparent objects to keep them from ghosting. Bevy keeps no
-//! copy of the frame before its transparent pass, so that part is left out: transparent objects that write no
-//! motion vectors may leave trails.
+//! Both algorithms can compare the frame before and after its transparent objects to keep them from ghosting.
+//! Bevy keeps no copy of the frame before its transparent pass, so that part is left out: transparent objects
+//! that write no motion vectors may leave trails.
 
 mod extract;
+mod fsr;
 mod node;
 mod prepare;
 
@@ -73,7 +76,19 @@ impl Plugin for TsrPlugin {
             return;
         }
 
+        let fsr3 = wgpu_ffx::FsrContext::is_supported(
+            render_app.world().resource::<RenderAdapter>(),
+            render_app.world().resource::<RenderDevice>().wgpu_device(),
+        );
+        if !fsr3 {
+            info!("TSR's FSR 3.1 is not supported on this device: it needs Vulkan; SGSR 2 stands in for it");
+        }
+
         render_app
+            .insert_resource(fsr::TsrFsr {
+                supported: fsr3,
+                context: None,
+            })
             .add_systems(RenderStartup, init_tsr_pipelines)
             .add_systems(ExtractSchedule, extract::extract_tsr)
             .add_systems(
@@ -82,9 +97,12 @@ impl Plugin for TsrPlugin {
                     .in_set(RenderSystems::PrepareViews)
                     .before(prepare_view_targets),
             )
-            .add_systems(Core3d, node::tsr.in_set(Core3dSystems::EarlyPostProcess));
+            .add_systems(
+                Core3d,
+                (node::tsr, fsr::tsr_fsr).in_set(Core3dSystems::EarlyPostProcess),
+            );
 
-        app.insert_resource(TsrSupported);
+        app.insert_resource(TsrSupported { fsr3 });
     }
 }
 
@@ -122,6 +140,8 @@ pub struct Tsr {
     ///
     /// `2.0 / 3.0` is what DLSS calls Quality, `0.58` Balanced and `0.5` Performance.
     pub render_scale: f32,
+    /// Which upscaler runs.
+    pub algorithm: TsrAlgorithm,
     /// Set to true to delete the saved temporal history (past frames).
     ///
     /// Useful for preventing ghosting when the history is no longer
@@ -136,14 +156,31 @@ impl Default for Tsr {
     fn default() -> Self {
         Self {
             render_scale: 2.0 / 3.0,
+            algorithm: TsrAlgorithm::default(),
             reset: false,
         }
     }
 }
 
+/// The upscaler behind [`Tsr`].
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[reflect(Default, Clone, PartialEq)]
+pub enum TsrAlgorithm {
+    /// Snapdragon Game Super Resolution 2: three compute passes in WESL, on every device TSR supports.
+    #[default]
+    Sgsr2,
+    /// AMD FidelityFX Super Resolution 3.1: seven compute passes of AMD's SPIR-V, on Vulkan only
+    /// ([`TsrSupported::fsr3`]). Where it cannot run, SGSR 2 runs instead and a warning is logged once.
+    Fsr3,
+}
+
 /// When TSR can run on the current device, this resource exists in the main world. Otherwise it is absent.
 #[derive(Resource, Clone, Copy, Debug)]
-pub struct TsrSupported;
+pub struct TsrSupported {
+    /// Whether [`TsrAlgorithm::Fsr3`] runs here: on Vulkan, with wgpu's SPIR-V passthrough, texture clears,
+    /// filterable 32-bit float textures and read-write storage textures of the formats FSR uses.
+    pub fsr3: bool,
+}
 
 /// The bind group layouts and samplers of TSR's three passes, and their pipelines once a camera has asked for
 /// them.

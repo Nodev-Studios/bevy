@@ -1,4 +1,7 @@
-use super::{Tsr, TsrPipelines};
+use super::{
+    fsr::{TsrFsr, TsrFsrView},
+    Tsr, TsrAlgorithm, TsrPipelines,
+};
 use bevy_camera::{CameraMainTextureUsages, MainPassResolutionOverride};
 use bevy_core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
 use bevy_diagnostic::FrameCount;
@@ -15,6 +18,7 @@ use bevy_render::{
     texture::{CachedTexture, TextureCache},
     view::ExtractedView,
 };
+use tracing::warn;
 
 /// `TsrParams` in `params.wesl`.
 #[derive(ShaderType, Clone, Default)]
@@ -58,10 +62,12 @@ pub fn prepare_tsr(
             &mut TemporalJitter,
             &mut MipBias,
             Option<&mut TsrContext>,
+            Option<&TsrFsrView>,
         ),
         (With<DepthPrepass>, With<MotionVectorPrepass>),
     >,
     mut pipelines: ResMut<TsrPipelines>,
+    mut fsr: ResMut<TsrFsr>,
     pipeline_cache: Res<PipelineCache>,
     mut texture_cache: ResMut<TextureCache>,
     render_device: Res<RenderDevice>,
@@ -69,11 +75,9 @@ pub fn prepare_tsr(
     frame_count: Res<FrameCount>,
     mut commands: Commands,
 ) {
-    for (entity, view, tsr, mut main_texture_usages, mut jitter, mut mip_bias, context) in
+    for (entity, view, tsr, mut main_texture_usages, mut jitter, mut mip_bias, context, fsr_view) in
         &mut query
     {
-        pipelines.queue(&pipeline_cache);
-
         // The upscale pass writes its output into the main texture as a storage texture.
         main_texture_usages.0 |= TextureUsages::STORAGE_BINDING;
 
@@ -92,6 +96,37 @@ pub fn prepare_tsr(
         jitter.offset = Vec2::new(halton(index, 2), halton(index, 3)) - 0.5;
         // FSR 2's texture LOD bias for this ratio; at native resolution it is TAA's -1.
         mip_bias.0 = ops::log2(1.0 / upscale.x) - 1.0;
+
+        let mut entity_commands = commands.entity(entity);
+        entity_commands.insert(MainPassResolutionOverride(render_size));
+
+        if tsr.algorithm == TsrAlgorithm::Fsr3 {
+            if fsr.supported {
+                entity_commands.remove::<(TsrContext, TsrTextures)>();
+                let context = fsr
+                    .context
+                    .get_or_insert_with(|| wgpu_ffx::FsrContext::new(render_device.wgpu_device()));
+                // The inputs are output-sized, with the image in their top-left render rectangle: FSR's own
+                // dynamic-resolution layout, with the maximum render size set to the textures' size.
+                if fsr_view.is_none_or(|fsr_view| fsr_view.output_size != output_size) {
+                    entity_commands.insert(TsrFsrView {
+                        view: wgpu_ffx::FsrContext::create_view(
+                            context,
+                            &render_queue,
+                            output_size.to_array(),
+                            output_size.to_array(),
+                        ),
+                        output_size,
+                    });
+                }
+                continue;
+            }
+            bevy_utils::once!(warn!(
+                "TSR's FSR 3.1 cannot run on this device (it needs Vulkan): SGSR 2 runs instead"
+            ));
+        }
+        entity_commands.remove::<TsrFsrView>();
+        pipelines.queue(&pipeline_cache);
 
         let fresh = context.as_ref().is_none_or(|context| {
             context.render_size != render_size || context.output_size != output_size
@@ -154,19 +189,15 @@ pub fn prepare_tsr(
                 ((luma_history_1, luma_history_2), (history_1, history_2))
             };
 
-        let mut entity_commands = commands.entity(entity);
-        entity_commands.insert((
-            TsrTextures {
-                ycocg_color,
-                motion_depth,
-                motion_depth_clip,
-                previous_luma_history,
-                luma_history,
-                previous_history,
-                history,
-            },
-            MainPassResolutionOverride(render_size),
-        ));
+        entity_commands.insert(TsrTextures {
+            ycocg_color,
+            motion_depth,
+            motion_depth_clip,
+            previous_luma_history,
+            luma_history,
+            previous_history,
+            history,
+        });
         if let Some(context) = new_context {
             entity_commands.insert(context);
         }

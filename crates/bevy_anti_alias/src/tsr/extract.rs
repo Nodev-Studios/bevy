@@ -1,4 +1,4 @@
-use super::{prepare::TsrContext, Tsr};
+use super::{fsr::TsrFsrView, prepare::TsrContext, Tsr};
 use bevy_camera::{Camera, Hdr, MainPassResolutionOverride, Projection};
 use bevy_ecs::{
     query::{Has, With},
@@ -25,7 +25,7 @@ pub fn extract_tsr(
             entity_commands.insert(tsr.clone());
             tsr.reset = false;
         } else if cleanup_query.get(entity) == Ok(true) {
-            entity_commands.remove::<(Tsr, TsrContext, MainPassResolutionOverride)>();
+            entity_commands.remove::<(Tsr, TsrContext, TsrFsrView, MainPassResolutionOverride)>();
         }
     }
 }
