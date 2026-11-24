@@ -4,7 +4,7 @@ use bevy_core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
 use bevy_diagnostic::FrameCount;
 use bevy_ecs::prelude::*;
 use bevy_image::ToExtents;
-use bevy_math::{UVec2, Vec2, Vec4Swizzles};
+use bevy_math::{ops, UVec2, Vec2, Vec4Swizzles};
 use bevy_render::{
     camera::{MipBias, TemporalJitter},
     render_resource::{
@@ -91,7 +91,7 @@ pub fn prepare_tsr(
         let index = frame_count.0 % phases + 1;
         jitter.offset = Vec2::new(halton(index, 2), halton(index, 3)) - 0.5;
         // FSR 2's texture LOD bias for this ratio; at native resolution it is TAA's -1.
-        mip_bias.0 = (1.0 / upscale.x).log2() - 1.0;
+        mip_bias.0 = ops::log2(1.0 / upscale.x) - 1.0;
 
         let fresh = context.as_ref().is_none_or(|context| {
             context.render_size != render_size || context.output_size != output_size
