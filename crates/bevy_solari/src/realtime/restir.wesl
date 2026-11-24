@@ -90,7 +90,7 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     textureStore(view_output, global_id.xy, vec4(pixel_color, 1.0));
 
     @if(DENOISER_CONTRACT)
-    shade_reservoir_into_denoiser_radiance(global_id.xy, merge_result.merged_reservoir, merge_result.selected_sample_brdf_radiance, surface.material, surface.world_position, surface.world_normal);
+    shade_reservoir_into_denoiser_radiance(global_id.xy, merge_result.selected_sample_brdf_radiance * merge_result.merged_reservoir.unbiased_contribution_weight, merge_result.selected_sample_world_position, surface.material, surface.world_position, surface.world_normal);
 
     @if(VISUALIZE_WORLD_CACHE)
     textureStore(view_output, global_id.xy, vec4(query_world_cache(surface.world_position, surface.world_normal, view.world_position, RAY_T_MAX, WORLD_CACHE_CELL_LIFETIME, &rng) * view.exposure, 1.0));
@@ -198,6 +198,8 @@ fn jacobian(
 struct ReservoirMergeResult {
     merged_reservoir: Reservoir,
     selected_sample_brdf_radiance: vec3<f32>,
+    /// Where the selected sample lights the surface from, as `ReservoirContribution` gives it.
+    @if(DENOISER_CONTRACT) selected_sample_world_position: vec4<f32>,
 }
 
 fn merge_reservoirs(
@@ -224,6 +226,9 @@ fn merge_reservoirs(
 
     // Skip resampling empty reservoirs
     if other_reservoir.confidence_weight == 0.0 {
+        @if(DENOISER_CONTRACT)
+        return ReservoirMergeResult(canonical_reservoir, canonical_sample_at_canonical.brdf_radiance, canonical_sample_at_canonical.sample_world_position);
+        @else
         return ReservoirMergeResult(canonical_reservoir, canonical_sample_at_canonical.brdf_radiance);
     }
 
@@ -318,6 +323,9 @@ fn merge_reservoirs(
         let inverse_target_function = select(0.0, 1.0 / other_sample_at_canonical.target_function, other_sample_at_canonical.target_function > 0.0);
         combined_reservoir.unbiased_contribution_weight = weight_sum * inverse_target_function;
 
+        @if(DENOISER_CONTRACT)
+        return ReservoirMergeResult(combined_reservoir, other_sample_at_canonical.brdf_radiance, other_sample_at_canonical.sample_world_position);
+        @else
         return ReservoirMergeResult(combined_reservoir, other_sample_at_canonical.brdf_radiance);
     } else {
         combined_reservoir.sample_point_world_position = canonical_reservoir.sample_point_world_position;
@@ -328,6 +336,9 @@ fn merge_reservoirs(
         let inverse_target_function = select(0.0, 1.0 / canonical_sample_at_canonical.target_function, canonical_sample_at_canonical.target_function > 0.0);
         combined_reservoir.unbiased_contribution_weight = weight_sum * inverse_target_function;
 
+        @if(DENOISER_CONTRACT)
+        return ReservoirMergeResult(combined_reservoir, canonical_sample_at_canonical.brdf_radiance, canonical_sample_at_canonical.sample_world_position);
+        @else
         return ReservoirMergeResult(combined_reservoir, canonical_sample_at_canonical.brdf_radiance);
     }
 }

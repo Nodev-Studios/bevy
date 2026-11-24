@@ -3,11 +3,11 @@
 //! `bevy_anti_alias::ray_reconstruction::ViewDenoiserInputTextures` documents the encoding.
 
 import bevy_pbr::render::pbr_functions::{calculate_diffuse_color, calculate_F0};
-import package::realtime::bindings::{denoiser_diffuse_radiance, denoiser_specular_radiance, Reservoir, view};
+import package::realtime::bindings::{denoiser_diffuse_radiance, denoiser_specular_radiance, view};
 import package::realtime::resolve_dlss_rr_textures::env_brdf_approx2;
-import package::scene::bindings::{light_sources, RAY_T_MIN, ResolvedMaterial};
+import package::scene::bindings::ResolvedMaterial;
 import package::scene::brdf::{evaluate_diffuse_brdf, evaluate_specular_brdf, F_AB};
-import package::scene::sampling::{calculate_resolved_light_contribution, isinf, NULL_LIGHT_ID, resolve_light_sample};
+import package::scene::sampling::isinf;
 
 enable wgpu_ray_query;
 
@@ -88,20 +88,27 @@ fn store_unreused_denoiser_radiance(pixel_id: vec2<u32>, diffuse_radiance: vec3<
     textureStore(denoiser_specular_radiance, pixel_id, vec4(specular_radiance, hit_distances.y));
 }
 
-/// With ReSTIR, adds the sample the shading pass selected to what the initial pass parked, and
-/// writes the final value. The hit distances stay those of this pixel's own ray: the distance to a
-/// reused sample says nothing about what this pixel's lobes see.
+/// With ReSTIR, adds the radiance of the sample the shading pass selected to what the initial pass
+/// parked, and writes the final value. `sample_world_position` is where that sample lights the
+/// surface from: a point when w is 1, a direction when w is 0. The hit distances stay those of this
+/// pixel's own ray: the distance to a reused sample says nothing about what this pixel's lobes see.
 @if(DENOISER_CONTRACT)
 fn shade_reservoir_into_denoiser_radiance(
     pixel_id: vec2<u32>,
-    reservoir: Reservoir,
-    selected_sample_brdf_radiance: vec3<f32>,
+    reused_radiance: vec3<f32>,
+    sample_world_position: vec4<f32>,
     material: ResolvedMaterial,
     world_position: vec3<f32>,
     world_normal: vec3<f32>,
 ) {
-    let reused_radiance = selected_sample_brdf_radiance * reservoir.unbiased_contribution_weight;
-    let reused_diffuse_radiance = reused_radiance * reservoir_diffuse_fraction(reservoir, material, world_position, world_normal);
+    var reused_diffuse_radiance = vec3(0.0);
+    // An empty reservoir has no sample position to take a direction from.
+    if any(reused_radiance != vec3(0.0)) {
+        let wo = normalize(view.world_position - world_position);
+        let wi = normalize(sample_world_position.xyz - (sample_world_position.w * world_position));
+        let F_ab = F_AB(material.perceptual_roughness, max(dot(world_normal, wo), 0.0001));
+        reused_diffuse_radiance = reused_radiance * diffuse_fraction(wo, wi, world_normal, material, F_ab);
+    }
 
     let unreused_diffuse = textureLoad(denoiser_diffuse_radiance, pixel_id);
     let unreused_specular = textureLoad(denoiser_specular_radiance, pixel_id);
@@ -114,24 +121,4 @@ fn shade_reservoir_into_denoiser_radiance(
         world_position,
         world_normal,
     );
-}
-
-/// `diffuse_fraction` for the direction a reservoir's sample lights the surface from. The sample is
-/// resolved a second time here, rather than carried out of `merge_reservoirs`, to leave that
-/// function as it is upstream.
-@if(DENOISER_CONTRACT)
-fn reservoir_diffuse_fraction(reservoir: Reservoir, material: ResolvedMaterial, world_position: vec3<f32>, world_normal: vec3<f32>) -> vec3<f32> {
-    var wi: vec3<f32>;
-    if reservoir.light_sample.light_id != NULL_LIGHT_ID {
-        let resolved = resolve_light_sample(reservoir.light_sample, light_sources[reservoir.light_sample.light_id >> 16u]);
-        wi = calculate_resolved_light_contribution(resolved, world_position, world_normal).wi;
-    } else if any(reservoir.radiance != vec3(0.0)) {
-        wi = normalize(reservoir.sample_point_world_position - (world_position + world_normal * RAY_T_MIN));
-    } else {
-        return vec3(0.0);
-    }
-
-    let wo = normalize(view.world_position - world_position);
-    let F_ab = F_AB(material.perceptual_roughness, max(dot(world_normal, wo), 0.0001));
-    return diffuse_fraction(wo, wi, world_normal, material, F_ab);
 }
