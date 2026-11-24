@@ -1,0 +1,17 @@
+#![enable(implicit_some)]
+// C1: where Auto lands (run with a testbed built with dlss, DLSS_SDK exported) through the testbed's ladder flags, with its reasons in report.json.
+(
+    adapters: [
+        (name: "NVIDIA", resolutions: ["1280x720"]),
+        (name: "AMD", resolutions: ["640x360"]),
+    ],
+    scenes: ["interior"],
+    warmup: 30,
+    frames: 60,
+    seconds: 240,
+    runs: [
+        (name: "auto", args: ["--preset", "auto"]),
+        (name: "auto-no-rt", args: ["--preset", "auto", "--force-no-rt"], adapters: ["NVIDIA"]),
+        (name: "raster", args: ["--preset", "raster"]),
+    ],
+)
