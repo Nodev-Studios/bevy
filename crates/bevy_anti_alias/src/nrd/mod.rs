@@ -66,10 +66,7 @@ impl Plugin for NrdPlugin {
         render_app
             .add_systems(RenderStartup, init_nrd_crop_pipeline)
             .add_systems(ExtractSchedule, extract_nrd)
-            .add_systems(
-                Render,
-                prepare_nrd.in_set(RenderSystems::PrepareResources),
-            )
+            .add_systems(Render, prepare_nrd.in_set(RenderSystems::PrepareResources))
             .add_systems(Core3d, node::nrd.in_set(DenoiserSystems::Denoise));
     }
 }
