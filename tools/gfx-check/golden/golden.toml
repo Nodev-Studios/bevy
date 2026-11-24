@@ -1,0 +1,51 @@
+# Written by `gfx-check budget --golden tools/gfx-check/golden --write-golden <results>` from a run of
+# tools/gfx-check/golden.ron; do not edit by hand. Each image is the per-pixel mean of one configuration's
+# repeats, reduced to `size` with the area filter; `tolerance` is twice the largest difference of one
+# repeat from it (at least 0.1 points), and a later run passes when the median of its repeats' differences
+# is under it. Only cells on `adapter` at `resolution` are gated; others are recorded.
+
+adapter = "RTX 5070"
+resolution = "1920x1080"
+size = [480, 270]
+
+[[image]]
+run = "raster"
+scene = "interior"
+file = "raster-interior.png"
+tolerance = 0.46
+written_from = [0.202, 0.196, 0.228, 0.191, 0.188, 0.203, 0.196]
+
+[[image]]
+run = "raster"
+scene = "many-lights"
+file = "raster-many-lights.png"
+tolerance = 0.13
+written_from = [0.062, 0.055, 0.065, 0.06, 0.061, 0.062, 0.058]
+
+[[image]]
+run = "rt-full"
+scene = "interior"
+file = "rt-full-interior.png"
+tolerance = 0.24
+written_from = [0.095, 0.092, 0.114, 0.112, 0.116, 0.116, 0.092]
+
+[[image]]
+run = "rt-full"
+scene = "many-lights"
+file = "rt-full-many-lights.png"
+tolerance = 0.63
+written_from = [0.224, 0.215, 0.199, 0.216, 0.258, 0.202, 0.312]
+
+[[image]]
+run = "rt-lite"
+scene = "interior"
+file = "rt-lite-interior.png"
+tolerance = 0.25
+written_from = [0.117, 0.124, 0.123, 0.113, 0.104, 0.109, 0.116]
+
+[[image]]
+run = "rt-lite"
+scene = "many-lights"
+file = "rt-lite-many-lights.png"
+tolerance = 0.72
+written_from = [0.217, 0.209, 0.179, 0.181, 0.199, 0.229, 0.358]

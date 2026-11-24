@@ -434,13 +434,24 @@ fn resolve_upscaler(
 }
 
 /// The internal resolution each rung renders at when the player leaves the quality on `Auto`.
-// to tune: starting values that keep each rung's internal resolution near 1080p or under; an ultrawide
-// 1440p output has more pixels than 2560x1440 and is treated as 4K.
+///
+/// Measured on the testbed on the RTX 5070 (2026-11-24, E2): `RtLite` at Quality instead of Balanced at 1080p
+/// output lowers its error against the path tracer (NRD + TSR: 2.55 → 2.46 % on `interior`, 3.54 → 3.38 % on
+/// `many-lights`) and its motion error (2.06 → 2.01 %) for 0.35 ms of GPU, with the rung's frame far under its
+/// gate; at 1440p Balanced instead of Performance does the same (3.41 → 3.22 %, motion 2.01 → 1.91 %) for
+/// 0.55 ms. `RtFull` at native 1440p is no closer to the path tracer than at Quality (DLSS-RR: 1.99 against
+/// 1.91 % on `interior`) and costs twice DLSS-RR's time; at 1080p native it moves better than at Quality
+/// (motion 1.02 against 1.11 % with DLSS-RR, 1.73 against 2.03 % with NRD) and stays far under its gate. Raster
+/// stays native at 1080p: with TAA it errs 1.10 % against a frame supersampled from 3840x2160 on `interior`, TSR
+/// at Quality 1.17 %, and its GPU frame there (2.27 ms) is under its 2.8 ms gate.
+// An ultrawide 1440p output has more pixels than 2560x1440 and is treated as 4K.
 fn auto_quality(rung: GraphicsRung, output: UVec2) -> ResolvedQuality {
     let pixels = u64::from(output.x) * u64::from(output.y);
     match rung {
         GraphicsRung::RtLite => {
             if pixels <= PIXELS_1080P {
+                ResolvedQuality::Quality
+            } else if pixels <= PIXELS_1440P {
                 ResolvedQuality::Balanced
             } else {
                 ResolvedQuality::Performance

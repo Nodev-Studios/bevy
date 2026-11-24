@@ -1,0 +1,49 @@
+#![enable(implicit_some)]
+// The ladder's frame-time gates (plan section 2), checked by `gfx-check budget --table tools/gfx-check/budgets.toml`.
+// Every preset on both scenes at 1080p and 1440p, through the testbed's ladder flags, as shipped (bloom on), each
+// configuration three times with warm-ups of 300, 301 and 307 frames, interleaved so drift spreads over all of
+// them. The gates hold on the RTX 5070 only; other adapters record (the integrated Radeon runs once, at 640x360).
+// Raster is measured with TAA and with TSR, never with DLSS: the card its gate models has none (section 10 item 6).
+//
+//   eval "$(tools/fetch-sdks.sh dlss)"; eval "$(tools/fetch-sdks.sh nrd)"   # also exported when it runs
+//   cargo build --release --example gfx_testbed --features bevy_solari,area_light_luts,bevy_graphics,dlss,nrd
+//   target/release/gfx-check run tools/gfx-check/budget.ron
+//   target/release/gfx-check budget --table tools/gfx-check/budgets.toml target/gfx-check/budget
+//
+// Frame times are wall-clock: time on a machine with nothing else running, or the gates fail on noise.
+(
+    adapters: [
+        (name: "NVIDIA", resolutions: ["1920x1080", "2560x1440"]),
+        (name: "AMD", resolutions: ["640x360"]),
+    ],
+    scenes: ["interior", "many-lights"],
+    warmup: 300,
+    frames: 600,
+    seconds: 300,
+    runs: [
+        (name: "raster-taa@1", args: ["--preset", "raster", "--upscaler", "off"], warmup: 300),
+        (name: "raster-tsr-quality@1", args: ["--preset", "raster", "--upscaler", "tsr", "--quality", "quality"], warmup: 300),
+        (name: "raster-tsr@1", args: ["--preset", "raster", "--upscaler", "tsr"], warmup: 300),
+        (name: "raster-auto@1", args: ["--preset", "raster"], warmup: 300),
+        (name: "rt-lite-auto@1", args: ["--preset", "rt-lite"], warmup: 300),
+        (name: "rt-lite-nrd-tsr@1", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 300),
+        (name: "rt-full-auto@1", args: ["--preset", "rt-full"], warmup: 300),
+        (name: "rt-full-nrd-tsr@1", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 300),
+        (name: "raster-taa@2", args: ["--preset", "raster", "--upscaler", "off"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "raster-tsr-quality@2", args: ["--preset", "raster", "--upscaler", "tsr", "--quality", "quality"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "raster-tsr@2", args: ["--preset", "raster", "--upscaler", "tsr"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "raster-auto@2", args: ["--preset", "raster"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "rt-lite-auto@2", args: ["--preset", "rt-lite"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "rt-lite-nrd-tsr@2", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "rt-full-auto@2", args: ["--preset", "rt-full"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "rt-full-nrd-tsr@2", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "raster-taa@3", args: ["--preset", "raster", "--upscaler", "off"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "raster-tsr-quality@3", args: ["--preset", "raster", "--upscaler", "tsr", "--quality", "quality"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "raster-tsr@3", args: ["--preset", "raster", "--upscaler", "tsr"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "raster-auto@3", args: ["--preset", "raster"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-lite-auto@3", args: ["--preset", "rt-lite"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-lite-nrd-tsr@3", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-full-auto@3", args: ["--preset", "rt-full"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-full-nrd-tsr@3", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 307, adapters: ["NVIDIA"]),
+    ],
+)

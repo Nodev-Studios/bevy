@@ -8,6 +8,7 @@
 
 extern crate alloc;
 
+mod budgets;
 mod calibration;
 mod flicker;
 mod log_gate;
@@ -102,13 +103,32 @@ struct MotionCommand {
     max: Option<f64>,
 }
 
-/// Gates a run's frame time and GPU pass times.
+/// Gates a run's frame time and GPU pass times; with `--table` or `--golden`, every run of a results folder
+/// against the ladder's frame-time gates (`budgets.toml`) or its golden images (`golden/golden.toml`).
 #[derive(FromArgs)]
 #[argh(subcommand, name = "budget")]
 struct BudgetCommand {
-    /// the run's `report.json`, or its folder
+    /// the run's `report.json`, or its folder; with `--table` or `--golden`, the output folder of a `run`
     #[argh(positional)]
     report: PathBuf,
+    /// the frame-time gates, e.g. `tools/gfx-check/budgets.toml`, checked against every run of the folder
+    #[argh(option)]
+    table: Option<PathBuf>,
+    /// the golden images' folder, e.g. `tools/gfx-check/golden`, checked against every run of the folder
+    #[argh(option)]
+    golden: Option<PathBuf>,
+    /// with `--golden`: write the golden images and their tolerances from the folder's runs instead
+    #[argh(switch)]
+    write_golden: bool,
+    /// with `--write-golden`: the adapter the goldens are made and gated on; default RTX 5070
+    #[argh(option, default = "String::from(\"RTX 5070\")")]
+    golden_adapter: String,
+    /// with `--write-golden`: the window size of the runs; default 1920x1080
+    #[argh(option, default = "String::from(\"1920x1080\")")]
+    golden_resolution: String,
+    /// with `--write-golden`: the size the goldens are stored at; default 480x270
+    #[argh(option, default = "String::from(\"480x270\")")]
+    golden_size: String,
     /// largest median frame time allowed, in milliseconds
     #[argh(option)]
     max_frame_ms: Option<f64>,
@@ -198,6 +218,22 @@ fn motion(command: MotionCommand) -> Result<bool, String> {
 }
 
 fn budget(command: BudgetCommand) -> Result<bool, String> {
+    if let Some(table) = &command.table {
+        return budgets::table(&command.report, table);
+    }
+    if let Some(golden) = &command.golden {
+        return if command.write_golden {
+            budgets::write_golden(
+                &command.report,
+                golden,
+                &command.golden_adapter,
+                &command.golden_resolution,
+                &command.golden_size,
+            )
+        } else {
+            budgets::golden(&command.report, golden)
+        };
+    }
     let report = Report::read(&command.report)?;
     let mut pass = true;
     let mut check = |label: &str, value: f64, max: f64| {

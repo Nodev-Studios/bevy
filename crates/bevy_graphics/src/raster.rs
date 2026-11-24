@@ -2,7 +2,10 @@
 
 use crate::GraphicsOverrides;
 use bevy_light::ShadowFilteringMethod;
-use bevy_pbr::{ContactShadows, ScreenSpaceAmbientOcclusion, ScreenSpaceReflections};
+use bevy_pbr::{
+    ContactShadows, ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel,
+    ScreenSpaceReflections,
+};
 use bevy_post_process::bloom::Bloom;
 
 /// The effects of [`GraphicsRung::Raster`](crate::GraphicsRung::Raster). `None` leaves an effect off.
@@ -23,14 +26,42 @@ pub struct RasterEffects {
 }
 
 /// The table of the Raster rung.
-// to tune: Bevy's defaults for each effect, until the rung is measured against its budget.
+///
+/// Measured on the testbed's `interior` and `many-lights` scenes at 1920x1080 with TAA on the RTX 5070
+/// (2026-11-24, GPU time of the frame from the render diagnostics, medians of three runs). With Bevy's defaults
+/// for every effect the frame took 2.75 ms of GPU on `interior` (3.22 ms median frame on a quiet machine)
+/// against the rung's gate of 2.8 ms; with these cuts it takes about 2.25 ms. What each cut saves and costs is
+/// beside it. On frames rendered at 3840x2160 the cuts together (contact shadows off) differ from the defaults
+/// by 0.71-0.73 points on `interior`, where two runs of the defaults differ by 0.67, and by 0.13 on
+/// `many-lights` (two runs: 0.06).
 pub fn raster() -> RasterEffects {
     RasterEffects {
         // Every anti-aliasing the ladder uses is temporal, which is what this filter is made for.
+        // `Hardware2x2` would save 0.03 ms on `interior`.
         shadow_filter: ShadowFilteringMethod::Temporal,
-        contact_shadows: Some(ContactShadows::default()),
-        ambient_occlusion: Some(ScreenSpaceAmbientOcclusion::default()),
-        reflections: Some(ScreenSpaceReflections::default()),
+        // 4 linear steps over the same 0.3 m: 0.07 ms of the deferred lighting pass on `interior`, against
+        // 0.29 ms at Bevy's 16 (0.15 at 8). Switching them off left no visible shape in C1's difference image of
+        // that scene, but they stay on for the contacts shadow maps miss in a game (feet, thin props).
+        contact_shadows: Some(ContactShadows {
+            linear_steps: 4,
+            ..Default::default()
+        }),
+        // Medium (8 samples a pixel, against High's 18): 0.22 ms against 0.37 on `interior`. On TAA frames
+        // rendered at 3840x2160 (supersampled for 1080p) it differs from High by 0.53-0.62 points on `interior`,
+        // where two runs of High differ by 0.67, and by 0.08-0.10 on `many-lights` (two runs: 0.06).
+        ambient_occlusion: Some(ScreenSpaceAmbientOcclusion {
+            quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+            ..Default::default()
+        }),
+        // 8 linear and 3 bisection steps, against Bevy's 10 and 5: 0.46 ms against 0.59 on `interior`, whose
+        // glossy floor fills most of the frame. The one cut that shows above run-to-run noise: 0.12-0.13 points
+        // on `many-lights` against 0.06 between two runs of the defaults (`interior`: 0.52-0.63 against 0.67).
+        reflections: Some(ScreenSpaceReflections {
+            linear_steps: 8,
+            bisection_steps: 3,
+            ..Default::default()
+        }),
+        // 0.10 ms; it is the lens, not the lighting, so every rung keeps it.
         bloom: Some(Bloom::NATURAL),
     }
 }
