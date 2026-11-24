@@ -81,11 +81,12 @@ fn store_denoiser_radiance(
 }
 
 /// With ReSTIR, the initial pass parks the radiance it shaded without a reservoir in the radiance
-/// textures, as it parks the sum of both in the view target.
+/// textures, as it parks the sum of both in the view target. It parks it exposed: unexposed, a
+/// highlight brighter than the largest 16-bit float would be clipped, as the view target clips it.
 @if(DENOISER_CONTRACT)
 fn store_unreused_denoiser_radiance(pixel_id: vec2<u32>, diffuse_radiance: vec3<f32>, specular_radiance: vec3<f32>, hit_distances: vec2<f32>) {
-    textureStore(denoiser_diffuse_radiance, pixel_id, vec4(diffuse_radiance, hit_distances.x));
-    textureStore(denoiser_specular_radiance, pixel_id, vec4(specular_radiance, hit_distances.y));
+    textureStore(denoiser_diffuse_radiance, pixel_id, vec4(diffuse_radiance * view.exposure, hit_distances.x));
+    textureStore(denoiser_specular_radiance, pixel_id, vec4(specular_radiance * view.exposure, hit_distances.y));
 }
 
 /// With ReSTIR, adds the radiance of the sample the shading pass selected to what the initial pass
@@ -110,12 +111,13 @@ fn shade_reservoir_into_denoiser_radiance(
         reused_diffuse_radiance = reused_radiance * diffuse_fraction(wo, wi, world_normal, material, F_ab);
     }
 
+    // The parked radiance is exposed; `store_denoiser_radiance` exposes what it is given.
     let unreused_diffuse = textureLoad(denoiser_diffuse_radiance, pixel_id);
     let unreused_specular = textureLoad(denoiser_specular_radiance, pixel_id);
     store_denoiser_radiance(
         pixel_id,
-        unreused_diffuse.rgb + reused_diffuse_radiance,
-        unreused_specular.rgb + reused_radiance - reused_diffuse_radiance,
+        unreused_diffuse.rgb / view.exposure + reused_diffuse_radiance,
+        unreused_specular.rgb / view.exposure + reused_radiance - reused_diffuse_radiance,
         vec2(unreused_diffuse.a, unreused_specular.a),
         material,
         world_position,
