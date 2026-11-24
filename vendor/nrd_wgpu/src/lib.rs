@@ -50,8 +50,8 @@ pub enum DenoiserKind {
 /// without a format, which lets them run unchanged on 32-bit textures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TexturePrecision {
-    /// 16-bit floats, as NRD asks. The denoised image comes out darker than its input, by about 3 % with 30
-    /// accumulated frames (measured on a uniform surface, see the README).
+    /// 16-bit floats, as NRD asks. The denoised image comes out darker than its input, by 2 % after 32 frames
+    /// and up to 4 % after 96 (measured on a uniform surface, see the README).
     Half,
     /// 32-bit floats wherever NRD asks for 16-bit ones: no darkening, about twice the texture memory. Needs
     /// `Features::FLOAT32_FILTERABLE`.
