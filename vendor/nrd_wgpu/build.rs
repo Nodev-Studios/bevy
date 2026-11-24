@@ -9,6 +9,9 @@ use std::{
 };
 
 fn main() {
+    if env::var_os("CARGO_FEATURE_MOCK").is_some() {
+        return;
+    }
     println!("cargo:rerun-if-env-changed=NRD_SDK");
     println!("cargo:rerun-if-changed=shim");
     println!("cargo:rerun-if-changed=shaders");

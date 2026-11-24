@@ -6,6 +6,11 @@ description = "Runs NVIDIA's NRD denoisers as ordinary wgpu compute pipelines"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[features]
+# Builds without the NRD SDK: nothing is compiled or linked from it, and `Denoiser::new` always fails. For builds that
+# turn every feature on (`cargo doc --all-features`), as `dlss_wgpu`'s `mock`.
+mock = []
+
 [dependencies]
 wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 

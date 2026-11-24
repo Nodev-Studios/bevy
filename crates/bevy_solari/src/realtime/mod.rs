@@ -3,7 +3,7 @@ mod extract;
 mod node;
 mod prepare;
 
-pub use denoiser::SolariDenoiserInputs;
+pub use denoiser::{SolariDenoiserInputs, SolariSkipSpecularMotionVectors};
 
 use crate::{
     scene::{prepare_raytracing_scene_resources, RaytracingSceneBindings},

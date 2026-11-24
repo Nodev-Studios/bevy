@@ -15,9 +15,12 @@
 //!   camera slides along x. Run with the documented motion vector scale and with the opposite sign; the
 //!   documented one must give the lower error against the truth.
 //!
-//! Usage: `reblur_plane [--size WxH] [--frames N] [--precision full|half] [--hit-distance uniform|random]`,
-//! adapter chosen with `WGPU_ADAPTER_NAME` (a substring). The defaults are the gate. `--precision half` and
-//! `--hit-distance random` reproduce the two ways the mean was seen to drift (see the README).
+//! Usage: `reblur_plane [--size WxH] [--frames N] [--precision full|half] [--hit-distance uniform|random]
+//! [--timestamps outer|dispatches]`, adapter chosen with `WGPU_ADAPTER_NAME` (a substring). The defaults are
+//! the gate. `--precision half` and `--hit-distance random` reproduce the two ways the mean was seen to drift
+//! (see the README). `--timestamps` only profiles: it runs `still` and prints the GPU time of the whole
+//! denoiser (`outer`: two timestamps around it), or of the whole denoiser and of every dispatch
+//! (`dispatches`), each the median of the timed frames. It checks nothing.
 //! Exit code 0 when every check passes.
 
 #![allow(
@@ -39,9 +42,10 @@ use std::{
     time::Instant,
 };
 use wgpu::{
-    Backends, BufferDescriptor, BufferUsages, Device, DeviceDescriptor, Extent3d, Instance,
-    InstanceDescriptor, MapMode, PollType, Queue, TexelCopyBufferInfo, TexelCopyBufferLayout,
-    Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    Backends, BufferDescriptor, BufferUsages, Device, DeviceDescriptor, Extent3d, Features,
+    Instance, InstanceDescriptor, MapMode, PollType, Queue, TexelCopyBufferInfo,
+    TexelCopyBufferLayout, Texture, TextureDescriptor, TextureDimension, TextureFormat,
+    TextureUsages,
 };
 
 const CAMERA_HEIGHT: f32 = 2.0;
@@ -74,6 +78,17 @@ struct Options {
     frames: u32,
     precision: TexturePrecision,
     hit_distance: HitDistance,
+    timestamps: Timestamps,
+}
+
+/// What `--timestamps` times on the GPU.
+#[derive(Clone, Copy, PartialEq)]
+enum Timestamps {
+    Off,
+    /// Two timestamps around the denoiser.
+    Outer,
+    /// The same, and the denoiser's own timestamps between its dispatches.
+    Dispatches,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -328,6 +343,13 @@ struct Run {
     /// denoiser's three passes and the CPU work of recording them. The median and the fastest of the timed
     /// frames: the GPU is shared with the desktop, and the fastest frame is the one least disturbed.
     frame_milliseconds: [f64; 2],
+    /// With `--timestamps`: the GPU time of the whole denoiser, the median of the timed frames.
+    outer_milliseconds: f64,
+    /// With `--timestamps dispatches`: each dispatch's GPU time, the median of the timed frames.
+    dispatch_milliseconds: Vec<(String, f64)>,
+    /// With `--timestamps`: wall-clock milliseconds per frame of 120 frames submitted back to back, without and
+    /// with the denoiser's own timestamps, three rounds alternated, and the CPU time spent recording them.
+    throughput: Vec<(bool, f64, f64)>,
     texture_bytes: u64,
 }
 
@@ -337,6 +359,7 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
         frames,
         precision,
         hit_distance,
+        timestamps,
     } = options;
     let [width, height] = size;
     let pixels = (width * height) as usize;
@@ -419,6 +442,9 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
         non_finite: 0,
         shaders: Vec::new(),
         frame_milliseconds: [0.0; 2],
+        outer_milliseconds: 0.0,
+        dispatch_milliseconds: Vec::new(),
+        throughput: Vec::new(),
         texture_bytes: denoiser.texture_bytes(),
     };
     let mut diffuse_texels = vec![[0u16; 4]; pixels];
@@ -560,9 +586,41 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
         aspect,
     };
     let mut timings = Vec::new();
+    let mut dispatch_timings: Vec<(String, Vec<f64>)> = Vec::new();
+    let mut outer_timings = Vec::new();
+    // Two timestamps around the whole denoiser, with `--timestamps`.
+    let outer_timer = (timestamps != Timestamps::Off).then(|| {
+        let buffer = |usage| {
+            gpu.device.create_buffer(&BufferDescriptor {
+                label: None,
+                size: 16,
+                usage,
+                mapped_at_creation: false,
+            })
+        };
+        (
+            gpu.device.create_query_set(&wgpu::QuerySetDescriptor {
+                label: None,
+                ty: wgpu::QueryType::Timestamp,
+                count: 2,
+            }),
+            buffer(BufferUsages::QUERY_RESOLVE | BufferUsages::COPY_SRC),
+            buffer(BufferUsages::COPY_DST | BufferUsages::MAP_READ),
+        )
+    });
     for frame in frames..frames + WARM_UP_FRAMES + TIMED_FRAMES {
+        let timed = frame >= frames + WARM_UP_FRAMES;
+        if timestamps == Timestamps::Dispatches && timed {
+            denoiser
+                .set_timestamps(&gpu.device, true)
+                .expect("timestamps were refused");
+        }
+        let outer = outer_timer.as_ref().filter(|_| timed);
         let started = Instant::now();
         let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        if let Some((queries, ..)) = outer {
+            encoder.write_timestamp(queries, 0);
+        }
         denoiser
             .denoise(
                 &gpu.device,
@@ -573,14 +631,95 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
                 &denoiser_outputs,
             )
             .expect("the frame could not be recorded");
+        if let Some((queries, resolved, readback)) = outer {
+            encoder.write_timestamp(queries, 1);
+            encoder.resolve_query_set(queries, 0..2, resolved, 0);
+            encoder.copy_buffer_to_buffer(resolved, 0, readback, 0, 16);
+        }
         gpu.queue.submit([encoder.finish()]);
         gpu.device.poll(PollType::wait_indefinitely()).unwrap();
-        if frame >= frames + WARM_UP_FRAMES {
+        if let Some((_, _, readback)) = outer {
+            readback
+                .slice(..)
+                .map_async(MapMode::Read, |result| result.unwrap());
+            gpu.device.poll(PollType::wait_indefinitely()).unwrap();
+            let ticks: Vec<u64> = readback
+                .slice(..)
+                .get_mapped_range()
+                .unwrap()
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|bytes| u64::from_le_bytes(*bytes))
+                .collect();
+            readback.unmap();
+            outer_timings.push(
+                ticks[1].wrapping_sub(ticks[0]) as f64 * gpu.queue.get_timestamp_period() as f64
+                    / 1e6,
+            );
+        }
+        if timed {
             timings.push(started.elapsed().as_secs_f64() * 1000.0);
+        }
+        if let Some(dispatches) = denoiser.read_timestamps(&gpu.device, &gpu.queue) {
+            for (index, dispatch) in dispatches.into_iter().enumerate() {
+                if dispatch_timings.len() <= index {
+                    dispatch_timings.push((dispatch.name.clone(), Vec::new()));
+                }
+                dispatch_timings[index].1.push(dispatch.milliseconds);
+            }
         }
     }
     timings.sort_by(f64::total_cmp);
     result.frame_milliseconds = [timings[timings.len() / 2], timings[0]];
+    if timestamps != Timestamps::Off {
+        const BACK_TO_BACK: u32 = 120;
+        let mut frame = frames + WARM_UP_FRAMES + TIMED_FRAMES;
+        for _round in 0..3 {
+            for inner in [false, true] {
+                denoiser
+                    .set_timestamps(&gpu.device, inner)
+                    .expect("timestamps were refused");
+                let started = Instant::now();
+                let mut recording = 0.0;
+                for _ in 0..BACK_TO_BACK {
+                    let recorded = Instant::now();
+                    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+                    denoiser
+                        .denoise(
+                            &gpu.device,
+                            &gpu.queue,
+                            &mut encoder,
+                            &frame_settings(&camera, motion_vector_scale, frame),
+                            &inputs,
+                            &denoiser_outputs,
+                        )
+                        .expect("the frame could not be recorded");
+                    gpu.queue.submit([encoder.finish()]);
+                    recording += recorded.elapsed().as_secs_f64() * 1000.0;
+                    frame += 1;
+                }
+                gpu.device.poll(PollType::wait_indefinitely()).unwrap();
+                let total = started.elapsed().as_secs_f64() * 1000.0;
+                result.throughput.push((
+                    inner,
+                    total / BACK_TO_BACK as f64,
+                    recording / BACK_TO_BACK as f64,
+                ));
+            }
+        }
+    }
+    if !outer_timings.is_empty() {
+        outer_timings.sort_by(f64::total_cmp);
+        result.outer_milliseconds = outer_timings[outer_timings.len() / 2];
+    }
+    result.dispatch_milliseconds = dispatch_timings
+        .into_iter()
+        .map(|(name, mut times)| {
+            times.sort_by(f64::total_cmp);
+            (name, times[times.len() / 2])
+        })
+        .collect();
     result
 }
 
@@ -628,6 +767,7 @@ fn main() -> ExitCode {
         frames: 48,
         precision: TexturePrecision::Full,
         hit_distance: HitDistance::Uniform,
+        timestamps: Timestamps::Off,
     };
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
@@ -644,6 +784,8 @@ fn main() -> ExitCode {
             ("--precision", "half") => options.precision = TexturePrecision::Half,
             ("--hit-distance", "uniform") => options.hit_distance = HitDistance::Uniform,
             ("--hit-distance", "random") => options.hit_distance = HitDistance::Random,
+            ("--timestamps", "outer") => options.timestamps = Timestamps::Outer,
+            ("--timestamps", "dispatches") => options.timestamps = Timestamps::Dispatches,
             _ => panic!("unknown argument {argument} {value}"),
         }
     }
@@ -652,6 +794,7 @@ fn main() -> ExitCode {
         frames,
         precision,
         hit_distance,
+        timestamps,
     } = options;
     assert!(frames >= 32, "the check needs at least 32 frames");
 
@@ -680,7 +823,10 @@ fn main() -> ExitCode {
         if hit_distance == HitDistance::Uniform { "uniform" } else { "random" },
     );
 
-    let required_features = Denoiser::required_features(precision);
+    let mut required_features = Denoiser::required_features(precision);
+    if timestamps != Timestamps::Off {
+        required_features |= Features::TIMESTAMP_QUERY | Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+    }
     let missing = required_features - adapter.features();
     if !missing.is_empty() {
         println!("FAIL: the adapter lacks {missing:?}");
@@ -704,6 +850,32 @@ fn main() -> ExitCode {
         queue,
         errors,
     };
+
+    if timestamps != Timestamps::Off {
+        let still = run(&gpu, options, Scenario::Still);
+        println!(
+            "{:.3} ms on the GPU for the whole denoiser, median of 60 frames after 60 warm-up frames",
+            still.outer_milliseconds
+        );
+        for (inner, milliseconds, recording) in &still.throughput {
+            println!(
+                "back to back, {} the denoiser's timestamps: {milliseconds:.3} ms per frame ({recording:.3} ms of it recording on the CPU)",
+                if *inner { "with" } else { "without" }
+            );
+        }
+        println!("GPU time per dispatch, same frames:");
+        let mut total = 0.0;
+        for (name, milliseconds) in &still.dispatch_milliseconds {
+            println!("  {milliseconds:7.3} ms  {name}");
+            total += milliseconds;
+        }
+        println!("  {total:7.3} ms  sum of the medians");
+        println!(
+            "{:.1} MiB in the denoiser's textures",
+            still.texture_bytes as f64 / (1024.0 * 1024.0)
+        );
+        return ExitCode::SUCCESS;
+    }
 
     let mut passed = true;
     let mut check = |name: &str, ok: bool| {

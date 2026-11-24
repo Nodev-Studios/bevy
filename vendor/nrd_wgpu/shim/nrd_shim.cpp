@@ -173,6 +173,9 @@ void nrdw_reblur_defaults(NrdwReblurSettings* settings) {
         default: settings->hit_distance_reconstruction = 0; break;
     }
     settings->anti_firefly = defaults.enableAntiFirefly;
+    settings->fast_history_clamping_sigma_scale = defaults.fastHistoryClampingSigmaScale;
+    settings->antilag_luminance_sigma_scale = defaults.antilagSettings.luminanceSigmaScale;
+    settings->antilag_luminance_sensitivity = defaults.antilagSettings.luminanceSensitivity;
 }
 
 uint32_t nrdw_set_reblur_settings(NrdwInstance* instance, const NrdwReblurSettings* settings) {
@@ -193,6 +196,9 @@ uint32_t nrdw_set_reblur_settings(NrdwInstance* instance, const NrdwReblurSettin
         default: reblur.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::OFF; break;
     }
     reblur.enableAntiFirefly = settings->anti_firefly != 0;
+    reblur.fastHistoryClampingSigmaScale = settings->fast_history_clamping_sigma_scale;
+    reblur.antilagSettings.luminanceSigmaScale = settings->antilag_luminance_sigma_scale;
+    reblur.antilagSettings.luminanceSensitivity = settings->antilag_luminance_sensitivity;
     return nrd::SetDenoiserSettings(*instance->instance, IDENTIFIER, &reblur) == nrd::Result::SUCCESS;
 }
 

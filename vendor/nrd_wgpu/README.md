@@ -83,5 +83,35 @@ GPU (Mesa RADV 26.3.1), both through Vulkan.
   correlated between neighbours, has not been measured yet.
 - **Unexercised shaders.** `REBLUR_SplitScreen` and `REBLUR_Validation` are NRD debug views this crate never asks
   for; every other ReBLUR shader runs in the check.
-- **Cost.** The frame time `reblur_plane` prints is wall clock from recording to an idle GPU on a GPU the desktop
-  shares, including the CPU work of building bind groups every frame; it is an upper bound, not a GPU timing.
+- **Cost.** `Denoiser::set_timestamps` and `read_timestamps` time every dispatch on the GPU;
+  `reblur_plane --timestamps dispatches` prints them. At 2560x1440 on the RTX 5070, `Full` precision, the medians of
+  60 frames run one at a time (several runs, 2026-11-24, the same in the Bevy testbed's `interior` scene):
+
+  | Dispatch | ms |
+  |---|---|
+  | pack (this crate) | 0.27–0.32 |
+  | Classify tiles | 0.02 |
+  | Hit distance reconstruction | 0.34 |
+  | Pre-pass | 0.69–0.72 |
+  | Temporal accumulation | 1.12–1.14 |
+  | History fix | 0.53–0.54 |
+  | Blur | 0.63–0.64 |
+  | Post-blur | 0.60–0.61 |
+  | Temporal stabilization | 0.57–0.58 |
+  | unpack (this crate) | 0.22 |
+  | **Total** | **5.03–5.07** |
+
+  `Half` totals 3.96 ms (one run). NVIDIA's README gives 2.55 ms for ReBLUR alone on an RTX 4080 at 1440p, with
+  16-bit textures. By public spec sheets that card has about 1.6 times the RTX 5070's FP32 throughput and about the
+  same memory bandwidth, so `Half`'s 3.5 ms of ReBLUR dispatches (1.4 times NVIDIA's figure) is in the range that
+  card ratio predicts; `Full` adds about 1 ms. Quad intrinsics are off (`build.rs`) and were not measured: turning
+  them on needs `VK_KHR_compute_shader_derivatives`, which wgpu cannot enable.
+- **One compute pass per dispatch.** The GPU here is shared with a desktop, and with the dispatches recorded in one
+  compute pass, a frame took 0.9 to 3.2 ms longer, back to back, than the same dispatches in passes of their own
+  (12 of 12 paired rounds in one process). Writing a timestamp after each dispatch inside one pass gave the same
+  gain. Why is not known: wgpu inserts the same barriers either way. `denoise` records a pass per dispatch.
+- **History confidence.** NRD's README says ReBLUR's anti-lag (`ReblurSettings::antilag`,
+  `fast_history_clamping_sigma_scale`) is not enough on its own against lag after a change of light, and that
+  history confidence inputs are the better cure. This crate does not take them yet.
+- **`mock` feature.** Builds without the SDK: nothing of NRD is compiled or linked and `Denoiser::new` always
+  fails. It exists so that a build with every feature on (`cargo doc --all-features`) works without the SDK.

@@ -15,6 +15,8 @@ pub mod contrast_adaptive_sharpening;
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 pub mod dlss;
 pub mod fxaa;
+#[cfg(feature = "nrd")]
+pub mod nrd;
 pub mod ray_reconstruction;
 pub mod smaa;
 pub mod taa;
@@ -32,6 +34,8 @@ impl Plugin for AntiAliasPlugin {
             CasPlugin,
             #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
             dlss::DlssPlugin,
+            #[cfg(feature = "nrd")]
+            nrd::NrdPlugin,
         ));
     }
 }
