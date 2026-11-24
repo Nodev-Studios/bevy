@@ -2064,6 +2064,15 @@ description = "Create an application without winit (runs single time, no event l
 category = "Application"
 wasm = false
 
+[[example]]
+name = "gfx_caps"
+path = "examples/graphics/gfx_caps.rs"
+doc-scrape-examples = true
+required-features = ["bevy_graphics"]
+
+[package.metadata.example.gfx_caps]
+hidden = true
+
 # Assets
 [[example]]
 name = "alter_mesh"
