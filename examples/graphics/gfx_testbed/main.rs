@@ -955,10 +955,14 @@ fn finish(world: &mut World) {
             "count": frames.len(),
         })
     };
-    let gpu_pass_ms: Map<String, Value> = std::mem::take(&mut run.pass_ms)
-        .into_iter()
-        .map(|(pass, mut values)| (pass, json!(median(&mut values))))
-        .collect();
+    let mut gpu_pass_ms = Map::new();
+    // A GPU shared with another process time-slices between them, and a long dispatch that a slice lands in
+    // reads the other process's time too. The 10th percentile reads the frames no slice landed in.
+    let mut gpu_pass_ms_p10 = Map::new();
+    for (pass, mut values) in std::mem::take(&mut run.pass_ms) {
+        gpu_pass_ms.insert(pass.clone(), json!(median(&mut values)));
+        gpu_pass_ms_p10.insert(pass, json!(quantile(&values, 0.1)));
+    }
     let gpu_memory = run.peak_memory.map(|(allocated, reserved)| {
         json!({
             "source": "wgpu's allocator: every heap, without what a vendor SDK allocates itself",
@@ -1015,6 +1019,7 @@ fn finish(world: &mut World) {
         "light_toggle_at": args.light_toggle_at,
         "frame_ms": frame_ms,
         "gpu_pass_ms": gpu_pass_ms,
+        "gpu_pass_ms_p10": gpu_pass_ms_p10,
         "gpu_memory": gpu_memory,
         "screenshots": screenshots,
         "failures": failures,
