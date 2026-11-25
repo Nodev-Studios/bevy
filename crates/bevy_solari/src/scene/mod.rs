@@ -6,7 +6,9 @@ mod types;
 use bevy_asset::embedded_asset;
 use bevy_shader::load_shader_library;
 pub use binder::prepare_raytracing_scene_resources;
-pub use binder::{RaytracingSceneBindings, RaytracingSceneNeedsPreviousFrameData};
+pub use binder::{
+    RaytracingLightKind, RaytracingSceneBindings, RaytracingSceneNeedsPreviousFrameData,
+};
 pub use types::RaytracingMesh3d;
 
 use crate::SolariPlugins;

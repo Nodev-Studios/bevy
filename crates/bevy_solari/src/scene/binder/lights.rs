@@ -38,6 +38,28 @@ pub enum LightSourceId {
     RectLight(Entity),
 }
 
+/// What kind of light one entry of the scene's light array is.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum RaytracingLightKind {
+    EmissiveMesh,
+    Directional,
+    Point,
+    Spot,
+    Rect,
+}
+
+impl LightSourceId {
+    fn kind_and_entity(self) -> (RaytracingLightKind, Entity) {
+        match self {
+            Self::EmissiveMesh(entity) => (RaytracingLightKind::EmissiveMesh, entity),
+            Self::DirectionalLight(entity) => (RaytracingLightKind::Directional, entity),
+            Self::PointLight(entity) => (RaytracingLightKind::Point, entity),
+            Self::SpotLight(entity) => (RaytracingLightKind::Spot, entity),
+            Self::RectLight(entity) => (RaytracingLightKind::Rect, entity),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct LightIndex {
     indices: HashMap<LightSourceId, u32>,
@@ -52,6 +74,13 @@ impl LightIndex {
 
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
+    }
+
+    /// Each light's kind and render-world entity, in light array order.
+    pub fn kinds_and_entities(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (RaytracingLightKind, Entity)> + '_ {
+        self.ids.iter().map(|id| id.kind_and_entity())
     }
 
     fn get(&self, id: &LightSourceId) -> Option<u32> {

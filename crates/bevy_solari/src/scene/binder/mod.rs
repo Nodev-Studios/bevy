@@ -13,6 +13,7 @@ use self::instances::{
     ChangedInstanceFilter, InstanceInputs, InstanceQueryData, InstanceState, MAX_MESH_SLAB_COUNT,
 };
 use self::lights::LightState;
+pub use self::lights::RaytracingLightKind;
 use self::tlas::TlasState;
 pub use self::tlas::{build_raytracing_tlas, TlasInstanceSetupPipeline};
 use super::{
@@ -66,6 +67,16 @@ impl RaytracingSceneBindings {
     /// frame's table translates from this frame's light ids rather than older ones.
     pub fn note_light_translations_consumed(&self) {
         self.lights.note_translations_consumed();
+    }
+
+    /// The light array as of this frame's prepare, in the order shaders index `light_sources`: each light's kind
+    /// and render-world entity (map it to the main world through its `MainEntity`).
+    ///
+    /// Removing a light moves the last one into its place, so an index only holds for the frame it was read in.
+    pub fn light_sources(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (RaytracingLightKind, Entity)> + '_ {
+        self.lights.index.kinds_and_entities()
     }
 }
 

@@ -301,6 +301,8 @@ bevy_ui_render = ["dep:bevy_ui_render", "bevy_sprite_render", "bevy_ui"]
 bevy_feathers = ["dep:bevy_feathers", "png"]
 bevy_solari = ["dep:bevy_solari", "bevy_pbr", "bevy_graphics?/solari"]
 bevy_graphics = ["dep:bevy_graphics", "bevy_anti_alias"]
+bevy_baked_gi = ["dep:bevy_baked_gi", "bevy_pbr"]
+bevy_baked_gi_bake = ["bevy_baked_gi", "bevy_baked_gi?/bake", "bevy_solari"]
 bevy_gizmos = ["dep:bevy_gizmos", "bevy_camera", "bevy_light?/bevy_gizmos"]
 bevy_gizmos_render = ["dep:bevy_gizmos_render", "bevy_gizmos"]
 bevy_gltf = ["dep:bevy_gltf", "bevy_world_serialization", "bevy_pbr?/bevy_gltf"]
@@ -592,6 +594,7 @@ bevy_gizmos = { path = "../bevy_gizmos", optional = true, version = "0.20.1", de
 bevy_gizmos_render = { path = "../bevy_gizmos_render", optional = true, version = "0.20.1", default-features = false }
 bevy_gltf = { path = "../bevy_gltf", optional = true, version = "0.20.1" }
 bevy_graphics = { path = "../bevy_graphics", optional = true, version = "0.20.1" }
+bevy_baked_gi = { path = "../bevy_baked_gi", optional = true, version = "0.20.1" }
 bevy_feathers = { path = "../bevy_feathers", optional = true, version = "0.20.1" }
 bevy_image = { path = "../bevy_image", optional = true, version = "0.20.1" }
 bevy_shader = { path = "../bevy_shader", optional = true, version = "0.20.1" }

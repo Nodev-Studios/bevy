@@ -326,6 +326,12 @@ bevy_gltf = ["bevy_internal/bevy_gltf"]
 # Tiered graphics settings: the Raster, RtLite and RtFull presets, and the policy that picks one for the machine
 bevy_graphics = ["bevy_internal/bevy_graphics"]
 
+# Loads baked irradiance volumes (indirect light for rasterized rendering)
+bevy_baked_gi = ["bevy_internal/bevy_baked_gi"]
+
+# Bakes irradiance volumes with bevy_solari's ray tracing (needs a GPU with ray queries to run)
+bevy_baked_gi_bake = ["bevy_internal/bevy_baked_gi_bake"]
+
 # Adds PBR rendering
 bevy_pbr = ["bevy_internal/bevy_pbr"]
 
@@ -2101,6 +2107,15 @@ doc-scrape-examples = true
 required-features = ["bevy_graphics"]
 
 [package.metadata.example.gfx_caps]
+hidden = true
+
+[[example]]
+name = "gi_bake"
+path = "examples/graphics/gi_bake.rs"
+doc-scrape-examples = true
+required-features = ["bevy_baked_gi_bake"]
+
+[package.metadata.example.gi_bake]
 hidden = true
 
 [[example]]
