@@ -454,6 +454,7 @@ fn send_job(world: &mut World) {
     let visible = |visibility: Option<&InheritedVisibility>| visibility.is_none_or(|v| v.get());
     let mut light_keys = HashMap::default();
     let mut analytic = HashMap::default();
+    let mut positioned_lights = HashMap::default();
     let mut lights = world.query::<(
         Entity,
         &GlobalTransform,
@@ -499,6 +500,12 @@ fn send_job(world: &mut World) {
                 content: 0,
             },
         );
+        if kind != BakedLightKind::Directional {
+            positioned_lights.insert(
+                entity,
+                transform.translation().extend(power.max(0.0)).to_array(),
+            );
+        }
         analytic.insert(entity, (key, power));
     }
     let mut emissive_meshes = 0;
@@ -602,6 +609,7 @@ fn send_job(world: &mut World) {
         region_count: records.len(),
         directions,
         light_keys,
+        positioned_lights,
     };
     world.resource::<BakeExchange>().0.lock().unwrap().job = Some(Arc::new(job));
     let mut progress = world.resource_mut::<BakeProgress>();

@@ -44,7 +44,12 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 wgpu-types = { version = "30", default-features = false }
 
 [dev-dependencies]
-bevy_image = { path = "../bevy_image", version = "0.20.1", features = ["ktx2"] }
+# zstd_rust: with `bake`, bevy_solari turns on bevy_pbr's LUTs, which need a zstd backend that bevy_internal
+# would otherwise choose.
+bevy_image = { path = "../bevy_image", version = "0.20.1", features = [
+  "ktx2",
+  "zstd_rust",
+] }
 
 [lints]
 workspace = true

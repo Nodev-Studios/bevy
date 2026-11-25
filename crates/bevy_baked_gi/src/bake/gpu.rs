@@ -83,6 +83,9 @@ pub(crate) struct BakeJob {
     pub directions: Vec<[f32; 4]>,
     /// Every light Solari should have, by main-world entity.
     pub light_keys: HashMap<Entity, CanonicalKey>,
+    /// Position and power of the lights next-event estimation picks by power / distance² (point, spot and
+    /// rect lights); the others are picked at 1 / light count.
+    pub positioned_lights: HashMap<Entity, [f32; 4]>,
 }
 
 /// What came back.
@@ -131,6 +134,7 @@ pub(crate) fn init_bake_pipeline(
                 storage_buffer_sized(false, None),
                 storage_buffer_sized(false, None),
                 storage_buffer_sized(false, None),
+                storage_buffer_read_only_sized(false, None),
             ),
         ),
     );
@@ -221,12 +225,22 @@ pub(crate) fn run_bake(
         .collect();
     canonical.sort_by_key(|(key, ..)| *key);
 
+    let light_info: Vec<[f32; 4]> = canonical
+        .iter()
+        .map(|(_, _, entity, _)| {
+            job.positioned_lights
+                .get(entity)
+                .copied()
+                .unwrap_or([0.0, 0.0, 0.0, -1.0])
+        })
+        .collect();
     let outcome = bake_chunks(
         &job,
         &canonical
             .iter()
             .map(|(_, index, ..)| *index)
             .collect::<Vec<_>>(),
+        &light_info,
         &pipeline,
         &pipeline_cache,
         &scene,
@@ -281,6 +295,7 @@ fn read<T: Pod>(buffer: &Buffer, count: usize) -> Vec<T> {
 fn bake_chunks(
     job: &BakeJob,
     canonical_to_solari: &[u32],
+    light_info: &[[f32; 4]],
     pipeline: &BakePipeline,
     pipeline_cache: &PipelineCache,
     scene: &RaytracingSceneBindings,
@@ -308,6 +323,15 @@ fn bake_chunks(
     let canonical = device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("gi_bake_canonical_lights"),
         contents: bytemuck::cast_slice(&canonical),
+        usage: BufferUsages::STORAGE,
+    });
+    let mut light_info = light_info.to_vec();
+    if light_info.is_empty() {
+        light_info.push([0.0; 4]);
+    }
+    let light_info = device.create_buffer_with_data(&BufferInitDescriptor {
+        label: Some("gi_bake_light_info"),
+        contents: bytemuck::cast_slice(&light_info),
         usage: BufferUsages::STORAGE,
     });
 
@@ -365,6 +389,7 @@ fn bake_chunks(
                 faces.as_entire_binding(),
                 tallies.as_entire_binding(),
                 hits.as_entire_binding(),
+                light_info.as_entire_binding(),
             )),
         );
 

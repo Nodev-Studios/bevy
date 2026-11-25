@@ -8,9 +8,15 @@
 //
 // Side `a` of the ambient cube is E/pi for a surface facing `a`: (4 / N) * sum over paths of max(0, w . a) * L.
 //
-// The light picked for next-event estimation is chosen by its index in a canonical order (sorted by a key that
-// does not depend on when Solari added it), so the same seed picks the same light in every run, and each
-// light's share is tallied under that index.
+// Lights are indexed in a canonical order (sorted by a key that does not depend on when Solari added them), so
+// the same seed picks the same light in every run, and each light's share is tallied under that index.
+//
+// Next-event estimation picks one light per surface. Lights with a position (point, spot, rect) are picked in
+// proportion to power / distance², with a uniform floor: in a level of many rooms a uniform pick mostly lands on
+// a lamp behind a wall and adds nothing (two seeds of a 33-lamp level differed by 4.3 %, against 1.8 % for a
+// 3-lamp room, at 2^20 paths). Emissive meshes and directional lights keep 1 / light_count each, the probability
+// Solari's `random_emissive_light_pdf` assumes when it weighs a BRDF ray that hits an emissive mesh, so the MIS
+// weights still sum to one.
 
 import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance;
 import bevy_pbr::render::utils::{rand_f, rand_u, rand_range_u};
@@ -50,6 +56,56 @@ const MODE_FIRST_HIT_EMISSION = 1u;
 @group(1) @binding(4) var<storage, read_write> faces: array<vec4<f32>>;
 @group(1) @binding(5) var<storage, read_write> tallies: array<f32>;
 @group(1) @binding(6) var<storage, read_write> first_hits: array<vec2<u32>>;
+// Per canonical light: its position and power, or w < 0 for a light picked at 1 / light_count.
+@group(1) @binding(7) var<storage> light_info: array<vec4<f32>>;
+
+// to tune: the share of the positioned lights' picks spread evenly, so a lamp the weights underrate is still found.
+const UNIFORM_FLOOR = 0.1;
+// to tune: a lamp nearer than 0.5 m weighs as if it were 0.5 m away, so one lamp cannot take every pick.
+const MIN_DISTANCE_SQUARED = 0.25;
+
+struct PickedLight {
+    canonical: u32,
+    probability: f32,
+}
+
+fn light_weight(info: vec4<f32>, position: vec3<f32>) -> f32 {
+    let offset = info.xyz - position;
+    return info.w / max(dot(offset, offset), MIN_DISTANCE_SQUARED);
+}
+
+fn pick_light(position: vec3<f32>, light_count: u32, rng: ptr<function, u32>) -> PickedLight {
+    var total = 0.0;
+    var positioned = 0u;
+    for (var i = 0u; i < light_count; i++) {
+        let info = light_info[i];
+        if info.w >= 0.0 {
+            total += light_weight(info, position);
+            positioned += 1u;
+        }
+    }
+    let uniform_probability = 1.0 / f32(light_count);
+    let positioned_share = f32(positioned) * uniform_probability;
+    let u = rand_f(rng);
+    var cumulative = 0.0;
+    var picked = PickedLight(0u, uniform_probability);
+    for (var i = 0u; i < light_count; i++) {
+        let info = light_info[i];
+        var probability = uniform_probability;
+        if info.w >= 0.0 {
+            var importance = 1.0 / f32(positioned);
+            if total > 0.0 {
+                importance = (1.0 - UNIFORM_FLOOR) * light_weight(info, position) / total + UNIFORM_FLOOR / f32(positioned);
+            }
+            probability = positioned_share * importance;
+        }
+        cumulative += probability;
+        picked = PickedLight(i, probability);
+        // Every probability is above 0, so when rounding leaves u above the last sum the last light is a fair pick.
+        if u < cumulative { break; }
+    }
+    return picked;
+}
 
 // Same as `directions.rs`'s `pcg_hash`.
 fn pcg_hash(value: u32) -> u32 {
@@ -134,10 +190,11 @@ fn bake(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
             if params.mode == MODE_FIRST_HIT_EMISSION { break; }
 
-            // Next-event estimation of one light, picked uniformly by canonical index
+            // Next-event estimation of one light
             let is_perfectly_specular = ray_hit.material.roughness <= MIRROR_ROUGHNESS_THRESHOLD && ray_hit.material.metallic > 0.9999;
             if !is_perfectly_specular && light_count > 0u {
-                let canonical = rand_range_u(light_count, &rng);
+                let picked = pick_light(ray_hit.world_position, light_count, &rng);
+                let canonical = picked.canonical;
                 let light_id = canonical_lights[canonical];
                 let light_source = light_sources[light_id];
                 var triangle_id = 0u;
@@ -146,7 +203,7 @@ fn bake(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 }
                 let seed = rand_u(&rng);
                 var resolved = resolve_light_sample(LightSample((light_id << 16u) | triangle_id, seed), light_source);
-                resolved.inverse_pdf *= f32(light_count);
+                resolved.inverse_pdf /= picked.probability;
                 var contribution = calculate_resolved_light_contribution(resolved, ray_hit.world_position, ray_hit.world_normal);
                 contribution.radiance *= trace_visibility(ray_hit.world_position, resolved.world_position, RAY_FLAG_NONE);
 
