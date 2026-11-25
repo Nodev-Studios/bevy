@@ -113,8 +113,8 @@ const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 }
 
 @if(ENVIRONMENT_MAP && MULTIPLE_LIGHT_PROBES_IN_ARRAY) {
-@group(1) @binding(0) var diffuse_environment_maps: binding_array<texture_cube<f32>, 8u>;
-@group(1) @binding(1) var specular_environment_maps: binding_array<texture_cube<f32>, 8u>;
+@group(1) @binding(0) var diffuse_environment_maps: binding_array<texture_cube<f32>, u32(constants::MAX_VIEW_LIGHT_PROBES)>;
+@group(1) @binding(1) var specular_environment_maps: binding_array<texture_cube<f32>, u32(constants::MAX_VIEW_LIGHT_PROBES)>;
 }
 @if(ENVIRONMENT_MAP && !MULTIPLE_LIGHT_PROBES_IN_ARRAY) {
 @group(1) @binding(0) var diffuse_environment_map: texture_cube<f32>;
@@ -124,7 +124,7 @@ const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 @group(1) @binding(2) var environment_map_sampler: sampler;
 
 @if(IRRADIANCE_VOLUME && IRRADIANCE_VOLUMES_ARE_USABLE && MULTIPLE_LIGHT_PROBES_IN_ARRAY)
-@group(1) @binding(3) var irradiance_volumes: binding_array<texture_3d<f32>, 8u>;
+@group(1) @binding(3) var irradiance_volumes: binding_array<texture_3d<f32>, u32(constants::MAX_VIEW_LIGHT_PROBES)>;
 @if(IRRADIANCE_VOLUME && IRRADIANCE_VOLUMES_ARE_USABLE && !MULTIPLE_LIGHT_PROBES_IN_ARRAY)
 @group(1) @binding(3) var irradiance_volume: texture_3d<f32>;
 @if(IRRADIANCE_VOLUME && IRRADIANCE_VOLUMES_ARE_USABLE)
