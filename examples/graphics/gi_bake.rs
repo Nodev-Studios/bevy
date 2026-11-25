@@ -472,7 +472,7 @@ fn bake(scene: &str, out: PathBuf, settings: GiBakeSettings, move_wall: bool) ->
             GiBakePlugin { settings },
         ))
         .add_systems(Startup, move |world: &mut World| {
-            spawn_scene(&scene, world, move_wall)
+            spawn_scene(&scene, world, move_wall);
         })
         .set_runner(run_until_baked)
         .run()
@@ -510,7 +510,7 @@ fn verify(scene: &str, manifest: &Path, move_wall: bool) -> Result<(), String> {
         .init_asset::<Image>();
     let scene = scene.to_owned();
     app.add_systems(Startup, move |world: &mut World| {
-        spawn_scene(&scene, world, move_wall)
+        spawn_scene(&scene, world, move_wall);
     });
     app.finish();
     app.cleanup();
@@ -644,9 +644,9 @@ fn f16_to_f32(bits: u16) -> f32 {
     let exponent = i32::from((bits >> 10) & 0x1f);
     let mantissa = f32::from(bits & 0x3ff);
     sign * match exponent {
-        0 => mantissa * 2f32.powi(-24),
+        0 => mantissa * exp2i(-24),
         31 => f32::INFINITY,
-        e => (1.0 + mantissa / 1024.0) * 2f32.powi(e - 15),
+        e => (1.0 + mantissa / 1024.0) * exp2i(e - 15),
     }
 }
 
@@ -813,8 +813,8 @@ fn asymmetric_check(out: &Path) -> Result<(), String> {
     println!("worst side {:.4} % (gate: 1 %)", 100.0 * worst(gpu));
 
     let mut controls_failed = 0;
-    for a in 0..6 {
-        for b in a + 1..6 {
+    for (a, name_a) in FACE_NAMES.iter().enumerate() {
+        for (b, name_b) in FACE_NAMES.iter().enumerate().skip(a + 1) {
             let mut slot_of = IDENTITY;
             slot_of.swap(a, b);
             let error = worst(decode(slot_of));
@@ -823,8 +823,8 @@ fn asymmetric_check(out: &Path) -> Result<(), String> {
             }
             println!(
                 "control: {} and {} swapped, worst side {:.1} % -> {}",
-                FACE_NAMES[a],
-                FACE_NAMES[b],
+                name_a,
+                name_b,
                 100.0 * error,
                 if error > 0.01 {
                     "fails, as it must"
@@ -1090,7 +1090,12 @@ fn compare(a: &Path, b: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Rgb9e5 as Vulkan's E5B9G9R9_UFLOAT_PACK32 stores it (shared exponent, 9-bit mantissas), back to f32.
+/// 2^n, exact, for n in -126..=127 (built from the bits: `powi` is not portable across platforms).
+fn exp2i(n: i32) -> f32 {
+    f32::from_bits(((n + 127) as u32) << 23)
+}
+
+/// Rgb9e5 as Vulkan's `E5B9G9R9_UFLOAT_PACK32` stores it (shared exponent, 9-bit mantissas), back to f32.
 fn rgb9e5_round_trip(c: Vec3) -> Vec3 {
     let max_value = 65408.0f32;
     let c = c.clamp(Vec3::ZERO, Vec3::splat(max_value));
@@ -1098,8 +1103,10 @@ fn rgb9e5_round_trip(c: Vec3) -> Vec3 {
     if max == 0.0 {
         return Vec3::ZERO;
     }
-    let exponent = (max.log2().floor() as i32).max(-16) + 1 + 15;
-    let mut scale = 2f32.powi(exponent - 15 - 9);
+    // floor(log2(max)), read from the float's exponent bits (a subnormal reads as -127)
+    let floor_log2 = ((max.to_bits() >> 23) & 0xff) as i32 - 127;
+    let exponent = floor_log2.max(-16) + 1 + 15;
+    let mut scale = exp2i(exponent - 15 - 9);
     if (max / scale + 0.5).floor() as i32 == 512 {
         scale *= 2.0;
     }

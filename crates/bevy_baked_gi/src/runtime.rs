@@ -429,9 +429,11 @@ mod tests {
     fn degraded_when_binding_arrays_are_too_small() {
         let features = Features::TEXTURE_BINDING_ARRAY
             | Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
-        let mut limits = Limits::default();
-        limits.max_binding_array_elements_per_shader_stage = 1000;
-        limits.max_binding_array_sampler_elements_per_shader_stage = 1000;
+        let mut limits = Limits {
+            max_binding_array_elements_per_shader_stage: 1000,
+            max_binding_array_sampler_elements_per_shader_stage: 1000,
+            ..Limits::default()
+        };
         assert!(binding_arrays_are_usable(&limits, features));
         assert!(!binding_arrays_are_usable(
             &limits,

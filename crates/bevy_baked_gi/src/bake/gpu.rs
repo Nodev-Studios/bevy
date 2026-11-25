@@ -288,10 +288,6 @@ fn read<T: Pod>(buffer: &Buffer, count: usize) -> Vec<T> {
     values[..count].to_vec()
 }
 
-#[expect(
-    clippy::type_complexity,
-    reason = "returned once, destructured at the call"
-)]
 fn bake_chunks(
     job: &BakeJob,
     canonical_to_solari: &[u32],
