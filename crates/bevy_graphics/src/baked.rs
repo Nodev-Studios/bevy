@@ -24,7 +24,8 @@ use bevy_ecs::prelude::*;
 use bevy_light::AmbientLight;
 
 pub use bevy_baked_gi::{
-    BakedGi, BakedGiManifest, BakedGiPlugin, BakedGiStatus, GiBakeRegion, GiBakeSkipEmission,
+    binding_arrays_are_usable, BakedGi, BakedGiManifest, BakedGiPlugin, BakedGiStatus,
+    GiBakeRegion, GiBakeSkipEmission,
 };
 
 /// Called by [`GraphicsPlugin`](crate::GraphicsPlugin) when it is built.

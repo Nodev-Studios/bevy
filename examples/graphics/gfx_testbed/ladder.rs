@@ -148,6 +148,7 @@ impl Ladder {
                 upscale_quality: quality.unwrap_or_default(),
                 denoiser: denoiser.unwrap_or_default(),
                 overrides,
+                ..default()
             }),
             cycle: cycle.then(|| stage_frames.unwrap_or(120)),
         }

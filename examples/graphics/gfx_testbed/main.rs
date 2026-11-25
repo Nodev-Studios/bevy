@@ -8,10 +8,12 @@
 //! Pass `--help` for the flags. Never run it bare on a desktop someone is using: it opens a window. On this
 //! project's machine it goes through `tools/gfx-headless.sh`.
 
+mod baked;
 mod contract;
 mod ladder;
 mod scenes;
 
+use baked::Baked;
 use bevy::{
     anti_alias::taa::TemporalAntiAliasing,
     app::AppExit,
@@ -62,7 +64,7 @@ use bevy::anti_alias::dlss::{
 const USAGE: &str = "\
 gfx_testbed: renders a scene one way, measures it, and writes report.json, screenshots and log.txt.
 
-  --scene interior|many-lights   the scene (default interior)
+  --scene interior|many-lights   the scene (default interior; the baked-GI flags below add more)
   --mode raster|solari|reference how the frame is lit (default raster): the deferred rasterizer, Solari's
                                  realtime lighting, or Solari's path tracer accumulating a ground truth
   --restir                       solari: turn ReSTIR on
@@ -445,12 +447,13 @@ fn main() -> AppExit {
         errors: Vec::new(),
     };
     if flags.switch("--help") {
-        println!("{USAGE}{}{}", ladder::HELP, contract::HELP);
+        println!("{USAGE}{}{}{}", ladder::HELP, contract::HELP, baked::HELP);
         return AppExit::Success;
     }
     let args = Args::parse(&mut flags);
     let ladder = Ladder::parse(&mut flags);
     let contract = Contract::parse(&mut flags);
+    let baked = Baked::parse(&mut flags);
     for unknown in &flags.args {
         flags.errors.push(format!("unknown argument {unknown}"));
     }
@@ -463,8 +466,11 @@ fn main() -> AppExit {
         for error in &flags.errors {
             eprintln!("gfx_testbed: {error}");
         }
-        eprintln!("\n{USAGE}{}{}", ladder::HELP, contract::HELP);
+        eprintln!("\n{USAGE}{}{}{}", ladder::HELP, contract::HELP, baked::HELP);
         return AppExit::from_code(2);
+    }
+    if let Some(exit) = baked.bake(&args) {
+        return exit;
     }
 
     // A panic reaches the console on its own; this puts it in log.txt too, for a run nobody watched.
@@ -486,6 +492,7 @@ fn main() -> AppExit {
     )));
 
     let pending_pipelines = PendingPipelines(Arc::new(AtomicU32::new(u32::MAX)));
+    baked.register_source(&mut app);
     app.add_plugins((
         DefaultPlugins
             .set(WindowPlugin {
@@ -559,6 +566,7 @@ fn main() -> AppExit {
 
     ladder.build(&mut app, &args);
     contract.build(&mut app, &args);
+    baked.build(&mut app, &args);
     app.run()
 }
 
@@ -591,12 +599,14 @@ fn setup(world: &mut World) {
     let Some(scene) = scenes::spawn(&args.scene, world)
         .or_else(|| Contract::scene(&args.scene, world))
         .or_else(|| Ladder::scene(&args.scene, world))
+        .or_else(|| Baked::scene(&args.scene, world))
     else {
         return stop(world, format!("there is no scene called {}", args.scene));
     };
 
     let ladder = world.resource::<Ladder>().clone();
     let contract = world.resource::<Contract>().clone();
+    let baked = world.resource::<Baked>().clone();
     let mut camera = world.spawn((
         TestbedCamera,
         Camera3d::default(),
@@ -614,6 +624,8 @@ fn setup(world: &mut World) {
         raw_camera(&args, capabilities, &mut camera).err()
     };
     contract.camera(&args, &mut camera);
+    baked.camera(&args, &mut camera);
+    let scene = baked.prepare(world, scene);
     world.insert_resource(ActiveScene(scene));
     if let Some(failure) = raw_failure {
         let camera = world
