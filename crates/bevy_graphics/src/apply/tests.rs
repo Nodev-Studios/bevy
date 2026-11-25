@@ -227,6 +227,7 @@ fn every_state() -> Vec<State> {
             bloom: Some(false),
             restir: None,
             max_bounces: None,
+            baked_gi: None,
         },
         GraphicsOverrides {
             restir: Some(true),

@@ -68,6 +68,13 @@ struct ImageStatsCommand {
     /// mean luma (0 to 1) under which the image counts as black; default 0.01
     #[argh(option, default = "metric::DEFAULT_MIN_LUMA")]
     min_luma: f64,
+    /// measure only these pixels: `x0,y0,x1,y1` (ends excluded) or a mask PNG of the image's size whose
+    /// non-black pixels are the region
+    #[argh(option)]
+    region: Option<String>,
+    /// fail when any measured pixel is black (all three channels 0)
+    #[argh(switch)]
+    no_zero: bool,
 }
 
 /// Prints the normalised RMSE between two tonemapped images, in percent of full scale.
@@ -168,8 +175,14 @@ fn gate_points(label: &str, points: f64, max: Option<f64>) -> bool {
 }
 
 fn image_stats(command: ImageStatsCommand) -> Result<bool, String> {
-    let stats = metric::stats(&metric::load(&command.image)?);
+    let region = command
+        .region
+        .as_deref()
+        .map(metric::Region::parse)
+        .transpose()?;
+    let stats = metric::stats_in(&metric::load(&command.image)?, region.as_ref())?;
     let black = stats.mean_luma < command.min_luma;
+    let zero = command.no_zero && stats.zero_pixels > 0;
     println!(
         "{}x{} mean luma {:.4} max {} {}",
         stats.width,
@@ -178,7 +191,16 @@ fn image_stats(command: ImageStatsCommand) -> Result<bool, String> {
         stats.max,
         if black { "BLACK" } else { "ok" }
     );
-    Ok(!black)
+    if region.is_some() || command.no_zero {
+        println!(
+            "pixels {} zero {} min luma {:.4} {}",
+            stats.pixels,
+            stats.zero_pixels,
+            stats.min_luma,
+            if zero { "ZERO" } else { "ok" }
+        );
+    }
+    Ok(!black && !zero)
 }
 
 fn motion(command: MotionCommand) -> Result<bool, String> {

@@ -1037,6 +1037,7 @@ fn resolved_is_always_runnable() {
                             upscale_quality,
                             denoiser,
                             overrides: GraphicsOverrides::default(),
+                            ..Default::default()
                         };
                         let resolved = resolve(&settings, capabilities, P1440);
                         let context = format!("{settings:?} on {capabilities:?} gave {resolved:?}");
@@ -1159,8 +1160,10 @@ fn settings_round_trip_through_serde() {
         overrides: GraphicsOverrides {
             ssr: Some(false),
             max_bounces: Some(2),
+            baked_gi: Some(false),
             ..Default::default()
         },
+        ambient_while_baked: 2.5,
     };
     let text = ron::to_string(&settings).unwrap();
     assert_eq!(ron::from_str::<GraphicsSettings>(&text).unwrap(), settings);

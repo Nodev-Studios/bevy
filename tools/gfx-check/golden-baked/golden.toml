@@ -1,0 +1,23 @@
+# Written by `gfx-check budget --golden tools/gfx-check/golden --write-golden <results>` from a run of
+# tools/gfx-check/golden.ron; do not edit by hand. Each image is the per-pixel mean of one configuration's
+# repeats, reduced to `size` with the area filter; `tolerance` is twice the largest difference of one
+# repeat from it (at least 0.1 points), and a later run passes when the median of its repeats' differences
+# is under it. Only cells on `adapter` at `resolution` are gated; others are recorded.
+
+adapter = "RTX 5070"
+resolution = "1920x1080"
+size = [480, 270]
+
+[[image]]
+run = "raster-baked"
+scene = "interior"
+file = "raster-baked-interior.png"
+tolerance = 0.45
+written_from = [0.222, 0.149, 0.18, 0.173, 0.15, 0.154, 0.216]
+
+[[image]]
+run = "raster-baked"
+scene = "rooms"
+file = "raster-baked-rooms.png"
+tolerance = 0.17
+written_from = [0.083, 0.084, 0.076, 0.083, 0.077, 0.076, 0.078]

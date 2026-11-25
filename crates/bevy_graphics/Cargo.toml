@@ -29,7 +29,9 @@ force_disable_nrd = ["bevy_anti_alias/force_disable_nrd"]
 bevy_anti_alias = { path = "../bevy_anti_alias", version = "0.20.1" }
 bevy_app = { path = "../bevy_app", version = "0.20.1" }
 bevy_asset = { path = "../bevy_asset", version = "0.20.1" }
+bevy_baked_gi = { path = "../bevy_baked_gi", version = "0.20.1" }
 bevy_camera = { path = "../bevy_camera", version = "0.20.1" }
+bevy_color = { path = "../bevy_color", version = "0.20.1" }
 bevy_core_pipeline = { path = "../bevy_core_pipeline", version = "0.20.1" }
 bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
 bevy_light = { path = "../bevy_light", version = "0.20.1" }

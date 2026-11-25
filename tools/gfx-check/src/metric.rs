@@ -53,23 +53,93 @@ pub struct Stats {
     pub mean_luma: f64,
     /// Largest channel value in the image, 0 to 255.
     pub max: u8,
+    /// Pixels measured: the whole image, or the region's.
+    pub pixels: u64,
+    /// Measured pixels whose three channels are all 0.
+    pub zero_pixels: u64,
+    /// The smallest Rec. 709 luma of a measured pixel, 0 to 1.
+    pub min_luma: f64,
+}
+
+/// The part of an image `image stats` measures.
+pub enum Region {
+    /// Pixels `x0..x1` × `y0..y1`.
+    Rect { x0: u32, y0: u32, x1: u32, y1: u32 },
+    /// The pixels where a mask image of the same size is not black.
+    Mask(RgbImage),
+}
+
+impl Region {
+    /// Reads `x0,y0,x1,y1` (pixels, ends excluded) or the path of a mask PNG.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let numbers: Vec<Option<u32>> = text.split(',').map(|n| n.trim().parse().ok()).collect();
+        if numbers.len() == 4 && numbers.iter().all(Option::is_some) {
+            let n: Vec<u32> = numbers.into_iter().flatten().collect();
+            if n[0] >= n[2] || n[1] >= n[3] {
+                return Err(format!("--region {text}: an empty rectangle"));
+            }
+            return Ok(Self::Rect {
+                x0: n[0],
+                y0: n[1],
+                x1: n[2],
+                y1: n[3],
+            });
+        }
+        Ok(Self::Mask(load(Path::new(text))?))
+    }
+
+    fn contains(&self, x: u32, y: u32) -> bool {
+        match self {
+            Self::Rect { x0, y0, x1, y1 } => (*x0..*x1).contains(&x) && (*y0..*y1).contains(&y),
+            Self::Mask(mask) => mask.get_pixel(x, y).0 != [0, 0, 0],
+        }
+    }
 }
 
 /// Measures how bright an image is.
 pub fn stats(image: &RgbImage) -> Stats {
-    let mut luma = 0.0;
-    let mut max = 0;
-    for pixel in image.pixels() {
-        let [r, g, b] = pixel.0;
-        luma += 0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b);
-        max = max.max(r).max(g).max(b);
+    stats_in(image, None).expect("the whole image has pixels")
+}
+
+/// Measures how bright `region` of an image is (the whole image without one).
+pub fn stats_in(image: &RgbImage, region: Option<&Region>) -> Result<Stats, String> {
+    if let Some(Region::Mask(mask)) = region
+        && mask.dimensions() != image.dimensions()
+    {
+        return Err(format!(
+            "the mask is {}x{}, the image {}x{}",
+            mask.width(),
+            mask.height(),
+            image.width(),
+            image.height()
+        ));
     }
-    Stats {
+    let (mut luma, mut min_luma) = (0.0, f64::INFINITY);
+    let (mut max, mut pixels, mut zero_pixels) = (0, 0, 0);
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if region.is_some_and(|region| !region.contains(x, y)) {
+            continue;
+        }
+        let [r, g, b] = pixel.0;
+        let l = 0.2126 * f64::from(r) + 0.7152 * f64::from(g) + 0.0722 * f64::from(b);
+        luma += l;
+        min_luma = min_luma.min(l / 255.0);
+        max = max.max(r).max(g).max(b);
+        pixels += 1;
+        zero_pixels += u64::from(pixel.0 == [0, 0, 0]);
+    }
+    if pixels == 0 {
+        return Err("the region holds no pixel of the image".into());
+    }
+    Ok(Stats {
         width: image.width(),
         height: image.height(),
-        mean_luma: luma / 255.0 / (f64::from(image.width()) * f64::from(image.height())),
+        mean_luma: luma / 255.0 / pixels as f64,
         max,
-    }
+        pixels,
+        zero_pixels,
+        min_luma,
+    })
 }
 
 /// A frame darker than this mean luma counts as black: the renderer drew nothing.
@@ -115,5 +185,25 @@ mod tests {
         assert!(stats(&RgbImage::new(8, 8)).mean_luma < DEFAULT_MIN_LUMA);
         let grey = RgbImage::from_pixel(8, 8, Rgb([128, 128, 128]));
         assert!((stats(&grey).mean_luma - 128.0 / 255.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_region_measures_only_its_pixels() {
+        let mut image = RgbImage::new(4, 2);
+        image.put_pixel(1, 0, Rgb([255, 255, 255]));
+        image.put_pixel(3, 1, Rgb([51, 51, 51]));
+        let rect = Region::parse("1,0,2,1").unwrap();
+        let stats = stats_in(&image, Some(&rect)).unwrap();
+        assert_eq!((stats.pixels, stats.zero_pixels), (1, 0));
+        assert!((stats.mean_luma - 1.0).abs() < 1e-9);
+        let mut mask = RgbImage::new(4, 2);
+        mask.put_pixel(3, 1, Rgb([255, 255, 255]));
+        mask.put_pixel(0, 0, Rgb([255, 255, 255]));
+        let stats = stats_in(&image, Some(&Region::Mask(mask))).unwrap();
+        assert_eq!((stats.pixels, stats.zero_pixels), (2, 1));
+        assert!((stats.mean_luma - 0.1).abs() < 1e-9);
+        assert_eq!(stats.min_luma, 0.0);
+        assert!(Region::parse("2,0,1,1").is_err());
+        assert!(stats_in(&image, Some(&Region::Mask(RgbImage::new(2, 2)))).is_err());
     }
 }

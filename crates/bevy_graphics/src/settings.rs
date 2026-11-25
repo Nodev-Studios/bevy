@@ -21,6 +21,11 @@ pub struct GraphicsSettings {
     pub denoiser: DenoiserChoice,
     /// Single effects forced on or off, whatever the preset says.
     pub overrides: GraphicsOverrides,
+    /// The brightness of the ambient light every [`GraphicsCamera`] gets while a baked indirect light is loaded
+    /// ([`baked`](crate::baked)), in cd/m². The bake holds the light a game's ambient stood in for, so the
+    /// default is 0: anything more is lit twice. Settings saved before it existed read as 0.
+    #[serde(default)]
+    pub ambient_while_baked: f32,
 }
 
 /// A rung of the graphics ladder, or `Auto` to pick one from the machine's capabilities.
@@ -105,6 +110,11 @@ pub struct GraphicsOverrides {
     pub restir: Option<bool>,
     /// The longest light path, in bounces. Ray traced presets only.
     pub max_bounces: Option<u32>,
+    /// Baked indirect light ([`baked`](crate::baked)): `Some(false)` hides a loaded bake and gives the cameras
+    /// back the game's ambient light, for A/B comparisons. `Some(true)` is the same as `None`. Settings saved
+    /// before it existed read as `None`.
+    #[serde(default)]
+    pub baked_gi: Option<bool>,
 }
 
 /// Marks a camera the graphics settings are applied to.
