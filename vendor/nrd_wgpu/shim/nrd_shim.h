@@ -52,6 +52,8 @@ enum {
     NRDW_RESOURCE_OUT_SPECULAR = 7,
     NRDW_RESOURCE_TRANSIENT_POOL = 8,
     NRDW_RESOURCE_PERMANENT_POOL = 9,
+    NRDW_RESOURCE_IN_DIFFUSE_CONFIDENCE = 10,
+    NRDW_RESOURCE_IN_SPECULAR_CONFIDENCE = 11,
 };
 
 typedef struct {
@@ -104,6 +106,8 @@ typedef struct {
     uint32_t frame_index;
     // 0: keep accumulating; 1: drop the history; 2: drop the history and clear NRD's textures.
     uint32_t reset;
+    // 1 when the dispatches read history confidence textures.
+    uint32_t history_confidence;
 } NrdwFrame;
 
 typedef struct {

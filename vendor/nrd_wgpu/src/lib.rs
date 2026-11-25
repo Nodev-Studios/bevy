@@ -223,6 +223,14 @@ pub struct DenoiserInputs<'a> {
     pub view_depth: &'a TextureView,
     /// `rg`: screen-space motion in uv units, without jitter. See [`FrameSettings::motion_vector_scale`].
     pub motion_vectors: &'a TextureView,
+    /// `r`: how far the accumulated history of the previous frame can still be trusted, in 0..=1: 0 drops it,
+    /// 1 keeps accumulating as NRD would without this input. ReBLUR reads it, for both lobes, at the uv of the
+    /// previous frame with a linear filter, so it may be smaller than the denoiser; any filterable float format.
+    /// NRD's README calls this input the best cure for lag after a change of light, which its own anti-lag
+    /// (`ReblurSettings::antilag`) does not remove.
+    ///
+    /// Give it on every frame of a denoiser's life or on none: NRD runs other shaders with it.
+    pub history_confidence: Option<&'a TextureView>,
 }
 
 /// The textures [`Denoiser::denoise`] writes: two [`OUTPUT_FORMAT`] textures with `STORAGE_BINDING` usage at the
@@ -867,6 +875,7 @@ impl Denoiser {
             height: self.size[1],
             denoising_range: frame.denoising_range,
             frame_index: frame.frame_index,
+            history_confidence: inputs.history_confidence.is_some() as u32,
             // The first frame also clears NRD's textures, which hold whatever the driver left in them.
             reset: match (previous.is_some(), frame.reset_history) {
                 (false, _) => 2,
@@ -956,6 +965,8 @@ impl Denoiser {
                     ffi::NRDW_RESOURCE_OUT_SPECULAR => Some(&self.denoised_specular),
                     ffi::NRDW_RESOURCE_TRANSIENT_POOL => self.transient_pool.get(pool_index),
                     ffi::NRDW_RESOURCE_PERMANENT_POOL => self.permanent_pool.get(pool_index),
+                    ffi::NRDW_RESOURCE_IN_DIFFUSE_CONFIDENCE
+                    | ffi::NRDW_RESOURCE_IN_SPECULAR_CONFIDENCE => inputs.history_confidence,
                     _ => None,
                 };
                 let is_storage = resource_index >= texture_count;

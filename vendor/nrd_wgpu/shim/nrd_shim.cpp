@@ -66,6 +66,8 @@ uint32_t convert_resource(nrd::ResourceType type) {
         case nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST: return NRDW_RESOURCE_OUT_SPECULAR;
         case nrd::ResourceType::TRANSIENT_POOL: return NRDW_RESOURCE_TRANSIENT_POOL;
         case nrd::ResourceType::PERMANENT_POOL: return NRDW_RESOURCE_PERMANENT_POOL;
+        case nrd::ResourceType::IN_DIFF_CONFIDENCE: return NRDW_RESOURCE_IN_DIFFUSE_CONFIDENCE;
+        case nrd::ResourceType::IN_SPEC_CONFIDENCE: return NRDW_RESOURCE_IN_SPECULAR_CONFIDENCE;
         default: return NRDW_RESOURCE_UNSUPPORTED;
     }
 }
@@ -221,6 +223,7 @@ uint32_t nrdw_set_frame(NrdwInstance* instance, const NrdwFrame* frame) {
     common.resourceSize[1] = common.resourceSizePrev[1] = common.rectSize[1] = common.rectSizePrev[1] = height;
     common.denoisingRange = frame->denoising_range;
     common.frameIndex = frame->frame_index;
+    common.isHistoryConfidenceAvailable = frame->history_confidence != 0;
     switch (frame->reset) {
         case 1: common.accumulationMode = nrd::AccumulationMode::RESTART; break;
         case 2: common.accumulationMode = nrd::AccumulationMode::CLEAR_AND_RESTART; break;

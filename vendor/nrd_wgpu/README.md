@@ -112,6 +112,11 @@ GPU (Mesa RADV 26.3.1), both through Vulkan.
   gain. Why is not known: wgpu inserts the same barriers either way. `denoise` records a pass per dispatch.
 - **History confidence.** NRD's README says ReBLUR's anti-lag (`ReblurSettings::antilag`,
   `fast_history_clamping_sigma_scale`) is not enough on its own against lag after a change of light, and that
-  history confidence inputs are the better cure. This crate does not take them yet.
+  history confidence inputs are the better cure. `DenoiserInputs::history_confidence` takes one texture, bound
+  to both `IN_DIFF_CONFIDENCE` and `IN_SPEC_CONFIDENCE` (NRD advises one "lighting" confidence when each pixel
+  samples one lobe), at any size; the caller computes it. Bevy's `bevy_anti_alias::nrd` does (its
+  `history_confidence.rs`): on the testbed's `interior` at 2560x1440 on the RTX 5070 (2026-11-24) the image five
+  frames after a light goes off went from 6.5 % to 1.7 % off the settled one. `reblur_plane` does not exercise
+  the input.
 - **`mock` feature.** Builds without the SDK: nothing of NRD is compiled or linked and `Denoiser::new` always
   fails. It exists so that a build with every feature on (`cargo doc --all-features`) works without the SDK.

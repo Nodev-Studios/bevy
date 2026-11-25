@@ -18,9 +18,12 @@
 //!
 //! Each frame [`Nrd`] reads the textures of [`crate::ray_reconstruction`] in
 //! [`DenoiserSystems::Denoise`] and writes [`ViewDenoisedRadianceTextures`], which the lighting
-//! pass composes into the view's lit color. A view where NRD cannot run (see
+//! pass composes into the view's lit color. Before `ReBLUR` runs, [`Nrd`] estimates how far its
+//! history can still be trusted, so that a change of light shows within a few frames (see
+//! `history_confidence.rs`). A view where NRD cannot run (see
 //! [`Nrd::required_wgpu_features`]) logs why once and shows the noisy lighting.
 
+mod history_confidence;
 mod node;
 
 use crate::ray_reconstruction::{
@@ -43,13 +46,14 @@ use bevy_render::{
         TextureDescriptor, TextureDimension, TextureFormat, TextureSampleType, TextureUsages,
         TextureViewDescriptor,
     },
-    renderer::RenderDevice,
+    renderer::{RenderDevice, RenderQueue},
     settings::WgpuFeatures,
     sync_world::RenderEntity,
     texture::CachedTexture,
     ExtractSchedule, MainWorld, Render, RenderApp, RenderStartup, RenderSystems,
 };
 use bevy_utils::default;
+use history_confidence::{init_history_confidence_pipelines, HistoryConfidence};
 use nrd_wgpu::{Denoiser, DenoiserKind, TexturePrecision};
 use std::sync::Mutex;
 use tracing::{error, info};
@@ -61,12 +65,16 @@ pub struct NrdPlugin;
 impl Plugin for NrdPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "crop_motion_vectors.wesl");
+        embedded_asset!(app, "history_confidence.wesl");
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app
-            .add_systems(RenderStartup, init_nrd_crop_pipeline)
+            .add_systems(
+                RenderStartup,
+                (init_nrd_crop_pipeline, init_history_confidence_pipelines),
+            )
             .add_systems(ExtractSchedule, extract_nrd)
             .add_systems(Render, prepare_nrd.in_set(RenderSystems::PrepareResources))
             .add_systems(Core3d, node::nrd.in_set(DenoiserSystems::Denoise));
@@ -146,6 +154,7 @@ struct NrdState {
     /// The view's motion vectors cut to the render resolution, when the prepass texture is
     /// larger (an upscaler is on).
     motion_vectors: Option<CachedTexture>,
+    history_confidence: HistoryConfidence,
 }
 
 fn extract_nrd(
@@ -183,6 +192,7 @@ fn prepare_nrd(
         Has<ViewDenoiserInputTextures>,
     )>,
     render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
     mut commands: Commands,
 ) {
     for (entity, camera, resolution_override, nrd, view_nrd, has_inputs) in &views {
@@ -249,6 +259,7 @@ fn prepare_nrd(
                     denoiser,
                     frame_index: 0,
                     motion_vectors: None,
+                    history_confidence: HistoryConfidence::new(&render_device, &render_queue, size),
                 })
             }
             Err(error) => {
