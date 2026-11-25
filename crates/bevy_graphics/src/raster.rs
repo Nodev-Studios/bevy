@@ -30,34 +30,34 @@ pub struct RasterEffects {
 /// Measured on the testbed's `interior` and `many-lights` scenes at 1920x1080 with TAA on the RTX 5070
 /// (2026-11-24, GPU time of the frame from the render diagnostics, medians of three runs). With Bevy's defaults
 /// for every effect the frame took 2.75 ms of GPU on `interior` (3.22 ms median frame on a quiet machine)
-/// against the rung's gate of 2.8 ms; with these cuts it takes about 2.25 ms. What each cut saves and costs is
-/// beside it. On frames rendered at 3840x2160 the cuts together (contact shadows off) differ from the defaults
-/// by 0.71-0.73 points on `interior`, where two runs of the defaults differ by 0.67, and by 0.13 on
-/// `many-lights` (two runs: 0.06).
+/// against the rung's gate of 2.8 ms. E2's cuts took it to about 2.25 ms; O3's three further cuts (contact
+/// shadows off, SSAO Low, SSR 6 / 3 steps) to 2.02 ms (`many-lights`: 1.51 to 1.35), measured as the 10th
+/// percentile of each pass over 300 frames, interleaved with the earlier table. Against Bevy's defaults rendered at
+/// 3840x2160 and reduced to 1080p, O3's cuts move the error from 1.11 to 1.13 points on `interior` and from 0.479 to
+/// 0.483 on `many-lights`; flicker and the motion metric stay within run-to-run noise.
 pub fn raster() -> RasterEffects {
     RasterEffects {
         // Every anti-aliasing the ladder uses is temporal, which is what this filter is made for.
-        // `Hardware2x2` would save 0.03 ms on `interior`.
+        // `Hardware2x2` saves 0.013 ms on `interior` and nothing measurable on `many-lights` (O3).
         shadow_filter: ShadowFilteringMethod::Temporal,
-        // 4 linear steps over the same 0.3 m: 0.07 ms of the deferred lighting pass on `interior`, against
-        // 0.29 ms at Bevy's 16 (0.15 at 8). Switching them off left no visible shape in C1's difference image of
-        // that scene, but they stay on for the contacts shadow maps miss in a game (feet, thin props).
-        contact_shadows: Some(ContactShadows {
-            linear_steps: 4,
-            ..Default::default()
-        }),
-        // Medium (8 samples a pixel, against High's 18): 0.22 ms against 0.37 on `interior`. On TAA frames
-        // rendered at 3840x2160 (supersampled for 1080p) it differs from High by 0.53-0.62 points on `interior`,
-        // where two runs of High differ by 0.67, and by 0.08-0.10 on `many-lights` (two runs: 0.06).
+        // Off: 4 steps cost 0.06-0.07 ms of the deferred lighting pass on both scenes, and switching them off
+        // changes neither scene's error (1.106 against 1.105, 0.478 against 0.479) nor its flicker. The testbed
+        // has no feet or thin props, the contacts shadow maps miss, so a game with them may want them back
+        // (`GraphicsOverrides::contact_shadows`, which turns them on at 4 steps).
+        contact_shadows: None,
+        // Low (4 samples a pixel, against Medium's 8; High is 18): 0.155 ms against 0.217 on `interior`, 0.151
+        // against 0.213 on `many-lights`. TAA resolves the extra noise: error and flicker do not move on either
+        // scene.
         ambient_occlusion: Some(ScreenSpaceAmbientOcclusion {
-            quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Medium,
+            quality_level: ScreenSpaceAmbientOcclusionQualityLevel::Low,
             ..Default::default()
         }),
-        // 8 linear and 3 bisection steps, against Bevy's 10 and 5: 0.46 ms against 0.59 on `interior`, whose
-        // glossy floor fills most of the frame. The one cut that shows above run-to-run noise: 0.12-0.13 points
-        // on `many-lights` against 0.06 between two runs of the defaults (`interior`: 0.52-0.63 against 0.67).
+        // 6 linear and 3 bisection steps, against E2's 8 / 3 and Bevy's 10 / 5: 0.404 ms against 0.460 on
+        // `interior`, whose glossy floor fills most of the frame, 0.219 against 0.252 on `many-lights`. The error
+        // rises 0.025 points on `interior` and 0.006 on `many-lights`; it is the cut that shows most, on the
+        // upper rim of the metal sphere, inside the speckle two runs of the earlier table already differ by.
         reflections: Some(ScreenSpaceReflections {
-            linear_steps: 8,
+            linear_steps: 6,
             bisection_steps: 3,
             ..Default::default()
         }),
@@ -72,7 +72,15 @@ pub fn raster_with(overrides: &GraphicsOverrides) -> RasterEffects {
     let table = raster();
     RasterEffects {
         shadow_filter: table.shadow_filter,
-        contact_shadows: switch(table.contact_shadows, overrides.contact_shadows),
+        // Forced on where the table has them off: E2's 4 steps (0.07 ms on `interior` at 1080p), not Bevy's
+        // 16 (0.29 ms).
+        contact_shadows: match overrides.contact_shadows {
+            Some(true) => Some(table.contact_shadows.unwrap_or(ContactShadows {
+                linear_steps: 4,
+                ..Default::default()
+            })),
+            forced => switch(table.contact_shadows, forced),
+        },
         ambient_occlusion: switch(table.ambient_occlusion, overrides.ssao),
         reflections: switch(table.reflections, overrides.ssr),
         bloom: switch(table.bloom, overrides.bloom),
