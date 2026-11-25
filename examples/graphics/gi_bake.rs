@@ -20,7 +20,7 @@
 mod scenes;
 
 use bevy::{
-    app::PluginsState,
+    app::ScheduleRunnerPlugin,
     asset::RenderAssetUsages,
     baked_gi::{
         bake::{
@@ -36,7 +36,7 @@ use bevy::{
     winit::WinitPlugin,
 };
 use chacha20::ChaCha8Rng;
-use core::f64::consts::PI;
+use core::{f64::consts::PI, time::Duration};
 use rand::{RngExt, SeedableRng};
 use std::path::{Path, PathBuf};
 
@@ -477,32 +477,14 @@ fn bake(scene: &str, out: PathBuf, settings: GiBakeSettings, move_wall: bool) ->
                 })
                 .disable::<WinitPlugin>(),
             GiBakePlugin { settings },
+            // With no window there is no winit loop; this one returns the bake's exit code once the app has shut
+            // down, so the render thread is stopped before the GPU driver unloads.
+            ScheduleRunnerPlugin::run_loop(Duration::ZERO),
         ))
         .add_systems(Startup, move |world: &mut World| {
             spawn_scene(&scene, world, move_wall);
         })
-        .set_runner(run_until_baked)
         .run()
-}
-
-/// `ScheduleRunnerPlugin`'s loop, except that the process ends as soon as the bake asks to exit, without shutting
-/// the app down: one bake of `synthetic` on the RTX 5070 (2026-11-25) hung after writing its files, with the main
-/// and render threads both parked, and did not exit in two minutes. The files are complete when the bake asks.
-fn run_until_baked(mut app: App) -> AppExit {
-    while app.plugins_state() == PluginsState::Adding {
-        bevy::tasks::tick_global_task_pools_on_main_thread();
-    }
-    app.finish();
-    app.cleanup();
-    loop {
-        app.update();
-        if let Some(exit) = app.should_exit() {
-            std::process::exit(match exit {
-                AppExit::Success => 0,
-                AppExit::Error(code) => i32::from(code.get()),
-            });
-        }
-    }
 }
 
 /// Builds the scene in an app with no renderer at all and compares its hash with the manifest's.
