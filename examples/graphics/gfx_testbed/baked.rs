@@ -893,6 +893,7 @@ fn record(
         .filter(|(_, affine)| frustum.intersects_obb(&unit, affine, true, false))
         .map(|(name, _)| name.as_str())
         .collect();
+    let mut failures: Vec<String> = Vec::new();
     let mut entry = json!({
         "capture": format!("{name}.png"),
         "frame": frame,
@@ -906,7 +907,7 @@ fn record(
         let hits = trace(&camera, triangles);
         let (mask, inside) = coverage_mask(&camera, &hits, &boxes);
         let file = format!("mask-{name}.png");
-        save_mask(&args.out.join(&file), args.res, &mask);
+        failures.extend(save_mask(&args.out.join(&file), args.res, &mask).err());
         entry["mask"] = json!(file);
         entry["mask_pixels"] = json!(inside);
     }
@@ -932,11 +933,11 @@ fn record(
             Ok(prediction) => {
                 let mut counts = Map::new();
                 for (file, image) in &prediction.images {
-                    save_rgb(&args.out.join(file), args.res, image);
+                    failures.extend(save_rgb(&args.out.join(file), args.res, image).err());
                 }
                 for (face, mask) in prediction.masks.iter().enumerate() {
                     let file = format!("mask-{}.png", FACE_FILES[face]);
-                    save_mask(&args.out.join(&file), args.res, mask);
+                    failures.extend(save_mask(&args.out.join(&file), args.res, mask).err());
                     counts.insert(
                         FACE_FILES[face].into(),
                         json!(mask.iter().filter(|m| **m).count()),
@@ -957,6 +958,7 @@ fn record(
         }
     }
     captures.push(entry);
+    world.resource_mut::<Report>().failures.extend(failures);
 
     if name == "a" {
         let status = format!("{:?}", *world.resource::<BakedGiStatus>());
@@ -1231,7 +1233,7 @@ fn coverage_mask(
     (mask, count)
 }
 
-fn save_rgba(path: &Path, size: UVec2, data: Vec<u8>) {
+fn save_rgba(path: &Path, size: UVec2, data: Vec<u8>) -> Result<(), String> {
     let image = Image::new(
         Extent3d {
             width: size.x,
@@ -1240,10 +1242,11 @@ fn save_rgba(path: &Path, size: UVec2, data: Vec<u8>) {
         },
         TextureDimension::D2,
         data,
-        TextureFormat::Rgba8Unorm,
+        // The screenshots' format: the bytes are written as they are.
+        TextureFormat::Rgba8UnormSrgb,
         RenderAssetUsages::MAIN_WORLD,
     );
-    let saved = image
+    image
         .try_into_dynamic()
         .map_err(|error| error.to_string())
         .and_then(|image| {
@@ -1251,26 +1254,24 @@ fn save_rgba(path: &Path, size: UVec2, data: Vec<u8>) {
                 .to_rgb8()
                 .save(path)
                 .map_err(|error| error.to_string())
-        });
-    if let Err(error) = saved {
-        error!("{}: {error}", path.display());
-    }
+        })
+        .map_err(|error| format!("{}: {error}", path.display()))
 }
 
-fn save_mask(path: &Path, size: UVec2, mask: &[bool]) {
+fn save_mask(path: &Path, size: UVec2, mask: &[bool]) -> Result<(), String> {
     let data = mask
         .iter()
         .flat_map(|m| if *m { [255; 4] } else { [0, 0, 0, 255] })
         .collect();
-    save_rgba(path, size, data);
+    save_rgba(path, size, data)
 }
 
-fn save_rgb(path: &Path, size: UVec2, pixels: &[[u8; 3]]) {
+fn save_rgb(path: &Path, size: UVec2, pixels: &[[u8; 3]]) -> Result<(), String> {
     let data = pixels
         .iter()
         .flat_map(|[r, g, b]| [*r, *g, *b, 255])
         .collect();
-    save_rgba(path, size, data);
+    save_rgba(path, size, data)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
