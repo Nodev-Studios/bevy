@@ -72,7 +72,8 @@ Baked indirect light (bevy_baked_gi):
   --gi-pin-intensity             hold every baked volume at intensity 1, whatever the lights do
   --gi-coverage                  the bake alone: white matte materials, no analytic light, volumes at
                                  intensity 1, exposure 0 EV, no tonemapping; writes mask-<capture>.png
-  --gi-no-reflections            hide the bake's reflection probes (its volumes alone)
+  --gi-no-reflections            hide the bake's reflection probes (its volumes alone; with a reflection
+                                 view, its negative control)
   --gi-reflection-only           only what the reflection probes reflect: no analytic light, dielectrics' base
                                  colour black, no emission, intensity 1, no SSR; exposure and tonemapping kept
   --gi-reflection-coverage       the reflection probes alone: white metal of roughness 0.5, no analytic light,
@@ -174,11 +175,6 @@ impl Baked {
         }
         if views.iter().filter(|v| **v).count() > 1 {
             flags.error("--gi-coverage, --gi-reflection-only and --gi-reflection-coverage are separate views");
-        }
-        if baked.no_reflections && (baked.reflection_only || baked.reflection_coverage) {
-            flags.error(
-                "the reflection views need the reflection probes: no --gi-no-reflections with them",
-            );
         }
         baked
     }
