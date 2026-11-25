@@ -48,8 +48,12 @@ pub mod irradiance_volume;
 /// The maximum number of each type of light probe that each view will consider.
 ///
 /// Because the fragment shader does a linear search through the list for each
-/// fragment, this number needs to be relatively small.
-pub const MAX_VIEW_LIGHT_PROBES: usize = 8;
+/// fragment, this number needs to be relatively small. Shaders read it as
+/// `constants::MAX_VIEW_LIGHT_PROBES`.
+///
+/// to tune: 24 so that every baked irradiance volume in a frustum of a level with
+/// many small rooms is bound (8 dropped some in a third of the views counted).
+pub const MAX_VIEW_LIGHT_PROBES: usize = 24;
 
 /// How many texture bindings are used in the fragment shader, *not* counting
 /// environment maps or irradiance volumes.

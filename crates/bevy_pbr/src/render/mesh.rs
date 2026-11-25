@@ -162,6 +162,10 @@ impl Plugin for MeshRenderPlugin {
                         MAX_CASCADES_PER_LIGHT as u32,
                     ),
                     ShaderDefVal::UInt("MAX_RECT_LIGHTS".into(), MAX_RECT_LIGHTS as u32,),
+                    ShaderDefVal::UInt(
+                        "MAX_VIEW_LIGHT_PROBES".into(),
+                        MAX_VIEW_LIGHT_PROBES as u32,
+                    ),
                 ],
             });
         load_shader_library!(app, "mesh_view_bindings.wesl");
