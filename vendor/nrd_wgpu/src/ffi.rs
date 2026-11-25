@@ -26,6 +26,8 @@ pub const NRDW_RESOURCE_OUT_DIFFUSE: u32 = 6;
 pub const NRDW_RESOURCE_OUT_SPECULAR: u32 = 7;
 pub const NRDW_RESOURCE_TRANSIENT_POOL: u32 = 8;
 pub const NRDW_RESOURCE_PERMANENT_POOL: u32 = 9;
+pub const NRDW_RESOURCE_IN_DIFFUSE_CONFIDENCE: u32 = 10;
+pub const NRDW_RESOURCE_IN_SPECULAR_CONFIDENCE: u32 = 11;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -85,6 +87,7 @@ pub struct NrdwFrame {
     pub denoising_range: f32,
     pub frame_index: u32,
     pub reset: u32,
+    pub history_confidence: u32,
 }
 
 #[repr(C)]

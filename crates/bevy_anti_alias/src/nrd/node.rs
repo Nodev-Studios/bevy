@@ -1,4 +1,4 @@
-use super::{Nrd, NrdCropPipeline, NrdState, ViewNrd};
+use super::{history_confidence::HistoryConfidencePipelines, Nrd, NrdCropPipeline, NrdState, ViewNrd};
 use crate::ray_reconstruction::{
     ViewDenoisedRadianceTextures, ViewDenoiserGuideTextures, ViewDenoiserInputTextures,
     DENOISER_SKY_VIEW_DEPTH,
@@ -33,6 +33,7 @@ pub(super) fn nrd(
         &ViewDenoisedRadianceTextures,
     )>,
     crop_pipeline: Option<Res<NrdCropPipeline>>,
+    confidence_pipelines: Option<Res<HistoryConfidencePipelines>>,
     pipeline_cache: Res<PipelineCache>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
@@ -59,10 +60,26 @@ pub(super) fn nrd(
         &render_device,
         ctx.command_encoder(),
     ) else {
+        nrd_state.history_confidence.invalidate();
         copy_noisy(ctx.command_encoder(), inputs, outputs);
         time_span.end(ctx.command_encoder());
         return;
     };
+
+    if nrd.reset {
+        nrd_state.history_confidence.invalidate();
+    }
+    nrd_state.history_confidence.estimate(
+        confidence_pipelines.as_deref(),
+        &pipeline_cache,
+        &render_device,
+        &render_queue,
+        ctx.command_encoder(),
+        diagnostics,
+        inputs,
+        &motion_vectors,
+        outputs,
+    );
 
     let frame = FrameSettings {
         view_to_clip: view.clip_from_view.to_cols_array(),
@@ -87,6 +104,7 @@ pub(super) fn nrd(
             normal_roughness: &guides.normal_roughness.default_view,
             view_depth: &inputs.view_depth.default_view,
             motion_vectors: &motion_vectors,
+            history_confidence: Some(&**nrd_state.history_confidence.texture()),
         },
         &DenoiserOutputs {
             diffuse: &outputs.diffuse.default_view,

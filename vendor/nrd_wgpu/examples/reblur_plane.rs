@@ -426,6 +426,7 @@ fn run(gpu: &Gpu, options: Options, scenario: Scenario) -> Run {
         normal_roughness: &views[2],
         view_depth: &views[3],
         motion_vectors: &views[4],
+        history_confidence: None,
     };
     let denoiser_outputs = DenoiserOutputs {
         diffuse: &output_views[0],
