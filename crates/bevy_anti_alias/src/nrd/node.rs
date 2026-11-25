@@ -1,4 +1,6 @@
-use super::{history_confidence::HistoryConfidencePipelines, Nrd, NrdCropPipeline, NrdState, ViewNrd};
+use super::{
+    history_confidence::HistoryConfidencePipelines, Nrd, NrdCropPipeline, NrdState, ViewNrd,
+};
 use crate::ray_reconstruction::{
     ViewDenoisedRadianceTextures, ViewDenoiserGuideTextures, ViewDenoiserInputTextures,
     DENOISER_SKY_VIEW_DEPTH,

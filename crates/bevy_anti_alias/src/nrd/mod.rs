@@ -259,11 +259,7 @@ fn prepare_nrd(
                     denoiser,
                     frame_index: 0,
                     motion_vectors: None,
-                    history_confidence: HistoryConfidence::new(
-                        &render_device,
-                        &render_queue,
-                        size,
-                    ),
+                    history_confidence: HistoryConfidence::new(&render_device, &render_queue, size),
                 })
             }
             Err(error) => {

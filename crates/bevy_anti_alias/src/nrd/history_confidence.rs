@@ -21,11 +21,11 @@ use bevy_render::{
     diagnostic::{DiagnosticsRecorder, RecordDiagnostics},
     render_resource::{
         binding_types::{texture_2d, texture_storage_2d, uniform_buffer},
-        BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, CachedComputePipelineId,
-        CommandEncoder, ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache,
-        ShaderStages, ShaderType, StorageTextureAccess, TextureDescriptor, TextureDimension,
-        TextureFormat, TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor,
-        UniformBuffer,
+        BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
+        CachedComputePipelineId, CommandEncoder, ComputePassDescriptor, ComputePipelineDescriptor,
+        PipelineCache, ShaderStages, ShaderType, StorageTextureAccess, TextureDescriptor,
+        TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
+        TextureViewDescriptor, UniformBuffer,
     },
     renderer::{RenderDevice, RenderQueue},
     texture::CachedTexture,
@@ -51,14 +51,21 @@ struct HistoryConfidenceParams {
     sky_depth: f32,
 }
 
-/// The tuned settings; `history_valid` is filled in per frame.
-// to tune: starting values, measured on `interior` at 2560x1440 on the RTX 5070 (O1's report).
+/// The settings; `history_valid` is filled in per frame.
+///
+/// Chosen on the testbed's `interior` at 2560x1440 on the RTX 5070 (2026-11-24, NRD + TAA, bloom off), among
+/// six candidates, as the one with the lowest error against the path-traced reference whose light-switch lag
+/// stays under 2.6 %: error 2.409 % (2.414 without the estimate), flicker 0.134 % (0.137), lag five frames
+/// after a light goes off 1.717 % (6.511). A smaller radius or lower thresholds lowered the lag to 1.39 % but
+/// raised the error to 2.55–2.67 %: `ReBLUR` shortens its history every frame the confidence is under 1, so
+/// noise in the estimate must map to exactly 1.
+// to tune: on other scenes and resolutions; the lag and error move in opposite directions.
 const PARAMS: HistoryConfidenceParams = HistoryConfidenceParams {
     history_valid: 0,
-    radius: 1,
+    radius: 3,
     depth_tolerance: 0.05,
-    change_kept: 0.1,
-    change_dropped: 0.3,
+    change_kept: 0.2,
+    change_dropped: 0.45,
     luminance_floor: 0.01,
     sky_depth: DENOISER_SKY_VIEW_DEPTH * 0.5,
 };
@@ -178,7 +185,9 @@ impl HistoryConfidence {
             "nrd_history_confidence",
             tile_count,
             TextureFormat::Rgba8Unorm,
-            TextureUsages::STORAGE_BINDING | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            TextureUsages::STORAGE_BINDING
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST,
         );
         // Full confidence until the first estimate: wgpu would start the texture at 0, a reset.
         render_queue.write_texture(
@@ -281,11 +290,11 @@ impl HistoryConfidence {
             )),
         );
 
+        let time_span = diagnostics.time_span(encoder, "nrd_history_confidence");
         let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
             label: Some("nrd_history_confidence"),
             timestamp_writes: None,
         });
-        let time_span = diagnostics.time_span(&mut pass, "nrd/history_confidence");
         if self.history_valid {
             pass.set_pipeline(gather);
             pass.set_bind_group(0, &gather_bind_group, &[]);
@@ -298,7 +307,6 @@ impl HistoryConfidence {
             tile_count.height.div_ceil(8),
             1,
         );
-        time_span.end(&mut pass);
         drop(pass);
 
         // NRD's output of this frame will be compared against this frame's surfaces.
@@ -307,6 +315,7 @@ impl HistoryConfidence {
             self.previous_view_depth.texture.as_image_copy(),
             inputs.view_depth.texture.size(),
         );
+        time_span.end(encoder);
         self.history_valid = true;
     }
 }
