@@ -4,6 +4,7 @@
 use super::{
     directions::{fibonacci_directions, voxel_rotation},
     post::{region_noise, Accumulated, ChunkOutput},
+    reflection_gpu::{Capture, ProbeCapture, ReflectionJob, ReflectionPipeline},
     GiBakeAdaptive,
 };
 use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
@@ -104,6 +105,8 @@ pub(crate) struct BakeJob {
     /// Position and power of the lights next-event estimation picks by power / distance² (point, spot and
     /// rect lights); the others are picked at 1 / light count.
     pub positioned_lights: HashMap<Entity, [f32; 4]>,
+    /// The reflection probes to capture after the volumes; `None`: no probes.
+    pub reflections: Option<ReflectionJob>,
 }
 
 /// What came back.
@@ -113,6 +116,8 @@ pub(crate) struct BakeOutcome {
     pub region_samples: Vec<u32>,
     /// In adaptive mode, each region's noise between the two pilots.
     pub region_noise: Option<Vec<f64>>,
+    /// Each region's reflection probe, in region order; empty when the job asked for none.
+    pub reflections: Vec<ProbeCapture>,
     /// The lights in canonical order (the tallies' order): main-world entity and kind.
     pub canonical: Vec<(Entity, RaytracingLightKind)>,
     pub adapter: String,
@@ -179,6 +184,7 @@ pub(crate) struct WaitState {
 pub(crate) fn run_bake(
     exchange: Res<BakeExchange>,
     pipeline: Option<Res<BakePipeline>>,
+    reflection_pipeline: Option<Res<ReflectionPipeline>>,
     pipeline_cache: Res<PipelineCache>,
     scene: Res<RaytracingSceneBindings>,
     main_entities: Query<&MainEntity>,
@@ -199,10 +205,14 @@ pub(crate) fn run_bake(
     };
     wait.waited += 1;
 
+    let reflection = reflection_pipeline
+        .as_ref()
+        .and_then(|p| p.get(&pipeline_cache));
     let ready = pipeline
         .as_ref()
         .and_then(|p| pipeline_cache.get_compute_pipeline(p.pipeline))
         .is_some()
+        && (job.reflections.is_none() || reflection.is_some())
         && scene.bind_group.is_some();
     let lights: Vec<(RaytracingLightKind, Option<Entity>)> = scene
         .light_sources()
@@ -269,10 +279,33 @@ pub(crate) fn run_bake(
     )
     .and_then(|mut context| {
         let (accumulated, region_samples, region_noise) = bake_level(&mut context)?;
+        let reflections = match (&job.reflections, reflection) {
+            (Some(reflections), Some((pipeline, layout))) => Capture {
+                pipeline,
+                layout,
+                scene_group: context.scene_group,
+                canonical: &context.canonical,
+                light_info: &context.light_info,
+                light_count: context.light_count as u32,
+                seed: job.seed,
+                invalid_back_face_share: job.invalid_back_face_share,
+                device: &device,
+                queue: &queue,
+            }
+            .probes(
+                reflections,
+                &job.voxels,
+                &job.region_voxels,
+                &region_samples,
+                &accumulated,
+            )?,
+            _ => Vec::new(),
+        };
         Ok(BakeOutcome {
             accumulated,
             region_samples,
             region_noise,
+            reflections,
             canonical: canonical.iter().map(|(_, _, e, k)| (*e, *k)).collect(),
             adapter: adapter.name.clone(),
             driver: format!("{} {}", adapter.driver, adapter.driver_info),

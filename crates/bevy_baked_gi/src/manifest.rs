@@ -28,6 +28,9 @@ pub struct BakedGiManifest {
     /// The volume of each region, in `regions` order. Filled by the loader.
     #[serde(skip)]
     pub volumes: Vec<Handle<Image>>,
+    /// The reflection probe's cubemap of each region that has one, in `regions` order. Filled by the loader.
+    #[serde(skip)]
+    pub reflections: Vec<Option<Handle<Image>>>,
 }
 
 /// How a bake was made: enough to tell two bakes apart and to repeat one.
@@ -144,6 +147,27 @@ pub struct BakedRegion {
     pub static_weight: f32,
     /// The share of `bounce` that comes from each of the manifest's `lights`, in that order.
     pub light_weights: Vec<f32>,
+    /// The region's reflection probe, when the bake captured one. Manifests written before probes have none.
+    #[serde(default)]
+    pub reflection: Option<BakedReflection>,
+}
+
+/// A region's baked reflection probe: a cubemap of the light arriving at one point of the region, prefiltered for
+/// rough surfaces, which Bevy reprojects onto the region's box (parallax correction).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BakedReflection {
+    /// The KTX2 cubemap, relative to the manifest: `Rgba16Float`, each mip level prefiltered for the perceptual
+    /// roughness `level / (levels − 1)`, as Bevy's shader picks the level.
+    pub file: String,
+    /// Where the cubemap was captured: the box's centre, or the nearest valid voxel when the centre is inside
+    /// geometry.
+    pub origin: [f32; 3],
+    /// Texels along a face's side at level 0.
+    pub size: u32,
+    /// Mip levels.
+    pub levels: u32,
+    /// Paths per texel at level 0.
+    pub samples: u32,
 }
 
 impl BakedRegion {
@@ -194,15 +218,19 @@ impl AssetLoader for BakedGiManifestLoader {
         }
         // Volume files are named relative to the manifest, as glTF names its buffers.
         let manifest_path = load_context.path().clone();
+        let mut load = |file: &str| match manifest_path.resolve_embed_str(file) {
+            Ok(path) => load_context.load(path),
+            Err(_) => load_context.load(file.to_owned()),
+        };
         manifest.volumes = manifest
             .regions
             .iter()
-            .map(
-                |region| match manifest_path.resolve_embed_str(&region.file) {
-                    Ok(path) => load_context.load(path),
-                    Err(_) => load_context.load(region.file.clone()),
-                },
-            )
+            .map(|region| load(&region.file))
+            .collect();
+        manifest.reflections = manifest
+            .regions
+            .iter()
+            .map(|region| region.reflection.as_ref().map(|r| load(&r.file)))
             .collect();
         Ok(manifest)
     }
@@ -273,8 +301,16 @@ mod tests {
                 bounce: 12.5,
                 static_weight: 0.25,
                 light_weights: vec![0.75],
+                reflection: Some(BakedReflection {
+                    file: "a.refl.ktx2".into(),
+                    origin: [0.0, 1.5, 0.0],
+                    size: 128,
+                    levels: 6,
+                    samples: 512,
+                }),
             }],
             volumes: Vec::new(),
+            reflections: Vec::new(),
         };
         let text = ron::ser::to_string_pretty(&manifest, Default::default()).unwrap();
         let back: BakedGiManifest = ron::de::from_str(&text).unwrap();
@@ -282,5 +318,22 @@ mod tests {
         assert_eq!(back.lights, manifest.lights);
         assert_eq!(back.bake, manifest.bake);
         assert_eq!(back.scene_hash, manifest.scene_hash);
+    }
+
+    #[test]
+    fn a_manifest_written_before_reflection_probes_still_loads() {
+        let text = r#"(
+            format: 1,
+            scene_hash: "0123456789abcdef",
+            bake: (baker: "old", adapter: "a", driver: "d", mode: "full", samples: 4096, seed: 0,
+                   invalid_back_face_share: 0.25, texel_format: "Rgba16Float"),
+            lights: [],
+            regions: [(name: "a", file: "a.ktx2", translation: (0.0, 1.5, 0.0), rotation: (0.0, 0.0, 0.0, 1.0),
+                       scale: (4.0, 3.2, 4.0), falloff: (0.0, 0.0, 0.0), resolution: (12, 10, 12),
+                       invalid_voxels: 0, bounce: 1.0, static_weight: 1.0, light_weights: [])],
+        )"#;
+        let manifest: BakedGiManifest = ron::de::from_str(text).unwrap();
+        assert_eq!(manifest.regions[0].reflection, None);
+        assert_eq!(manifest.regions[0].samples, 0);
     }
 }

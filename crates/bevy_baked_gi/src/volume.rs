@@ -49,6 +49,32 @@ const KHR_DF_TRANSFER_LINEAR: u8 = 1;
 const KHR_DF_SAMPLE_DATATYPE_FLOAT: u8 = 0x80;
 const KHR_DF_SAMPLE_DATATYPE_SIGNED: u8 = 0x40;
 
+/// The KTX2 data format descriptor of linear `Rgba16Float` texels: one basic block with four 16-bit float samples
+/// (R, G, B, A).
+pub(crate) fn rgba16f_dfd_block() -> Vec<u8> {
+    let mut dfd_block = Vec::new();
+    dfd_block.extend_from_slice(&0u32.to_le_bytes()); // vendor 0 (Khronos), descriptor type 0 (basic)
+    dfd_block.extend_from_slice(&2u16.to_le_bytes()); // version 2
+    dfd_block.extend_from_slice(&(24u16 + 16 * 4).to_le_bytes());
+    dfd_block.extend_from_slice(&[
+        KHR_DF_MODEL_RGBSDA,
+        KHR_DF_PRIMARIES_BT709,
+        KHR_DF_TRANSFER_LINEAR,
+        0, // flags: alpha straight
+    ]);
+    dfd_block.extend_from_slice(&[0, 0, 0, 0]); // texel block 1x1x1x1
+    dfd_block.extend_from_slice(&[8, 0, 0, 0, 0, 0, 0, 0]); // 8 bytes in plane 0
+    for (i, channel) in [0u8, 1, 2, 15].into_iter().enumerate() {
+        dfd_block.extend_from_slice(&(16 * i as u16).to_le_bytes()); // bit offset
+        dfd_block.push(15); // bit length - 1
+        dfd_block.push(channel | KHR_DF_SAMPLE_DATATYPE_FLOAT | KHR_DF_SAMPLE_DATATYPE_SIGNED);
+        dfd_block.extend_from_slice(&[0, 0, 0, 0]); // sample position
+        dfd_block.extend_from_slice(&(-1.0f32).to_bits().to_le_bytes());
+        dfd_block.extend_from_slice(&1.0f32.to_bits().to_le_bytes());
+    }
+    dfd_block
+}
+
 /// Writes `volume` as a KTX2 3D texture in `Rgba16Float`, in the atlas layout Bevy's irradiance volumes read
 /// (see [`atlas_texel`]). Alpha is 1.
 ///
@@ -83,27 +109,7 @@ pub fn encode_ktx2_rgba16f(volume: &VolumeData) -> Vec<u8> {
         .flat_map(|t| t.iter().flat_map(|c| c.to_le_bytes()))
         .collect();
 
-    // The data format descriptor: one basic block with four 16-bit float samples (R, G, B, A).
-    let mut dfd_block = Vec::new();
-    dfd_block.extend_from_slice(&0u32.to_le_bytes()); // vendor 0 (Khronos), descriptor type 0 (basic)
-    dfd_block.extend_from_slice(&2u16.to_le_bytes()); // version 2
-    dfd_block.extend_from_slice(&(24u16 + 16 * 4).to_le_bytes());
-    dfd_block.extend_from_slice(&[
-        KHR_DF_MODEL_RGBSDA,
-        KHR_DF_PRIMARIES_BT709,
-        KHR_DF_TRANSFER_LINEAR,
-        0, // flags: alpha straight
-    ]);
-    dfd_block.extend_from_slice(&[0, 0, 0, 0]); // texel block 1x1x1x1
-    dfd_block.extend_from_slice(&[8, 0, 0, 0, 0, 0, 0, 0]); // 8 bytes in plane 0
-    for (i, channel) in [0u8, 1, 2, 15].into_iter().enumerate() {
-        dfd_block.extend_from_slice(&(16 * i as u16).to_le_bytes()); // bit offset
-        dfd_block.push(15); // bit length - 1
-        dfd_block.push(channel | KHR_DF_SAMPLE_DATATYPE_FLOAT | KHR_DF_SAMPLE_DATATYPE_SIGNED);
-        dfd_block.extend_from_slice(&[0, 0, 0, 0]); // sample position
-        dfd_block.extend_from_slice(&(-1.0f32).to_bits().to_le_bytes());
-        dfd_block.extend_from_slice(&1.0f32.to_bits().to_le_bytes());
-    }
+    let dfd_block = rgba16f_dfd_block();
     let dfd_total = 4 + dfd_block.len() as u32;
 
     const HEADER: u32 = 12 + 9 * 4;
