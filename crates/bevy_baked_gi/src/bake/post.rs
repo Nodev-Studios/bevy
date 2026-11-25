@@ -105,6 +105,46 @@ pub(crate) fn is_valid(back_faces: u32, samples: u32, share: f32) -> bool {
     (back_faces as f32) <= share * samples as f32
 }
 
+/// Gate 4's statistic between two bakes of one region: the RMS, over the sides of voxels valid in both whose
+/// luminance in `a` is above 1 % of the region's largest, of (a − b) / ((a + b) / 2). 0 when no side qualifies.
+pub(crate) fn region_noise(
+    a: &Accumulated,
+    b: &Accumulated,
+    range: core::ops::Range<usize>,
+    samples: u32,
+    invalid_back_face_share: f32,
+) -> f64 {
+    let luminance = |c: [f64; 3]| 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+    let valid = |voxel: usize| {
+        is_valid(a.back_faces[voxel], samples, invalid_back_face_share)
+            && is_valid(b.back_faces[voxel], samples, invalid_back_face_share)
+    };
+    let pairs: Vec<(f64, f64)> = range
+        .filter(|voxel| valid(*voxel))
+        .flat_map(|voxel| {
+            (0..6).map(move |side| {
+                (
+                    luminance(a.faces[voxel][side]),
+                    luminance(b.faces[voxel][side]),
+                )
+            })
+        })
+        .collect();
+    let max = pairs.iter().map(|(x, _)| *x).fold(0.0, f64::max);
+    let (sum, count) = pairs.iter().filter(|(x, _)| *x > 0.01 * max).fold(
+        (0.0, 0usize),
+        |(sum, count), (x, y)| {
+            let relative = (x - y) / ((x + y) / 2.0);
+            (sum + relative * relative, count + 1)
+        },
+    );
+    if count == 0 {
+        0.0
+    } else {
+        (sum / count as f64).sqrt()
+    }
+}
+
 /// Replaces each invalid voxel with the mean of its valid face neighbours, growing outwards from the valid ones
 /// one layer per pass, inside this volume only (so light never crosses into another region). Each pass reads
 /// only the previous pass's values, so the result does not depend on the visiting order.
@@ -191,6 +231,26 @@ pub(crate) fn region_volume(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn accumulated(values: &[f64]) -> Accumulated {
+        let mut accumulated = Accumulated::new(values.len(), 1, 0);
+        for (voxel, value) in values.iter().enumerate() {
+            accumulated.faces[voxel] = [[*value; 3]; 6];
+        }
+        accumulated
+    }
+
+    #[test]
+    fn region_noise_is_gate_fours_relative_rms() {
+        // Relative differences +0.2 and −0.2 on every side of the two bright voxels; the third is below 1 % of
+        // the region's max and the fourth is inside geometry in one bake, so neither counts.
+        let a = accumulated(&[1.1, 0.9, 0.001, 5.0]);
+        let mut b = accumulated(&[0.9, 1.1, 0.5, 1.0]);
+        b.back_faces[3] = 100;
+        let noise = region_noise(&a, &b, 0..4, 100, 0.25);
+        assert!((noise - 0.2).abs() < 1e-12, "{noise}");
+        assert_eq!(region_noise(&a, &a, 0..4, 100, 0.25), 0.0);
+    }
 
     #[test]
     fn dilation_fills_from_the_same_volume_in_layers() {

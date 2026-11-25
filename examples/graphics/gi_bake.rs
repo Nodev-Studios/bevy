@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! gi_bake bake SCENE OUT [--seed N] [--samples N] [--first-hit] [--move-wall]
+//!                                                  without --samples, each region's path count from its noise
 //! gi_bake verify SCENE MANIFEST [--move-wall]      exit 1 when MANIFEST is stale for SCENE (no GPU used)
 //! gi_bake furnace-check OUT RADIANCE               every texel of every side against RADIANCE
 //! gi_bake asymmetric-check OUT                     the centre voxel against the same direction set on the CPU
@@ -106,6 +107,12 @@ fn main() -> AppExit {
                 GiBakeSettings {
                     output: PathBuf::from(out),
                     samples: value("--samples").unwrap_or(GiBakeSettings::default().samples),
+                    // A fixed count when one is given; otherwise each region's count from its own noise.
+                    adaptive: if value("--samples").is_some() {
+                        None
+                    } else {
+                        GiBakeSettings::default().adaptive
+                    },
                     seed: value("--seed").unwrap_or(0),
                     mode: if flag("--first-hit") {
                         GiBakeMode::FirstHitEmission
@@ -115,7 +122,7 @@ fn main() -> AppExit {
                     ..default()
                 },
                 flag("--move-wall"),
-            )
+            );
         }
         ["verify", scene, manifest] => verify(scene, Path::new(manifest), flag("--move-wall")),
         ["furnace-check", out, radiance] => {

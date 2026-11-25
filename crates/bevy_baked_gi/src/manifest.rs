@@ -41,10 +41,17 @@ pub struct BakeProvenance {
     pub driver: String,
     /// `"full"` (every bounce) or `"first-hit-emission"` (a test mode: the emission of the first surface hit).
     pub mode: String,
-    /// Paths per voxel.
+    /// Paths per voxel when every region used the same count; 0 when each region's count came from its noise
+    /// (`BakedRegion::samples`).
     pub samples: u32,
     /// The seed of the direction rotations and of the paths.
     pub seed: u32,
+    /// Paths per voxel of the two pilots that set each region's count; 0 when there were none.
+    #[serde(default)]
+    pub pilot_samples: u32,
+    /// The noise between two rotations each region's count aims at; 0 when there were no pilots.
+    #[serde(default)]
+    pub target_noise: f32,
     /// The share of a voxel's first hits that are back faces above which it counts as inside geometry.
     pub invalid_back_face_share: f32,
     /// The texel format of the volumes.
@@ -124,6 +131,12 @@ pub struct BakedRegion {
     pub resolution: [u32; 3],
     /// Voxels found inside geometry and filled from their neighbours.
     pub invalid_voxels: u32,
+    /// Paths per voxel in this region.
+    #[serde(default)]
+    pub samples: u32,
+    /// The relative RMS between the two pilots (gate 4's statistic), when pilots set `samples`; 0 otherwise.
+    #[serde(default)]
+    pub pilot_noise: f32,
     /// The luminance the bake gathered over the region's valid voxels and sides, summed over paths (arbitrary
     /// scale). 0 means no light reaches the region; it is then drawn at intensity 1 whatever the lights do.
     pub bounce: f64,
@@ -234,6 +247,8 @@ mod tests {
                 mode: "full".into(),
                 samples: 4096,
                 seed: 1,
+                pilot_samples: 0,
+                target_noise: 0.0,
                 invalid_back_face_share: 0.25,
                 texel_format: "Rgba16Float".into(),
             },
@@ -253,6 +268,8 @@ mod tests {
                 falloff: [0.0; 3],
                 resolution: [43, 10, 25],
                 invalid_voxels: 3,
+                samples: 4096,
+                pilot_noise: 0.0,
                 bounce: 12.5,
                 static_weight: 0.25,
                 light_weights: vec![0.75],

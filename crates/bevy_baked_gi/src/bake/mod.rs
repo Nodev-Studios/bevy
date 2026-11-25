@@ -56,7 +56,7 @@ use bevy_solari::{
     SolariPlugins,
 };
 use bevy_transform::components::GlobalTransform;
-use gpu::{BakeExchange, BakeJob, CanonicalKey, GpuVoxel, PATHS_PER_THREAD};
+use gpu::{rotation_columns, BakeExchange, BakeJob, CanonicalKey, GpuVoxel, PATHS_PER_THREAD};
 use std::path::PathBuf;
 use tracing::{error, info, warn};
 
@@ -71,9 +71,12 @@ pub struct GiBakePlugin {
 pub struct GiBakeSettings {
     /// The folder the volumes and `manifest.gi.ron` are written to. Created if missing.
     pub output: PathBuf,
-    /// Paths per voxel: a multiple of 256. to tune: the default is the first count that met gate 4 on the
-    /// graphics testbed's `interior` (two seeds 1.80 % apart, RTX 5070, 2026-11-25; 3.57 % at 262 144).
+    /// Paths per voxel, a multiple of 256, when `adaptive` is `None` or the mode is
+    /// [`GiBakeMode::FirstHitEmission`].
     pub samples: u32,
+    /// Sets each region's path count from its own noise, measured by two pilots. `None`: every region at
+    /// `samples`.
+    pub adaptive: Option<GiBakeAdaptive>,
     /// The seed of the direction rotations and of the paths. Two seeds are two independent bakes.
     pub seed: u32,
     /// What the paths gather.
@@ -87,10 +90,60 @@ impl Default for GiBakeSettings {
         Self {
             output: PathBuf::from("gi"),
             samples: 1 << 20,
+            adaptive: Some(GiBakeAdaptive::default()),
             seed: 0,
             mode: GiBakeMode::Full,
             invalid_back_face_share: 0.25,
         }
+    }
+}
+
+/// How each region's path count follows from its noise.
+///
+/// Two pilots bake every voxel at `pilot_samples` paths with two fixed rotations (not the bake's seed, so every
+/// rotation of a level gets the same counts). A region whose pilots differ by `r` (relative RMS over its voxel
+/// sides above 1 % of its max) gets `pilot_samples · (r / target_noise)²` paths, rounded up to a multiple of 256
+/// and clamped to `min_samples..=max_samples`: Monte Carlo noise falls as 1/√N, which the pilots' noise followed
+/// to within 3 % from 2^16 to 2^20 paths in each of 22 measured volumes (RTX 5070, 2026-11-25).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GiBakeAdaptive {
+    /// Paths per voxel of each pilot, a multiple of 256.
+    pub pilot_samples: u32,
+    /// The relative RMS between two rotations each region aims at.
+    pub target_noise: f64,
+    /// The fewest paths a region gets, a multiple of 256.
+    pub min_samples: u32,
+    /// The most paths a region gets, a multiple of 256. A region it binds is logged with its predicted noise.
+    pub max_samples: u32,
+}
+
+impl Default for GiBakeAdaptive {
+    fn default() -> Self {
+        Self {
+            pilot_samples: 1 << 16,
+            // to tune: 25 % under gate 4's 2 %, for the pilots' prediction error and the statistic's own spread
+            target_noise: 0.015,
+            // to tune: twice the pilots, where 1/√N was measured
+            min_samples: 1 << 17,
+            // to tune: 8× the fixed count the gates first passed with
+            max_samples: 1 << 23,
+        }
+    }
+}
+
+impl GiBakeAdaptive {
+    /// The path count for a region whose pilots differ by `noise`.
+    pub fn samples_for(&self, noise: f64) -> u32 {
+        let target = self.target_noise;
+        let ratio = noise / target;
+        let needed = f64::from(self.pilot_samples) * ratio * ratio;
+        let rounded = (needed / f64::from(PATHS_PER_THREAD)).ceil() * f64::from(PATHS_PER_THREAD);
+        rounded.clamp(f64::from(self.min_samples), f64::from(self.max_samples)) as u32
+    }
+
+    /// The noise a region whose pilots differ by `noise` is expected to have at `samples` paths.
+    pub fn predicted_noise(&self, noise: f64, samples: u32) -> f64 {
+        noise * (f64::from(self.pilot_samples) / f64::from(samples)).sqrt()
     }
 }
 
@@ -386,10 +439,29 @@ fn kind_rank(kind: BakedLightKind) -> u8 {
 
 fn send_job(world: &mut World) {
     let settings = world.resource::<GiBakeSettings>().clone();
-    if settings.samples == 0 || !settings.samples.is_multiple_of(PATHS_PER_THREAD) {
+    let counts_ok = |n: u32| n > 0 && n.is_multiple_of(PATHS_PER_THREAD);
+    if !counts_ok(settings.samples) {
         return refuse(
             world,
             &format!("samples must be a positive multiple of {PATHS_PER_THREAD}"),
+        );
+    }
+    let adaptive = settings
+        .adaptive
+        .filter(|_| settings.mode == GiBakeMode::Full);
+    if let Some(a) = adaptive
+        && !(counts_ok(a.pilot_samples)
+            && counts_ok(a.min_samples)
+            && counts_ok(a.max_samples)
+            && a.min_samples <= a.max_samples
+            && a.target_noise > 0.0)
+    {
+        return refuse(
+            world,
+            &format!(
+                "adaptive sampling needs path counts that are positive multiples of {PATHS_PER_THREAD}, \
+                 min ≤ max, and a positive target: {a:?}"
+            ),
         );
     }
     let hash = scene_hash(world);
@@ -430,11 +502,7 @@ fn send_job(world: &mut World) {
                     let rotation = voxel_rotation(settings.seed, voxels.len() as u32);
                     voxels.push(GpuVoxel {
                         position: position.extend(1.0).to_array(),
-                        rotation: [
-                            rotation.x_axis.extend(0.0).to_array(),
-                            rotation.y_axis.extend(0.0).to_array(),
-                            rotation.z_axis.extend(0.0).to_array(),
-                        ],
+                        rotation: rotation_columns(rotation),
                     });
                     voxel_region.push(index as u32);
                 }
@@ -578,10 +646,6 @@ fn send_job(world: &mut World) {
         );
     }
 
-    let directions = fibonacci_directions(settings.samples)
-        .into_iter()
-        .map(|d| d.extend(0.0).to_array())
-        .collect();
     let summary = GiBakeSummary {
         scene_hash: hash,
         seconds: 0.0,
@@ -607,7 +671,8 @@ fn send_job(world: &mut World) {
         voxels,
         voxel_region,
         region_count: records.len(),
-        directions,
+        region_voxels: records.iter().map(|r| r.voxels.clone()).collect(),
+        adaptive,
         light_keys,
         positioned_lights,
     };
@@ -667,12 +732,35 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
     let mut regions = Vec::new();
     let mut volumes = Vec::new();
     let mut summary = record.summary.clone();
+    let adaptive = settings
+        .adaptive
+        .filter(|_| settings.mode == GiBakeMode::Full);
     for (index, region) in record.regions.iter().enumerate() {
+        let samples = outcome.region_samples[index];
+        let pilot_noise = outcome.region_noise.as_ref().map_or(0.0, |n| n[index]);
+        if let Some(adaptive) = adaptive {
+            let predicted = adaptive.predicted_noise(pilot_noise, samples);
+            info!(
+                "baked GI: region {}: pilots {:.2} % apart, {samples} paths, predicted {:.2} %",
+                region.name,
+                100.0 * pilot_noise,
+                100.0 * predicted
+            );
+            if samples == adaptive.max_samples && predicted > adaptive.target_noise {
+                warn!(
+                    "baked GI: region {} is capped at {samples} paths; its predicted noise is {:.2} % against \
+                     a target of {:.2} %",
+                    region.name,
+                    100.0 * predicted,
+                    100.0 * adaptive.target_noise
+                );
+            }
+        }
         let (volume, invalid, unfilled) = post::region_volume(
             accumulated,
             region.voxels.clone(),
             region.resolution,
-            settings.samples,
+            samples,
             settings.invalid_back_face_share,
         );
         if unfilled > 0 {
@@ -708,6 +796,8 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
             falloff: region.region.falloff.to_array(),
             resolution: region.resolution.to_array(),
             invalid_voxels: invalid,
+            samples,
+            pilot_noise: pilot_noise as f32,
             bounce,
             static_weight,
             light_weights,
@@ -730,8 +820,14 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
             adapter: outcome.adapter.clone(),
             driver: outcome.driver.clone(),
             mode: settings.mode.name().into(),
-            samples: settings.samples,
+            samples: if adaptive.is_some() {
+                0
+            } else {
+                settings.samples
+            },
             seed: settings.seed,
+            pilot_samples: adaptive.map_or(0, |a| a.pilot_samples),
+            target_noise: adaptive.map_or(0.0, |a| a.target_noise as f32),
             invalid_back_face_share: settings.invalid_back_face_share,
             texel_format: "Rgba16Float".into(),
         },
@@ -778,4 +874,26 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
     world.insert_resource(summary);
     world.resource_mut::<BakeProgress>().stage = Stage::Done;
     world.write_message(AppExit::Success);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adaptive_paths_follow_the_squared_noise_ratio_within_bounds() {
+        let adaptive = GiBakeAdaptive::default();
+        // Twice the target at the pilot needs four times the pilot's paths, and is then predicted at the target.
+        let n = adaptive.samples_for(0.03);
+        assert_eq!(n, 4 << 16);
+        assert!((adaptive.predicted_noise(0.03, n) - 0.015).abs() < 1e-12);
+        // Rounded up to whole threads.
+        assert!(adaptive
+            .samples_for(0.0301)
+            .is_multiple_of(PATHS_PER_THREAD));
+        assert!(adaptive.samples_for(0.0301) > n);
+        // A quiet region gets the floor, a very noisy one the cap.
+        assert_eq!(adaptive.samples_for(0.001), adaptive.min_samples);
+        assert_eq!(adaptive.samples_for(0.5), adaptive.max_samples);
+    }
 }
