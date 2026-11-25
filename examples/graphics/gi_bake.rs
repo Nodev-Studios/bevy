@@ -32,6 +32,7 @@ use bevy::{
     image::{CompressedImageFormats, ImageSampler, ImageType},
     mesh::{Indices, VertexAttributeValues},
     prelude::*,
+    render::RenderPlugin,
     window::ExitCondition,
     winit::WinitPlugin,
 };
@@ -473,6 +474,13 @@ fn bake(scene: &str, out: PathBuf, settings: GiBakeSettings, move_wall: bool) ->
                 .set(WindowPlugin {
                     primary_window: None,
                     exit_condition: ExitCondition::DontExit,
+                    ..default()
+                })
+                // A bake can finish in its first frames (`furnace --first-hit`), while pipelines are still
+                // compiling on the async compute pool; those tasks outlived the app and crashed in the driver as
+                // the process exited (exit 255 under KWin, 2026-11-25). Compiling on the render thread leaves none.
+                .set(RenderPlugin {
+                    synchronous_pipeline_compilation: true,
                     ..default()
                 })
                 .disable::<WinitPlugin>(),
