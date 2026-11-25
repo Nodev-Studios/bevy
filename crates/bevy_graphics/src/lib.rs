@@ -19,6 +19,7 @@
 //! Built without the `solari` feature, everything resolves to [`GraphicsRung::Raster`].
 
 pub mod apply;
+pub mod baked;
 pub mod denoisers;
 pub mod dlss;
 pub mod meshes;
@@ -61,6 +62,7 @@ impl Plugin for GraphicsPlugin {
 
         // Each part of the ladder registers itself from its own file.
         apply::build(app);
+        baked::build(app);
         upscalers::tsr::build(app);
         upscalers::fsr::build(app);
         denoisers::nrd::build(app);
