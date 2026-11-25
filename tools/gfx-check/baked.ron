@@ -1,0 +1,42 @@
+#![enable(implicit_some)]
+// Baked indirect light (bevy_baked_gi): Raster with each scene's bake, checked against its golden image, and the
+// coverage view (gates 8 and 12 of the baked-GI plan). The bakes come first, from a testbed built with the
+// `bevy_baked_gi_bake` feature, one folder per scene:
+//
+//   cargo build --release --example gfx_testbed --features bevy_solari,area_light_luts,bevy_graphics,bevy_baked_gi_bake
+//   for scene in interior rooms; do
+//     tools/gfx-headless.sh target/release/examples/gfx_testbed --scene $scene --bake-gi target/gfx-check/gi/$scene
+//   done
+//   target/release/gfx-check run tools/gfx-check/baked.ron --out target/gfx-check/baked
+//   target/release/gfx-check budget --golden tools/gfx-check/golden-baked target/gfx-check/baked
+//   # the coverage gate: no black pixel of a capture inside its mask
+//   for run in target/gfx-check/baked/*/*/*/coverage*; do
+//     for mask in $run/mask-*.png; do
+//       target/release/gfx-check image stats $run/${mask##*/mask-} --region $mask --no-zero --min-luma 0
+//     done
+//   done
+//
+// Seven warm-ups spread over TAA's jitter cycle on the RTX 5070, as `golden.ron` does; the integrated Radeon runs
+// once at 640x360 and records its difference, ungated. A bake is about 8 s (`interior`) and 17 s (`rooms`) on the
+// RTX 5070.
+(
+    adapters: [
+        (name: "NVIDIA", resolutions: ["1920x1080"]),
+        (name: "AMD", resolutions: ["640x360"]),
+    ],
+    scenes: ["interior", "rooms"],
+    warmup: 300,
+    frames: 30,
+    seconds: 300,
+    runs: [
+        (name: "raster-baked@1", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"], warmup: 300),
+        (name: "raster-baked@2", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "raster-baked@3", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"], warmup: 303, adapters: ["NVIDIA"]),
+        (name: "raster-baked@4", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "raster-baked@5", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"], warmup: 311, adapters: ["NVIDIA"]),
+        (name: "raster-baked@6", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"], warmup: 316, adapters: ["NVIDIA"]),
+        (name: "raster-baked@7", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"], warmup: 322, adapters: ["NVIDIA"]),
+        // The bake alone, along each scene's orbit: eight captures and their masks.
+        (name: "coverage", args: ["--preset", "raster", "--baked-gi", "target/gfx-check/gi", "--gi-coverage", "--camera", "orbit"], warmup: 60, frames: 1440, adapters: ["NVIDIA"]),
+    ],
+)

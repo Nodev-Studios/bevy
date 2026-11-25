@@ -453,7 +453,7 @@ fn main() -> AppExit {
     let args = Args::parse(&mut flags);
     let ladder = Ladder::parse(&mut flags);
     let contract = Contract::parse(&mut flags);
-    let baked = Baked::parse(&mut flags);
+    let mut baked = Baked::parse(&mut flags);
     for unknown in &flags.args {
         flags.errors.push(format!("unknown argument {unknown}"));
     }
@@ -492,7 +492,7 @@ fn main() -> AppExit {
     )));
 
     let pending_pipelines = PendingPipelines(Arc::new(AtomicU32::new(u32::MAX)));
-    baked.register_source(&mut app);
+    baked.register_source(&mut app, &args);
     app.add_plugins((
         DefaultPlugins
             .set(WindowPlugin {

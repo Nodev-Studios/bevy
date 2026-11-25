@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 /// The usage text of this file's flags, printed by `--help` after the others.
 pub const HELP: &str = "
 Baked indirect light (bevy_baked_gi):
-  --baked-gi DIR                 load DIR/manifest.gi.ron, a bake of this scene
+  --baked-gi DIR                 load DIR/manifest.gi.ron, a bake of this scene, or DIR/<scene>/manifest.gi.ron
   --bake-gi DIR                  bake the scene into DIR and exit, without a window (needs a binary built with
                                  the bevy_baked_gi_bake feature)
   --bake-seed N                  the bake's rotation seed (default 0)
@@ -156,14 +156,21 @@ impl Baked {
         }
     }
 
-    /// Registers the folder of `--baked-gi` as an asset source. Called before the default plugins.
-    pub fn register_source(&self, app: &mut App) {
-        if let Some(dir) = &self.load {
-            app.register_asset_source(
-                SOURCE,
-                AssetSourceBuilder::platform_default(&dir.to_string_lossy(), None),
-            );
+    /// Registers the folder of `--baked-gi` as an asset source. Called before the default plugins. A folder with
+    /// no manifest of its own but a subfolder named after the scene is a folder of bakes, one per scene, as
+    /// `tools/gfx-check/baked.ron` uses it.
+    pub fn register_source(&mut self, app: &mut App, args: &Args) {
+        let Some(dir) = &mut self.load else {
+            return;
+        };
+        let per_scene = dir.join(&args.scene);
+        if !dir.join("manifest.gi.ron").exists() && per_scene.join("manifest.gi.ron").exists() {
+            *dir = per_scene;
         }
+        app.register_asset_source(
+            SOURCE,
+            AssetSourceBuilder::platform_default(&dir.to_string_lossy(), None),
+        );
     }
 
     /// Adds this file's systems, after the ladder's plugins.
