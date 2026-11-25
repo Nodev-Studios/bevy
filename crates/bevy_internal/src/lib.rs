@@ -25,6 +25,8 @@ pub use bevy_anti_alias as anti_alias;
 pub use bevy_app as app;
 #[cfg(feature = "bevy_asset")]
 pub use bevy_asset as asset;
+#[cfg(feature = "bevy_baked_gi")]
+pub use bevy_baked_gi as baked_gi;
 #[cfg(feature = "bevy_audio")]
 pub use bevy_audio as audio;
 #[cfg(feature = "bevy_camera")]
