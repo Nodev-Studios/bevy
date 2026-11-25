@@ -28,8 +28,10 @@ use bytemuck::{Pod, Zeroable};
 use std::{sync::Mutex, time::Instant};
 use tracing::{info, warn};
 
-/// Threads per voxel: each sums `samples / BATCHES` paths. Fixed, so the sums do not depend on the chunking.
-pub(crate) const BATCHES: u32 = 16;
+/// Paths each thread sums. Fixed, so a voxel's threads (`samples / PATHS_PER_THREAD`) and the order its sums are
+/// added in depend only on the sample count, never on the chunking, and a chunk keeps the GPU full however many
+/// paths a voxel takes. to tune: 256 is what the first bakes used (4096 paths over 16 threads).
+pub(crate) const PATHS_PER_THREAD: u32 = 256;
 const WORKGROUP_SIZE: u32 = 64;
 /// Frames the render world waits once Solari's light array matches the main world's lights, for the last BLAS
 /// and TLAS builds to land. to tune: BLASes are built the frame their mesh is prepared; this is slack.
@@ -309,9 +311,10 @@ fn bake_chunks(
         usage: BufferUsages::STORAGE,
     });
 
-    let bytes_per_voxel = u64::from(BATCHES) * (6 * 16 + stride * 4 + 8);
+    let batches = job.samples / PATHS_PER_THREAD;
+    let bytes_per_voxel = u64::from(batches) * (6 * 16 + stride * 4 + 8);
     let max_chunk = ((MAX_CHUNK_BUFFER_BYTES / bytes_per_voxel) as usize)
-        .clamp(1, (65_535 * WORKGROUP_SIZE / BATCHES) as usize);
+        .clamp(1, (65_535 * WORKGROUP_SIZE / batches).max(1) as usize);
     // to tune: small enough that the first submit is short on the slowest GPU here
     let mut chunk = 64usize.min(max_chunk);
     let mut accumulated = Accumulated::new(total, job.region_count, light_count);
@@ -321,12 +324,12 @@ fn bake_chunks(
 
     while first < total {
         let count = chunk.min(total - first);
-        let threads = count as u64 * u64::from(BATCHES);
+        let threads = count as u64 * u64::from(batches);
         let params = GpuParams {
             voxel_count: count as u32,
             voxel_global_offset: first as u32,
             samples: job.samples,
-            batches: BATCHES,
+            batches,
             light_count: light_count as u32,
             mode: job.mode,
             seed: job.seed,
@@ -410,7 +413,7 @@ fn bake_chunks(
         accumulated.add_chunk(
             first,
             count,
-            BATCHES as usize,
+            batches as usize,
             job.samples,
             job.invalid_back_face_share,
             &job.voxel_region,

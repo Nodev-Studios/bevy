@@ -56,7 +56,7 @@ use bevy_solari::{
     SolariPlugins,
 };
 use bevy_transform::components::GlobalTransform;
-use gpu::{BakeExchange, BakeJob, CanonicalKey, GpuVoxel, BATCHES};
+use gpu::{BakeExchange, BakeJob, CanonicalKey, GpuVoxel, PATHS_PER_THREAD};
 use std::path::PathBuf;
 use tracing::{error, info, warn};
 
@@ -71,7 +71,8 @@ pub struct GiBakePlugin {
 pub struct GiBakeSettings {
     /// The folder the volumes and `manifest.gi.ron` are written to. Created if missing.
     pub output: PathBuf,
-    /// Paths per voxel: a multiple of 16. to tune: gate 4's noise rule sets it.
+    /// Paths per voxel: a multiple of 256. to tune: the default is the first count that met gate 4 on the
+    /// graphics testbed's `interior` (two seeds 1.80 % apart, RTX 5070, 2026-11-25; 3.57 % at 262 144).
     pub samples: u32,
     /// The seed of the direction rotations and of the paths. Two seeds are two independent bakes.
     pub seed: u32,
@@ -85,7 +86,7 @@ impl Default for GiBakeSettings {
     fn default() -> Self {
         Self {
             output: PathBuf::from("gi"),
-            samples: 4096,
+            samples: 1 << 20,
             seed: 0,
             mode: GiBakeMode::Full,
             invalid_back_face_share: 0.25,
@@ -385,10 +386,10 @@ fn kind_rank(kind: BakedLightKind) -> u8 {
 
 fn send_job(world: &mut World) {
     let settings = world.resource::<GiBakeSettings>().clone();
-    if settings.samples == 0 || !settings.samples.is_multiple_of(BATCHES) {
+    if settings.samples == 0 || !settings.samples.is_multiple_of(PATHS_PER_THREAD) {
         return refuse(
             world,
-            &format!("samples must be a positive multiple of {BATCHES}"),
+            &format!("samples must be a positive multiple of {PATHS_PER_THREAD}"),
         );
     }
     let hash = scene_hash(world);

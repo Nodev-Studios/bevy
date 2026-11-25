@@ -105,7 +105,7 @@ fn main() -> AppExit {
                 PathBuf::from(out),
                 GiBakeSettings {
                     output: PathBuf::from(out),
-                    samples: value("--samples").unwrap_or(4096),
+                    samples: value("--samples").unwrap_or(GiBakeSettings::default().samples),
                     seed: value("--seed").unwrap_or(0),
                     mode: if flag("--first-hit") {
                         GiBakeMode::FirstHitEmission
