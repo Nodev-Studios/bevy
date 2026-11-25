@@ -402,7 +402,17 @@ fn drive_bake(world: &mut World) {
         }
         Stage::Baking => {
             let exchange = world.resource::<BakeExchange>().clone();
-            let outcome = exchange.0.lock().unwrap().outcome.take();
+            // Taking the job with the outcome stops `run_bake`, which bakes whenever it sees a job and no outcome:
+            // left in place, the render world started the same bake again, and the process ended while that
+            // second bake was submitting (a segfault in the NVIDIA driver on 2026-11-25; exit 255 under KWin).
+            let outcome = {
+                let mut exchange = exchange.0.lock().unwrap();
+                let outcome = exchange.outcome.take();
+                if outcome.is_some() {
+                    exchange.job = None;
+                }
+                outcome
+            };
             if let Some(outcome) = outcome {
                 match outcome {
                     Ok(outcome) => finish_bake(world, outcome),
