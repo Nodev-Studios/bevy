@@ -1524,37 +1524,42 @@ mod bake {
             seed: baked.bake_seed,
             ..default()
         };
-        App::new()
-            .add_plugins((
-                DefaultPlugins
-                    .set(WindowPlugin {
-                        primary_window: None,
-                        exit_condition: ExitCondition::DontExit,
-                        ..default()
-                    })
-                    // No pipeline left compiling on another thread when a short bake exits (see `gi_bake`).
-                    .set(RenderPlugin {
-                        synchronous_pipeline_compilation: true,
-                        ..default()
-                    })
-                    .disable::<WinitPlugin>(),
-                GiBakePlugin { settings },
-                ScheduleRunnerPlugin::run_loop(Duration::ZERO),
-            ))
-            .add_systems(Startup, move |world: &mut World| {
-                let spawned = crate::scenes::spawn(&scene, world)
-                    .or_else(|| Baked::scene(&scene, world))
-                    .is_some();
-                let prepared = if spawned {
-                    baked.prepare_level(world, &scene, true)
-                } else {
-                    Err(format!("there is no scene called {scene}"))
-                };
-                if let Err(error) = prepared {
-                    eprintln!("gfx_testbed: {error}");
-                    world.write_message(AppExit::from_code(2));
-                }
-            })
-            .run()
+        let mut app = App::new();
+        // A binary built with `dlss` panics without a project id, even where nothing uses DLSS.
+        #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+        app.insert_resource(bevy::anti_alias::dlss::DlssProjectId(
+            bevy_asset::uuid::uuid!("678abbd5-6054-4f81-b88d-a202595f83a0"), // the testbed's, as in main.rs
+        ));
+        app.add_plugins((
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: None,
+                    exit_condition: ExitCondition::DontExit,
+                    ..default()
+                })
+                // No pipeline left compiling on another thread when a short bake exits (see `gi_bake`).
+                .set(RenderPlugin {
+                    synchronous_pipeline_compilation: true,
+                    ..default()
+                })
+                .disable::<WinitPlugin>(),
+            GiBakePlugin { settings },
+            ScheduleRunnerPlugin::run_loop(Duration::ZERO),
+        ))
+        .add_systems(Startup, move |world: &mut World| {
+            let spawned = crate::scenes::spawn(&scene, world)
+                .or_else(|| Baked::scene(&scene, world))
+                .is_some();
+            let prepared = if spawned {
+                baked.prepare_level(world, &scene, true)
+            } else {
+                Err(format!("there is no scene called {scene}"))
+            };
+            if let Err(error) = prepared {
+                eprintln!("gfx_testbed: {error}");
+                world.write_message(AppExit::from_code(2));
+            }
+        })
+        .run()
     }
 }
