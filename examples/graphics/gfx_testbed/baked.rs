@@ -148,7 +148,7 @@ impl Baked {
         }
         #[cfg(not(feature = "bevy_baked_gi_bake"))]
         {
-            let _ = (args, out);
+            let _ = (args, out, self.bake_seed, self.bake_samples);
             eprintln!(
                 "gfx_testbed: --bake-gi needs a binary built with the bevy_baked_gi_bake feature"
             );
@@ -908,7 +908,7 @@ fn record(
     let Ok((transform, frustum)) = world
         .query_filtered::<(&Transform, &Frustum), With<TestbedCamera>>()
         .single(world)
-        .map(|(transform, frustum)| (*transform, frustum.clone()))
+        .map(|(transform, frustum)| (*transform, *frustum))
     else {
         return;
     };
@@ -1125,7 +1125,9 @@ fn collect_triangles(world: &mut World) -> Vec<MeshTriangles> {
             None => (0..positions.len()).collect(),
         };
         let triangles: Vec<[Vec3; 3]> = indices
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|t| [positions[t[0]], positions[t[1]], positions[t[2]]])
             .collect();
         let min = positions.iter().fold(Vec3::MAX, |a, b| a.min(*b));
@@ -1177,7 +1179,7 @@ fn ray_triangle(origin: Vec3, direction: Vec3, [a, b, c]: &[Vec3; 3]) -> Option<
 fn trace(camera: &PinholeCamera, meshes: &[MeshTriangles]) -> Vec<Hit> {
     let (width, height) = (camera.size.x as usize, camera.size.y as usize);
     let mut hits = vec![None; width * height];
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let threads = std::thread::available_parallelism().map_or(4, core::num::NonZero::get);
     let rows_per = height.div_ceil(threads);
     let origin = camera.transform.translation;
     std::thread::scope(|scope| {
@@ -1403,9 +1405,9 @@ fn f16_to_f32(bits: u16) -> f32 {
     let exponent = i32::from((bits >> 10) & 0x1f);
     let mantissa = f32::from(bits & 0x3ff);
     sign * match exponent {
-        0 => mantissa * 2f32.powi(-24),
+        0 => mantissa * ops::exp2(-24.0),
         31 => f32::INFINITY,
-        e => (1.0 + mantissa / 1024.0) * 2f32.powi(e - 15),
+        e => (1.0 + mantissa / 1024.0) * ops::exp2((e - 15) as f32),
     }
 }
 
@@ -1416,7 +1418,7 @@ fn encode(c: Vec3) -> [u8; 3] {
         let s = if v <= 0.003_130_8 {
             12.92 * v
         } else {
-            1.055 * v.powf(1.0 / 2.4) - 0.055
+            1.055 * ops::powf(v, 1.0 / 2.4) - 0.055
         };
         (s * 255.0).round() as u8
     })

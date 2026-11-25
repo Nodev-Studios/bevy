@@ -14,7 +14,7 @@ Every subcommand exits with 0 when its gate passes, 1 when it fails and 2 when i
 | Command | What it does |
 |---|---|
 | `run <matrix.ron> [--out DIR] [--adapter NAME] [--testbed PATH] [--windowed]` | The testbed once per adapter × scene × resolution × flag set; `results.csv`, `results.md`, `results.json` and one folder per run. Each run must exit cleanly, pass the log gate and not be black, and keep under the limits its matrix entry sets |
-| `image stats <png> [--min-luma X] [--region x0,y0,x1,y1|MASK.png] [--no-zero]` | Size and mean luma; fails on a black frame. `--region` measures only a rectangle or the non-black pixels of a mask of the same size and prints their count, black pixels and darkest luma; `--no-zero` fails when any of them is black (the baked-GI coverage gate) |
+| `image stats <png> [--min-luma X] [--region x0,y0,x1,y1\|MASK.png] [--no-zero]` | Size and mean luma; fails on a black frame. `--region` measures only a rectangle or the non-black pixels of a mask of the same size and prints their count, black pixels and darkest luma; `--no-zero` fails when any of them is black (the baked-GI coverage gate) |
 | `image diff <a> <b> [--max X]` | The metric between two images |
 | `image resize <in> <out> --size WxH\|<image> --filter bilinear\|area` | Resizes a frame to the output's size: `bilinear` enlarges a lower-resolution run (an upscaler's bilinear baseline), `area` reduces a higher-resolution one (the supersampled baseline) |
 | `flicker <run folder>` or `flicker <frame> <frame>...` `[--max X] [--pairs]` | The metric between consecutive frames of a still camera, over every pair: prints the mean and the largest pair, and `--max` gates the mean. A run folder gives its `still-*` captures (from its `report.json`, which must be on consecutive frames) or else `a.png` and `b.png` |
@@ -57,6 +57,8 @@ and `b.png`, which is all the testbed writes.
   section 2 as data (E2). Time on a quiet machine: the gates read wall-clock frames.
 - `golden.ron` and `golden/`: one golden image per preset and scene at 1080p on the RTX 5070, on the path every
   vendor runs (Raster with TAA, the traced rungs with NRD and TSR), with tolerances from seven repeats (E2).
+- `baked.ron` and `golden-baked/`: Raster with each scene's baked indirect light (`bevy_baked_gi`) against its
+  golden image, and the coverage view of the bake alone; the file's header has the bake commands.
 - `calibration.ron` and `calibration.toml`: the error against the reference and the flicker of six ways of
   showing Solari's frame on `interior` at 2560x1440, with their noise floor. Later gates are relative to it.
 
