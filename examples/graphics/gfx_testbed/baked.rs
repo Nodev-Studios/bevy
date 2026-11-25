@@ -379,7 +379,7 @@ fn regions(scene: &str, one_box: bool) -> Vec<(String, Transform, GiBakeRegion)>
             out.push(padded(
                 "corridor",
                 Vec3::new(WALL, 0.0, -CORRIDOR_HALF),
-                Vec3::new(rooms_wall_x(ROOMS_PER_SIDE), ROOM_HEIGHT, CORRIDOR_HALF),
+                Vec3::new(corridor_end(), ROOM_HEIGHT, CORRIDOR_HALF),
             ));
             out
         }
@@ -594,13 +594,23 @@ fn rooms_wall_x(i: usize) -> f32 {
     i as f32 * (ROOM_SIZE + WALL)
 }
 
-/// Twelve rooms of 4 by 4.5 m, six on each side of a 2.4 m corridor, 45 cm walls, a 1 m door per room, a spot in
-/// every room and every 6 m of corridor: thirteen boxes, all in the frustum of the still camera at the corridor's
-/// start. Generic; it is the layout council member 1 proposed for the probe cap.
+/// The corridor's far end: it runs on past the last room, so the box the camera stands in at the corridor's start
+/// has its centre farther away than ten of the room boxes, and a cap of 8 view probes drops it.
+fn corridor_end() -> f32 {
+    rooms_wall_x(ROOMS_PER_SIDE) + CORRIDOR_PAST_ROOMS
+}
+
+/// How far the corridor runs past the last room, in metres.
+const CORRIDOR_PAST_ROOMS: f32 = 18.0;
+
+/// Twelve rooms of 4 by 4.5 m, six on each side of a 2.4 m corridor that runs on 18 m past them, 45 cm walls, a
+/// 1 m door per room, a spot in every room but the last on the south side and every 6 m of corridor: thirteen
+/// boxes, all in the frustum of the still camera at the corridor's start. Generic; council member 1's layout for
+/// the probe cap, with the long corridor where the council found boxes dropped.
 fn rooms(world: &mut World) -> Scene {
     let walls = matte(world, 0.6);
     let floor = matte(world, 0.3);
-    let end = rooms_wall_x(ROOMS_PER_SIDE);
+    let end = corridor_end();
     let reach = CORRIDOR_OUTER + ROOM_DEPTH + WALL;
     slab(
         world,
@@ -614,25 +624,29 @@ fn rooms(world: &mut World) -> Scene {
         Vec3::new(end + WALL, ROOM_HEIGHT + 0.2, reach),
         &walls,
     );
-    for i in 0..=ROOMS_PER_SIDE {
+    // The two ends of the corridor, and the walls between rooms.
+    slab(
+        world,
+        Vec3::ZERO.with_z(-reach),
+        Vec3::new(WALL, ROOM_HEIGHT, reach),
+        &walls,
+    );
+    slab(
+        world,
+        Vec3::new(end, 0.0, -CORRIDOR_OUTER),
+        Vec3::new(end + WALL, ROOM_HEIGHT, CORRIDOR_OUTER),
+        &walls,
+    );
+    for i in 1..=ROOMS_PER_SIDE {
         let x = rooms_wall_x(i);
-        if i == 0 || i == ROOMS_PER_SIDE {
+        for side in [-1.0f32, 1.0] {
+            let (z0, z1) = (side * CORRIDOR_OUTER, side * reach);
             slab(
                 world,
-                Vec3::new(x, 0.0, -reach),
-                Vec3::new(x + WALL, ROOM_HEIGHT, reach),
+                Vec3::new(x, 0.0, z0.min(z1)),
+                Vec3::new(x + WALL, ROOM_HEIGHT, z0.max(z1)),
                 &walls,
             );
-        } else {
-            for side in [-1.0f32, 1.0] {
-                let (z0, z1) = (side * CORRIDOR_OUTER, side * reach);
-                slab(
-                    world,
-                    Vec3::new(x, 0.0, z0.min(z1)),
-                    Vec3::new(x + WALL, ROOM_HEIGHT, z0.max(z1)),
-                    &walls,
-                );
-            }
         }
     }
     for side in [-1.0f32, 1.0] {
@@ -640,24 +654,32 @@ fn rooms(world: &mut World) -> Scene {
         slab(
             world,
             Vec3::new(WALL, 0.0, b0.min(b1)),
-            Vec3::new(end, ROOM_HEIGHT, b0.max(b1)),
+            Vec3::new(rooms_wall_x(ROOMS_PER_SIDE), ROOM_HEIGHT, b0.max(b1)),
             &walls,
         );
         let (z0, z1) = (side * CORRIDOR_HALF, side * CORRIDOR_OUTER);
         let (z0, z1) = (z0.min(z1), z0.max(z1));
+        // The corridor's wall past the rooms.
+        slab(
+            world,
+            Vec3::new(rooms_wall_x(ROOMS_PER_SIDE), 0.0, z0),
+            Vec3::new(end, ROOM_HEIGHT, z1),
+            &walls,
+        );
         for i in 0..ROOMS_PER_SIDE {
             let x0 = rooms_wall_x(i) + WALL;
             let door = x0 + ROOM_SIZE / 2.0;
+            // Each room's stretch of corridor wall covers the wall between it and the next room too.
             slab(
                 world,
-                Vec3::new(x0, 0.0, z0),
+                Vec3::new(x0 - WALL, 0.0, z0),
                 Vec3::new(door - 0.5, ROOM_HEIGHT, z1),
                 &walls,
             );
             slab(
                 world,
                 Vec3::new(door + 0.5, 0.0, z0),
-                Vec3::new(x0 + ROOM_SIZE, ROOM_HEIGHT, z1),
+                Vec3::new(x0 + ROOM_SIZE + WALL, ROOM_HEIGHT, z1),
                 &walls,
             );
             slab(
@@ -667,12 +689,15 @@ fn rooms(world: &mut World) -> Scene {
                 &walls,
             );
             let letter = if side > 0.0 { 'n' } else { 's' };
-            spot(
-                world,
-                &format!("lamp-{letter}{i}"),
-                Vec3::new(door, 2.9, side * (CORRIDOR_OUTER + ROOM_DEPTH / 2.0)),
-                300_000.0,
-            );
+            // One room has no lamp of its own: it is lit through its door.
+            if (letter, i) != ('s', ROOMS_PER_SIDE - 1) {
+                spot(
+                    world,
+                    &format!("lamp-{letter}{i}"),
+                    Vec3::new(door, 2.9, side * (CORRIDOR_OUTER + ROOM_DEPTH / 2.0)),
+                    300_000.0,
+                );
+            }
         }
     }
     let mut x = 3.0;
@@ -701,7 +726,7 @@ const ROOMS_WALK_FRAMES: f32 = 1440.0;
 /// start and looks down it.
 fn rooms_orbit(frame: u32) -> Transform {
     let phase = frame as f32 / ROOMS_WALK_FRAMES * core::f32::consts::TAU;
-    let x = 1.5 + (rooms_wall_x(ROOMS_PER_SIDE) - 3.0) * 0.5 * (1.0 - ops::cos(phase));
+    let x = 1.5 + (corridor_end() - 3.0) * 0.5 * (1.0 - ops::cos(phase));
     let yaw = 1.1 * ops::sin(phase * 6.0);
     let direction = Vec3::new(ops::cos(yaw), 0.0, ops::sin(yaw));
     Transform::from_xyz(x, 1.6, 0.0).looking_to(direction, Vec3::Y)
