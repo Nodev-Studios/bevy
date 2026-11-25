@@ -1499,15 +1499,16 @@ fn predict_furnace(camera: &PinholeCamera, dir: Option<&Path>) -> Result<Predict
 mod bake {
     use super::Baked;
     use bevy::{
-        app::PluginsState,
+        app::ScheduleRunnerPlugin,
         baked_gi::bake::{GiBakePlugin, GiBakeSettings},
         prelude::*,
+        render::RenderPlugin,
         window::ExitCondition,
         winit::WinitPlugin,
     };
-    use std::path::PathBuf;
+    use std::{path::PathBuf, time::Duration};
 
-    /// Bakes `scene` with `baked`'s flags into `out` and ends the process.
+    /// Bakes `scene` with `baked`'s flags into `out`; the app as `gi_bake` sets it up.
     pub fn run(baked: Baked, scene: String, out: PathBuf) -> AppExit {
         println!("baking {scene} to {}", out.display());
         let settings = GiBakeSettings {
@@ -1531,8 +1532,14 @@ mod bake {
                         exit_condition: ExitCondition::DontExit,
                         ..default()
                     })
+                    // No pipeline left compiling on another thread when a short bake exits (see `gi_bake`).
+                    .set(RenderPlugin {
+                        synchronous_pipeline_compilation: true,
+                        ..default()
+                    })
                     .disable::<WinitPlugin>(),
                 GiBakePlugin { settings },
+                ScheduleRunnerPlugin::run_loop(Duration::ZERO),
             ))
             .add_systems(Startup, move |world: &mut World| {
                 let spawned = crate::scenes::spawn(&scene, world)
@@ -1545,29 +1552,9 @@ mod bake {
                 };
                 if let Err(error) = prepared {
                     eprintln!("gfx_testbed: {error}");
-                    std::process::exit(2);
+                    world.write_message(AppExit::from_code(2));
                 }
             })
-            .set_runner(run_until_baked)
             .run()
-    }
-
-    /// `gi_bake`'s runner: the process ends as soon as the bake asks to exit, because one bake there hung in
-    /// the app's shutdown after its files were written (`examples/graphics/gi_bake.rs`).
-    fn run_until_baked(mut app: App) -> AppExit {
-        while app.plugins_state() == PluginsState::Adding {
-            bevy::tasks::tick_global_task_pools_on_main_thread();
-        }
-        app.finish();
-        app.cleanup();
-        loop {
-            app.update();
-            if let Some(exit) = app.should_exit() {
-                std::process::exit(match exit {
-                    AppExit::Success => 0,
-                    AppExit::Error(code) => i32::from(code.get()),
-                });
-            }
-        }
     }
 }
