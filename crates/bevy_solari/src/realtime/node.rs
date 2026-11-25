@@ -405,9 +405,11 @@ pub fn solari_lighting(
     if let (Some(bind_group_denoiser_outputs), Some(resolve_pipeline)) =
         (&bind_group_denoiser_outputs, resolve_pipeline)
     {
+        let d = diagnostics.time_span(&mut pass, "solari_lighting/resolve_guides");
         pass.set_bind_group(2, bind_group_denoiser_outputs, &[]);
         pass.set_pipeline(resolve_pipeline);
         pass.dispatch_workgroups(dx, dy, 1);
+        d.end(&mut pass);
     }
 
     let d = diagnostics.time_span(&mut pass, "solari_lighting/presample_light_tiles");

@@ -19,7 +19,7 @@ mod solari {
     /// The first set (2 light candidates, 1 bounce) erred 2.85 / 4.08 % with DLSS-RR and 2.98 / 4.00 % with
     /// NRD + TSR; this one errs 2.02 / 2.79 % and 2.55 / 3.56 %, for 0.43 ms of lighting pass instead of 0.22 on
     /// `interior`. The rung's whole frame stays far under its gate; what makes it lighter than `full` is now the
-    /// internal resolution, one bounce fewer and no ReSTIR.
+    /// internal resolution, one bounce fewer and no `ReSTIR`.
     pub fn lite() -> SolariLighting {
         SolariLighting {
             // Off: with DLSS-RR on `interior` it nearly doubles the still camera's flicker (0.14 → 0.24 %)

@@ -355,26 +355,27 @@ fn assert_invariants(ladder: &Ladder, camera: Entity, state: &State) {
         }
     }
 
-    // The effects of the rung, each under its override.
-    let on = |forced: Option<bool>| !traced && forced != Some(false);
+    // The effects of the rung, each under its override and otherwise as Raster's table has it.
+    let table = crate::raster::raster();
+    let on = |forced: Option<bool>, in_table: bool| !traced && forced.unwrap_or(in_table);
+    let ssao = on(state.overrides.ssao, table.ambient_occlusion.is_some());
     assert_eq!(
         ladder.has::<ScreenSpaceAmbientOcclusion>(camera),
-        on(state.overrides.ssao),
+        ssao,
         "{context}"
     );
-    assert_eq!(
-        ladder.has::<NormalPrepass>(camera),
-        on(state.overrides.ssao),
-        "{context}"
-    );
+    assert_eq!(ladder.has::<NormalPrepass>(camera), ssao, "{context}");
     assert_eq!(
         ladder.has::<ScreenSpaceReflections>(camera),
-        on(state.overrides.ssr),
+        on(state.overrides.ssr, table.reflections.is_some()),
         "{context}"
     );
     assert_eq!(
         ladder.has::<ContactShadows>(camera),
-        on(state.overrides.contact_shadows),
+        on(
+            state.overrides.contact_shadows,
+            table.contact_shadows.is_some()
+        ),
         "{context}"
     );
     assert_eq!(
@@ -567,8 +568,10 @@ fn shadow_maps_go_off_on_a_traced_rung_and_come_back() {
         ]
     };
 
-    // Raster: contact shadows join the shadow maps, and a light without shadows stays without.
-    let raster = [(true, true), (false, false), (true, true)];
+    // Raster: contact shadows join the shadow maps when the table has them, and a light without shadows stays
+    // without.
+    let contact = crate::raster::raster().contact_shadows.is_some();
+    let raster = [(true, contact), (false, false), (true, true)];
     ladder.apply(&State::raster());
     assert_eq!(flags(&ladder), raster);
 
