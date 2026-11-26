@@ -64,10 +64,7 @@ pub fn read_keys(keys: Res<ButtonInput<KeyCode>>, mut actions: MessageWriter<Act
 
 /// Carries out this frame's actions.
 pub fn run_actions(world: &mut World) {
-    let actions: Vec<Action> = world
-        .resource_mut::<Messages<Action>>()
-        .drain()
-        .collect();
+    let actions: Vec<Action> = world.resource_mut::<Messages<Action>>().drain().collect();
     // A new scene starts with its lamps on.
     let generation = world.resource::<Stage>().generation;
     if world.resource::<Lamps>().generation != generation {
@@ -174,7 +171,9 @@ fn screenshot(world: &mut World) {
         return;
     }
     let path = dir.join(format!("{scene}-{rung}-{stamp}.png"));
-    world.resource_mut::<Bakes>().say(format!("screenshot: {}", path.display()));
+    world
+        .resource_mut::<Bakes>()
+        .say(format!("screenshot: {}", path.display()));
     world
         .spawn((SceneEntity, Screenshot::primary_window()))
         .observe(save_to_disk(path));

@@ -4,7 +4,10 @@
 //! fields are the ones those files use, under the same names, so the files compile here unchanged.
 //! `gfx_testbed/main.rs` documents each of them.
 
-#![allow(missing_docs, reason = "each item is documented in gfx_testbed/main.rs, whose stand-in this is")]
+#![allow(
+    missing_docs,
+    reason = "each item is documented in gfx_testbed/main.rs, whose stand-in this is"
+)]
 
 use bevy::prelude::*;
 use serde_json::{Map, Value};

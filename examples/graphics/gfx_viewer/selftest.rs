@@ -73,13 +73,19 @@ const MIN_CHANGE: f64 = 0.5;
 enum Kind {
     Plain,
     /// Switches the lamps off; the frame must differ from step `reference`'s. The next step switches them on.
-    LampsOff { reference: String },
+    LampsOff {
+        reference: String,
+    },
     /// Clicks the panel's preset row; the preset must move to the next value.
     PanelClick,
     /// Shows these settings as set A, `other` as set B, and flips to B.
-    AbFlip { other: GraphicsSettings },
+    AbFlip {
+        other: GraphicsSettings,
+    },
     /// Bakes the scene, loads the bake, and compares with step `reference`'s frame.
-    Bake { reference: String },
+    Bake {
+        reference: String,
+    },
     /// Captures with the overlay, the panel and the help shown. Not checked for black.
     ShowUi,
 }
@@ -99,7 +105,11 @@ enum State {
     /// Waiting for a bake to finish and load.
     Baking { finished_before: u32 },
     /// Waiting for the scene and the pipelines, then holding.
-    Settling { changed_at: u32, calm: u32, held: Option<u32> },
+    Settling {
+        changed_at: u32,
+        calm: u32,
+        held: Option<u32>,
+    },
     /// The screenshot is on its way.
     Capturing,
 }
@@ -167,7 +177,12 @@ impl SelfTest {
             scenes: scenes.map(|list| list.split(',').map(str::to_owned).collect()),
             bake: bake.map_or_else(
                 || vec!["interior".to_owned()],
-                |list| list.split(',').filter(|name| !name.is_empty()).map(str::to_owned).collect(),
+                |list| {
+                    list.split(',')
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                },
             ),
             steps: Vec::new(),
             index: 0,
@@ -292,7 +307,7 @@ impl SelfTest {
                     },
                 );
             }
-            if self.bake.iter().any(|name| *name == entry.name) && has(Raster) {
+            if self.bake.contains(&entry.name) && has(Raster) {
                 step(
                     "raster-baked",
                     with(Raster),
@@ -358,7 +373,11 @@ fn step(world: &mut World, test: &mut SelfTest) {
     match test.state {
         State::Start => {
             test.step_started = Instant::now();
-            info!("gfx_viewer self-test: step {} {}", test.index + 1, current.name);
+            info!(
+                "gfx_viewer self-test: step {} {}",
+                test.index + 1,
+                current.name
+            );
             // The lamps of a lamp step are switched back on by the step after it.
             if !world.resource::<crate::actions::Lamps>().on {
                 world.write_message(Action::ToggleLamps);
@@ -395,7 +414,12 @@ fn step(world: &mut World, test: &mut SelfTest) {
             }
             test.state = if matches!(current.kind, Kind::Bake { .. }) {
                 if !world.resource::<GraphicsCapabilities>().ray_query {
-                    record_skip(world, test, &current, "baking needs ray tracing; this GPU has none");
+                    record_skip(
+                        world,
+                        test,
+                        &current,
+                        "baking needs ray tracing; this GPU has none",
+                    );
                     return;
                 }
                 State::Baking {
@@ -424,7 +448,12 @@ fn step(world: &mut World, test: &mut SelfTest) {
                     held: None,
                 };
             } else if test.step_started.elapsed() > BAKE_LIMIT {
-                fail_step(world, test, &current, "the bake did not finish in time".into());
+                fail_step(
+                    world,
+                    test,
+                    &current,
+                    "the bake did not finish in time".into(),
+                );
             }
         }
         State::Settling {
@@ -433,7 +462,10 @@ fn step(world: &mut World, test: &mut SelfTest) {
             held,
         } => {
             if test.step_started.elapsed() > STEP_LIMIT {
-                let compiling = world.resource::<PendingPipelines>().0.load(Ordering::Relaxed);
+                let compiling = world
+                    .resource::<PendingPipelines>()
+                    .0
+                    .load(Ordering::Relaxed);
                 fail_step(
                     world,
                     test,
@@ -460,15 +492,17 @@ fn step(world: &mut World, test: &mut SelfTest) {
                 }
                 return;
             }
-            let compiling = world.resource::<PendingPipelines>().0.load(Ordering::Relaxed);
-            let calm = if test.frame >= changed_at + SWITCH_FRAMES
-                && compiling == 0
-                && scene_ready(world)
-            {
-                calm + 1
-            } else {
-                0
-            };
+            let compiling = world
+                .resource::<PendingPipelines>()
+                .0
+                .load(Ordering::Relaxed);
+            let calm =
+                if test.frame >= changed_at + SWITCH_FRAMES && compiling == 0 && scene_ready(world)
+                {
+                    calm + 1
+                } else {
+                    0
+                };
             test.state = State::Settling {
                 changed_at,
                 calm,
@@ -533,11 +567,11 @@ fn request_capture(world: &mut World, test: &mut SelfTest, current: &Step) {
         set_ui_visible(world, false);
     }
     let slot = test.capture.clone();
-    world.spawn(Screenshot::primary_window()).observe(
-        move |captured: On<ScreenshotCaptured>| {
+    world
+        .spawn(Screenshot::primary_window())
+        .observe(move |captured: On<ScreenshotCaptured>| {
             *slot.lock().unwrap() = Some(captured.image.clone());
-        },
-    );
+        });
 }
 
 fn record_skip(world: &mut World, test: &mut SelfTest, current: &Step, reason: &str) {
@@ -569,7 +603,7 @@ fn fail_step(world: &mut World, test: &mut SelfTest, current: &Step, failure: St
 fn luma_stats(rgb: &[u8]) -> (f64, f64) {
     let pixels = (rgb.len() / 3).max(1) as f64;
     let (mut sum, mut lit) = (0.0, 0.0);
-    for pixel in rgb.chunks_exact(3) {
+    for pixel in rgb.as_chunks::<3>().0 {
         let luma = 0.2126 * pixel[0] as f64 + 0.7152 * pixel[1] as f64 + 0.0722 * pixel[2] as f64;
         sum += luma;
         if luma > LIT_LUMA {
@@ -656,7 +690,10 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         }
         Kind::PanelClick => {
             // The step set Auto; one click on the preset row moves it to Raster.
-            extra.insert("preset_after_click".into(), json!(format!("{:?}", settings.preset)));
+            extra.insert(
+                "preset_after_click".into(),
+                json!(format!("{:?}", settings.preset)),
+            );
             if settings.preset != GraphicsPreset::Raster {
                 failures.push(format!(
                     "clicking the preset row from Auto gave {:?}, not Raster",
@@ -865,9 +902,12 @@ fn check_camera(
         Some(wanted) => {
             expect("bloom", bloom, traced_bloom(overrides).is_some());
             match lighting {
-                None => failures.push("a traced rung resolved but the camera has no Solari lighting".into()),
+                None => failures
+                    .push("a traced rung resolved but the camera has no Solari lighting".into()),
                 Some(lighting) => {
-                    if lighting.restir != wanted.restir || lighting.max_bounces != wanted.max_bounces {
+                    if lighting.restir != wanted.restir
+                        || lighting.max_bounces != wanted.max_bounces
+                    {
                         failures.push(format!(
                             "Solari runs restir {} with {} bounces; the settings call for {} with {}",
                             lighting.restir, lighting.max_bounces, wanted.restir, wanted.max_bounces
@@ -878,7 +918,11 @@ fn check_camera(
         }
     }
     if overrides.shadows == Some(false) {
-        let mut lights = world.query::<(Option<&PointLight>, Option<&SpotLight>, Option<&DirectionalLight>)>();
+        let mut lights = world.query::<(
+            Option<&PointLight>,
+            Option<&SpotLight>,
+            Option<&DirectionalLight>,
+        )>();
         let shadowed = lights.iter(world).any(|(point, spot, sun)| {
             point.is_some_and(|l| l.shadow_maps_enabled)
                 || spot.is_some_and(|l| l.shadow_maps_enabled)
@@ -918,7 +962,12 @@ fn write_report(world: &mut World, test: &SelfTest, outcome: Option<bool>) {
 fn finish(world: &mut World, test: &mut SelfTest) {
     // Exit only once nothing compiles any more: a process that ends while pipelines compile on other threads
     // aborts in its teardown instead of returning its code.
-    if world.resource::<PendingPipelines>().0.load(Ordering::Relaxed) > 0 {
+    if world
+        .resource::<PendingPipelines>()
+        .0
+        .load(Ordering::Relaxed)
+        > 0
+    {
         return;
     }
     test.done = true;
@@ -931,5 +980,9 @@ fn finish(world: &mut World, test: &mut SelfTest) {
         test.failures.len(),
         test.started.elapsed().as_secs_f64()
     );
-    world.write_message(if ok { AppExit::Success } else { AppExit::error() });
+    world.write_message(if ok {
+        AppExit::Success
+    } else {
+        AppExit::error()
+    });
 }

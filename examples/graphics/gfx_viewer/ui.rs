@@ -75,7 +75,10 @@ const AMBIENTS: [f32; 5] = [
 const BOUNCES: [Option<u32>; 6] = [None, Some(1), Some(2), Some(3), Some(4), Some(6)];
 
 fn next<T: Copy + PartialEq>(values: &[T], current: T) -> T {
-    let index = values.iter().position(|value| *value == current).unwrap_or(0);
+    let index = values
+        .iter()
+        .position(|value| *value == current)
+        .unwrap_or(0);
     values[(index + 1) % values.len()]
 }
 
@@ -92,25 +95,31 @@ pub fn cycle(settings: &mut GraphicsSettings, field: Field) {
     let o = &mut settings.overrides;
     match field {
         Field::Preset => {
-            settings.preset = next(&[P::Auto, P::Raster, P::RtLite, P::RtFull], settings.preset)
+            settings.preset = next(&[P::Auto, P::Raster, P::RtLite, P::RtFull], settings.preset);
         }
         Field::Upscaler => {
             settings.upscaler = next(
                 &[U::Auto, U::Off, U::Tsr, U::Dlss, U::Fsr],
                 settings.upscaler,
-            )
+            );
         }
         Field::Quality => {
             settings.upscale_quality = next(
-                &[Q::Auto, Q::NativeAa, Q::Quality, Q::Balanced, Q::Performance],
+                &[
+                    Q::Auto,
+                    Q::NativeAa,
+                    Q::Quality,
+                    Q::Balanced,
+                    Q::Performance,
+                ],
                 settings.upscale_quality,
-            )
+            );
         }
         Field::Denoiser => {
             settings.denoiser = next(
                 &[D::Auto, D::DlssRayReconstruction, D::Nrd],
                 settings.denoiser,
-            )
+            );
         }
         Field::Shadows => o.shadows = next_switch(o.shadows),
         Field::Ssao => o.ssao = next_switch(o.ssao),
@@ -157,7 +166,10 @@ pub fn label(settings: &GraphicsSettings, field: Field) -> String {
         Field::Ssao => format!("SSAO (Raster): {}", switch_text(o.ssao)),
         Field::Ssr => format!("SSR (Raster): {}", switch_text(o.ssr)),
         Field::ContactShadows => {
-            format!("Contact shadows (Raster): {}", switch_text(o.contact_shadows))
+            format!(
+                "Contact shadows (Raster): {}",
+                switch_text(o.contact_shadows)
+            )
         }
         Field::Bloom => format!("Bloom: {}", switch_text(o.bloom)),
         Field::Restir => format!("ReSTIR (traced): {}", switch_text(o.restir)),
@@ -302,9 +314,7 @@ pub fn spawn_ui(mut commands: Commands, catalog: Res<Catalog>, settings: Res<Gra
             BackgroundColor(PANEL),
         ))
         .id();
-    commands
-        .entity(panel)
-        .with_child(header("Scene"));
+    commands.entity(panel).with_child(header("Scene"));
     let scenes = commands
         .spawn(Node {
             flex_direction: FlexDirection::Row,
@@ -504,7 +514,11 @@ pub fn update_overlay(
     let mut out = String::new();
     match times.median_ms() {
         Some(ms) => {
-            let _ = write!(out, "{:.0} fps   {ms:.2} ms/frame (median, last second)", 1000.0 / ms);
+            let _ = write!(
+                out,
+                "{:.0} fps   {ms:.2} ms/frame (median, last second)",
+                1000.0 / ms
+            );
         }
         None => out.push_str("measuring…"),
     }

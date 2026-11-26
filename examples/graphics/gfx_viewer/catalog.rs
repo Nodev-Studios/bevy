@@ -66,9 +66,10 @@ impl Catalog {
             }
         }
         for file in files {
-            let stem = file
-                .file_stem()
-                .map_or_else(|| "scene".into(), |stem| stem.to_string_lossy().into_owned());
+            let stem = file.file_stem().map_or_else(
+                || "scene".into(),
+                |stem| stem.to_string_lossy().into_owned(),
+            );
             let mut name = stem.to_lowercase();
             let mut n = 2;
             while entries.iter().any(|entry| entry.name == name) {

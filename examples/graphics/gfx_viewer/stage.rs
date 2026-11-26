@@ -225,7 +225,8 @@ pub fn place_gltf_scene(world: &mut World) {
     let (Some(root), true, false) = (stage.gltf_root, stage.instance_ready, stage.placed) else {
         return;
     };
-    let mut meshes = world.query_filtered::<(Entity, Option<&Aabb>, &GlobalTransform), With<Mesh3d>>();
+    let mut meshes =
+        world.query_filtered::<(Entity, Option<&Aabb>, &GlobalTransform), With<Mesh3d>>();
     let mut parents = world.query::<&ChildOf>();
     let mut min = Vec3::splat(f32::MAX);
     let mut max = Vec3::splat(f32::MIN);
@@ -278,7 +279,12 @@ pub fn place_gltf_scene(world: &mut World) {
 
     // The box `B` bakes, placed now so that a bake loaded later can tell whether it still fits the scene.
     let (region_transform, region) = gltf_region(min, max);
-    world.spawn((SceneEntity, Name::new("glTF bounds"), region, region_transform));
+    world.spawn((
+        SceneEntity,
+        Name::new("glTF bounds"),
+        region,
+        region_transform,
+    ));
 
     let (start, speed) = start_from_bounds(min, max);
     let fov = world.resource::<Stage>().fov;
@@ -310,7 +316,10 @@ pub fn start_from_bounds(min: Vec3, max: Vec3) -> (Transform, f32) {
         let eye = Vec3::new(center.x, min.y + (0.15 * size.y).clamp(1.0, 2.5), center.z);
         let along = if size.x >= size.z { Vec3::X } else { Vec3::Z };
         let speed = (size.x.max(size.z) / 30.0).clamp(0.5, 4.0);
-        (Transform::from_translation(eye).looking_to(along, Vec3::Y), speed)
+        (
+            Transform::from_translation(eye).looking_to(along, Vec3::Y),
+            speed,
+        )
     } else {
         let radius = (size.length() / 2.0).max(0.1);
         let eye = center + Vec3::new(0.0, 0.35 * radius, 1.7 * radius);

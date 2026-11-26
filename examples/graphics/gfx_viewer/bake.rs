@@ -105,7 +105,10 @@ pub fn load_latest(world: &mut World) {
     let Some(dir) = latest else {
         return;
     };
-    let folder = dir.file_name().expect("a bake folder has a name").to_string_lossy();
+    let folder = dir
+        .file_name()
+        .expect("a bake folder has a name")
+        .to_string_lossy();
     let manifest: Handle<BakedGiManifest> = world
         .resource::<AssetServer>()
         .load(format!("{SOURCE}://{scene}/{folder}/manifest.gi.ron"));
@@ -131,7 +134,9 @@ pub fn start_bake(world: &mut World) {
     let (scene, generation, gltf_file, default_sun) = (
         stage.name.clone(),
         stage.generation,
-        stage.is_gltf().then(|| world.resource::<crate::catalog::Catalog>().entries[stage.index].clone()),
+        stage
+            .is_gltf()
+            .then(|| world.resource::<crate::catalog::Catalog>().entries[stage.index].clone()),
         stage.default_sun,
     );
     let regions = bake_regions(world);
@@ -364,11 +369,10 @@ mod gltf_bake {
         };
         let mut app = App::new();
         #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
-        app.insert_resource(bevy::anti_alias::dlss::DlssProjectId(crate::DLSS_PROJECT_ID));
-        app.register_asset_source(
-            "fs",
-            AssetSourceBuilder::platform_default(&fs_root(), None),
-        );
+        app.insert_resource(bevy::anti_alias::dlss::DlssProjectId(
+            crate::DLSS_PROJECT_ID,
+        ));
+        app.register_asset_source("fs", AssetSourceBuilder::platform_default(&fs_root(), None));
         app.add_plugins((
             DefaultPlugins
                 .set(WindowPlugin {
@@ -384,38 +388,45 @@ mod gltf_bake {
             GiBakePlugin { settings },
             ScheduleRunnerPlugin::run_loop(Duration::ZERO),
         ))
-        .add_systems(Startup, move |mut commands: Commands, assets: Res<AssetServer>| {
-            commands.spawn((
-                Placeholder,
-                Mesh3d(Handle::default()),
-                MeshMaterial3d::<StandardMaterial>(Handle::default()),
-            ));
-            commands
-                .spawn(WorldAssetRoot(
-                    assets.load(GltfAssetLabel::Scene(0).from_asset(fs_asset_path(&file))),
-                ))
-                .observe(
-                    |_: On<WorldInstanceReady>,
-                     mut commands: Commands,
-                     placeholders: Query<Entity, With<Placeholder>>| {
-                        for entity in &placeholders {
-                            commands.entity(entity).despawn();
-                        }
+        .add_systems(
+            Startup,
+            move |mut commands: Commands, assets: Res<AssetServer>| {
+                commands.spawn((
+                    Placeholder,
+                    Mesh3d(Handle::default()),
+                    MeshMaterial3d::<StandardMaterial>(Handle::default()),
+                ));
+                commands
+                    .spawn(WorldAssetRoot(assets.load(
+                        GltfAssetLabel::Scene(0).from_asset(fs_asset_path(&file)),
+                    )))
+                    .observe(
+                        |_: On<WorldInstanceReady>,
+                         mut commands: Commands,
+                         placeholders: Query<Entity, With<Placeholder>>| {
+                            for entity in &placeholders {
+                                commands.entity(entity).despawn();
+                            }
+                        },
+                    );
+                let (transform, spacing) = region;
+                commands.spawn((
+                    Name::new("glTF bounds"),
+                    GiBakeRegion {
+                        spacing,
+                        ..default()
                     },
-                );
-            let (transform, spacing) = region;
-            commands.spawn((
-                Name::new("glTF bounds"),
-                GiBakeRegion {
-                    spacing,
-                    ..default()
-                },
-                transform,
-            ));
-            if sun {
-                commands.spawn((Name::new("default sun"), default_sun(), default_sun_transform()));
-            }
-        })
+                    transform,
+                ));
+                if sun {
+                    commands.spawn((
+                        Name::new("default sun"),
+                        default_sun(),
+                        default_sun_transform(),
+                    ));
+                }
+            },
+        )
         .run()
     }
 }

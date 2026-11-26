@@ -16,12 +16,18 @@ mod scenes;
 
 // The testbed's baked-light scenes and its baker; most of the file serves the testbed's measurements and is
 // unused here.
-#[allow(dead_code, unused_imports)]
+#[expect(
+    dead_code,
+    reason = "the file also serves the testbed's measurements, which the viewer does not run"
+)]
 #[path = "../gfx_testbed/baked.rs"]
 mod baked;
 
 // The testbed's denoiser-contract scene; the rest of the file (its checks) is unused here.
-#[allow(dead_code, unused_imports)]
+#[expect(
+    dead_code,
+    reason = "the file also holds the testbed's contract checks, which the viewer does not run"
+)]
 #[path = "../gfx_testbed/contract.rs"]
 mod contract;
 
