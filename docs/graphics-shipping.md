@@ -151,7 +151,7 @@ default level already shows `info`) and read these lines:
 | What the ladder chose | `graphics: <rung>, denoiser <denoiser>, upscaler <upscaler> at <quality> for a WxH output` | `crates/bevy_graphics/src/apply.rs` (`log_resolved`), each time the result changes |
 | Why anything differs from what was asked | `graphics: <reason>`, one line per fallback, right after it | the same |
 | DLSS libraries not found | `DLSS is not supported on this system` | `crates/bevy_anti_alias/src/dlss/mod.rs` |
-| DLSS Ray Reconstruction not usable | `graphics: NRD denoises: DLSS Ray Reconstruction cannot run here` | `bevy_graphics` |
+| DLSS Ray Reconstruction not usable | `graphics: NRD denoises: DLSS Ray Reconstruction cannot run here`, only when the game asked for Ray Reconstruction; under `Auto` the ladder just picks NRD | `bevy_graphics` |
 | DLSS not usable for upscaling | `graphics: DLSS cannot run here` (when DLSS was asked) | `bevy_graphics` |
 | FSR's DLLs loaded | `FSR: the DLL runs FSR …` | `crates/bevy_anti_alias/src/fsr/mod.rs` |
 | FSR's DLLs missing | `FSR is not available: …` | the same |
@@ -159,8 +159,11 @@ default level already shows `info`) and read these lines:
 | Bake missing or stale | `baked GI manifest … failed to load` / `baked GI is stale: …` | `crates/bevy_baked_gi/src/runtime.rs` |
 
 **On an RTX card with the DLSS files in place**, a traced rung must say `denoiser DlssRayReconstruction`. If it
-says `denoiser Nrd` with the fallback line `NRD denoises: DLSS Ray Reconstruction cannot run here`, the DLSS files
-are missing or not beside the executable.
+says `denoiser Nrd` and, earlier, `DLSS is not supported on this system`, the DLSS files are missing or not beside
+the executable. Under `Auto` that is the only sign: no `graphics:` fallback line is logged, because nothing the game
+asked for was refused. Measured on 2026-11-25 (RTX 5070, Linux, `DLSS_SDK` unset, no library beside the testbed):
+`DLSS is not supported on this system`, then `graphics: RtFull, denoiser Nrd, upscaler Taa at NativeAa for a
+640x360 output`.
 
 A game can also read the result in code: the `ResolvedGraphics` resource (rung, denoiser, upscaler, quality, and
 `fallbacks`), and `BakedGiStatus`.
