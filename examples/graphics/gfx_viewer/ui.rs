@@ -344,7 +344,7 @@ pub fn draw(
         if w.baked {
             window(
                 "Baked light",
-                egui::pos2(screen.max.x - 348.0, 430.0),
+                egui::pos2(screen.max.x - 348.0, screen.max.y - 190.0),
                 340.0,
             )
             .show(&ctx, |ui| baked_panel(ui, state, &view, &mut edit));

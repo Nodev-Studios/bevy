@@ -107,6 +107,8 @@ pub fn watch_loading(server: Res<AssetServer>, mut stage: ResMut<Stage>) {
     });
     if failed {
         stage.failed = true;
+        // Nothing more will come: the scene is as placed as it gets (the overlay says a file failed).
+        stage.placed = true;
     }
 }
 

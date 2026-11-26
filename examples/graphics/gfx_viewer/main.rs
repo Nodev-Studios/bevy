@@ -50,12 +50,13 @@ pub use shim::{
 
 use bevy::{
     asset::io::AssetSourceBuilder,
-    camera::ClearColorConfig,
+    camera::{CameraOutputMode, ClearColorConfig},
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     graphics::{GraphicsCamera, GraphicsPlugin, GraphicsPreset, GraphicsSettings},
     prelude::*,
     render::{
-        diagnostic::RenderDiagnosticsPlugin, render_resource::PipelineCache, Render, RenderApp,
+        diagnostic::RenderDiagnosticsPlugin,
+        render_resource::{BlendState, PipelineCache}, Render, RenderApp,
         RenderSystems,
     },
     solari::prelude::SolariPlugins,
@@ -360,14 +361,23 @@ fn spawn_camera(mut commands: Commands) {
         Transform::from_xyz(0.0, 1.6, 3.0),
         FreeCamera::default(),
     ));
-    // The panels' camera: drawn after the ladder's, over the whole window, clearing nothing.
+    // The panels' camera: drawn after the ladder's, over the whole window. Its own target is cleared to
+    // transparent every frame (left uncleared, it kept the panels of earlier frames) and blended over the frame.
     commands.spawn((
         Camera2d,
         Camera {
             order: 1,
-            clear_color: ClearColorConfig::None,
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            output_mode: CameraOutputMode::Write {
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                clear_color: ClearColorConfig::None,
+            },
             ..default()
         },
+        Msaa::Off,
+        // The panels' colours as egui draws them.
+        bevy::render::view::Tonemapping::None,
+        bevy::render::view::DebandDither::Disabled,
         bevy_egui::PrimaryEguiContext,
     ));
 }

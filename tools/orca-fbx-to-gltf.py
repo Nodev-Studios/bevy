@@ -21,8 +21,10 @@
 # objects from these files), the pyscene extras (wine volume absorption, index of refraction), texture resolution
 # above --max-texture, and the DDS mipmaps (PNG/JPEG carry none; Bevy makes none for them).
 import argparse
+import json
 import os
 import shutil
+import struct
 import sys
 import time
 
@@ -35,7 +37,8 @@ GLASS = ("glass", "wine", "water", "beer", "ice", "liquid")
 def parse():
     argv = sys.argv[sys.argv.index("--") + 1 :] if "--" in sys.argv else []
     p = argparse.ArgumentParser()
-    p.add_argument("--fbx", required=True)
+    p.add_argument("--fbx")
+    p.add_argument("--fix-only", action="store_true", help="only repair --out (see fix_glb)")
     p.add_argument("--out", required=True)
     p.add_argument("--max-texture", type=int, default=1024)  # to tune: VRAM with no mipmaps
     p.add_argument("--emissive-strength", type=float, default=1.0)
@@ -198,8 +201,47 @@ def rebuild(mat, textures, emissive_strength, counts):
     counts["materials"] += 1
 
 
+def fix_glb(path):
+    """Repairs what Blender's exporter writes and Bevy refuses: a texture reference with texCoord -1 (a texture
+    whose mesh lacks the UV map it names) loses the index, so it reads UV 0."""
+    with open(path, "rb") as f:
+        data = f.read()
+    magic, version, _ = struct.unpack_from("<4sII", data, 0)
+    length, kind = struct.unpack_from("<I4s", data, 12)
+    assert magic == b"glTF" and kind == b"JSON"
+    gltf = json.loads(data[20 : 20 + length])
+    fixed = 0
+
+    def walk(value):
+        nonlocal fixed
+        if isinstance(value, dict):
+            if value.get("texCoord", 0) < 0:
+                del value["texCoord"]
+                fixed += 1
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(gltf)
+    if fixed == 0:
+        return 0
+    text = json.dumps(gltf, separators=(",", ":")).encode()
+    text += b" " * (-len(text) % 4)
+    rest = data[20 + length :]
+    out = struct.pack("<4sII", b"glTF", version, 12 + 8 + len(text) + len(rest))
+    out += struct.pack("<I4s", len(text), b"JSON") + text + rest
+    with open(path, "wb") as f:
+        f.write(out)
+    return fixed
+
+
 def main():
     args = parse()
+    if args.fix_only:
+        print(f"orca-fbx-to-gltf: {fix_glb(args.out)} texture references repaired in {args.out}")
+        return
     started = time.time()
     bpy.ops.wm.read_factory_settings(use_empty=True)
     bpy.ops.import_scene.fbx(filepath=args.fbx)
@@ -226,6 +268,9 @@ def main():
         export_yup=True,
         export_animations=False,
     )
+    repaired = fix_glb(args.out)
+    if repaired:
+        print(f"orca-fbx-to-gltf: {repaired} texture references with texCoord -1 now read UV 0")
     # The GLB carries the textures; the converted files were only its input.
     shutil.rmtree(textures.out_dir, ignore_errors=True)
     print(f"orca-fbx-to-gltf: wrote {args.out} ({os.path.getsize(args.out) / 1e6:.0f} MB) in {time.time() - started:.0f} s")
