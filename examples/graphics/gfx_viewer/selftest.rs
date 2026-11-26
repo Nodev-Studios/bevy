@@ -1,28 +1,38 @@
-//! `--self-test DIR`: walks through every scene × every preset, a few overrides, the lamp switch, a panel click,
-//! the A/B flip and one bake + load on `interior`, through the same [`Action`]s the keys and the panel write.
-//! Each step waits until its scene is loaded and no pipeline compiles, holds [`HOLD_FRAMES`] frames, captures
-//! the frame (with the viewer's UI hidden, except the last step's) and checks it:
+//! `--self-test DIR`: walks through every scene × every preset, a few overrides, the lamp switch, the panels'
+//! controls, the A/B flip and the split view, and one bake + load on `interior`, through the same [`Action`]s and
+//! resources the keys and the panels change. Two steps click real egui widgets: the cursor and the button go in
+//! as window events, through `bevy_egui`'s input, exactly as winit delivers them.
+//!
+//! Each step waits until its scene is loaded and no pipeline compiles, does its action, holds [`HOLD_FRAMES`]
+//! frames, captures the frame (with the panels hidden, except the `ui` step's) and checks it:
 //!
 //! - the frame is not black;
 //! - what resolved is what the step asked for, or a [`Fallback`] of the right kind says why not;
 //! - the camera carries the effects the resolved rung and the overrides call for (the apply layer did its job);
-//! - the lamp step differs from the frame before it, the bake step loaded a bake and changed the frame.
+//! - each control did what it says: the lamp, exposure, lamp-intensity, sun and coverage steps differ from the
+//!   frame before them; a click moved the setting it clicked; a bookmark brings the camera back; the bake
+//!   loaded, unloaded and loaded again; the split view's left half shows the other set and its right half the
+//!   live one.
 //!
 //! It writes `NN-<step>.png` per step and `report.json` (rewritten after each step) into DIR, and exits 0 only
-//! when no step failed. A panic ends the process with a non-zero code; `report.json` then holds the steps
-//! before it.
+//! when no step failed. A scene whose files are not downloaded is recorded as skipped. A panic ends the process
+//! with a non-zero code; `report.json` then holds the steps before it.
 
 use crate::{
-    actions::Action,
+    actions::{Action, Bookmarks},
     bake::Bakes,
     catalog::{Catalog, Source},
+    compare::Split,
     stage::Stage,
-    ui::{gpu_passes, rung_text, Field, FrameTimes, ViewerUi},
+    ui::{gpu_passes, rung_text, FrameTimes, UiState, ViewControls},
     AbCompare, PendingPipelines, ViewerCamera,
 };
 use bevy::{
     app::AppExit,
+    math::ops,
     asset::RecursiveDependencyLoadState,
+    camera::Exposure,
+    camera_controller::free_camera::FreeCameraState,
     diagnostic::DiagnosticsStore,
     graphics::{
         baked::BakedGiStatus,
@@ -32,12 +42,13 @@ use bevy::{
         GraphicsSettings, ResolvedDenoiser, ResolvedGraphics, ResolvedQuality, ResolvedUpscaler,
         UpscaleQuality, UpscalerChoice,
     },
+    input::{mouse::MouseButtonInput, ButtonState},
     pbr::{ContactShadows, ScreenSpaceAmbientOcclusion, ScreenSpaceReflections},
     post_process::bloom::Bloom,
     prelude::*,
     render::view::screenshot::{Screenshot, ScreenshotCaptured},
     solari::prelude::SolariLighting,
-    ui_widgets::Activate,
+    window::{CursorMoved, PrimaryWindow, WindowEvent},
 };
 use serde_json::{json, Value};
 use std::{
@@ -55,18 +66,23 @@ const CALM_FRAMES: u32 = 3;
 /// Frames after a change before the pipeline count is trusted (the new components reach the render world and
 /// queue their pipelines a frame or two later).
 const SWITCH_FRAMES: u32 = 5;
+/// Frames before a capture the panels are hidden (like Tab; the split view's left side stays): egui's output
+/// reaches the frame later than the frame it was drawn in.
+const UI_LAG_FRAMES: u32 = 4;
 /// A step that is not ready after this long fails instead of hanging the run.
-const STEP_LIMIT: Duration = Duration::from_secs(240);
+const STEP_LIMIT: Duration = Duration::from_secs(300);
 /// How long a bake may take.
-const BAKE_LIMIT: Duration = Duration::from_secs(900);
+const BAKE_LIMIT: Duration = Duration::from_secs(1800);
 /// A frame whose mean 8-bit luma is under this, or whose lit share is under [`MIN_LIT_SHARE`], is black.
 /// to tune.
 const MIN_MEAN_LUMA: f64 = 1.5;
 /// The share of pixels with a luma over [`LIT_LUMA`] a frame needs to count as lit. to tune.
 const MIN_LIT_SHARE: f64 = 0.002;
 const LIT_LUMA: f64 = 8.0;
-/// The mean absolute difference (8-bit) a lamp switch or a loaded bake must make to the frame. to tune.
+/// The mean absolute difference (8-bit) a control must make to the frame. to tune.
 const MIN_CHANGE: f64 = 0.5;
+/// The scenes whose sun the self-test turns (when they are in the list and have a sun).
+const SUN_SCENES: [&str; 2] = ["bistro-exterior", "sponza"];
 
 /// What a step does besides showing its settings.
 #[derive(Clone, Debug, PartialEq)]
@@ -76,8 +92,11 @@ enum Kind {
     LampsOff {
         reference: String,
     },
-    /// Clicks the panel's preset row; the preset must move to the next value.
-    PanelClick,
+    /// Clicks the egui widget drawn as `widget` (see `UiState::rects`); `check` says what must follow.
+    Click {
+        widget: &'static str,
+        check: ClickCheck,
+    },
     /// Shows these settings as set A, `other` as set B, and flips to B.
     AbFlip {
         other: GraphicsSettings,
@@ -86,8 +105,51 @@ enum Kind {
     Bake {
         reference: String,
     },
-    /// Captures with the overlay, the panel and the help shown. Not checked for black.
+    /// Unloads the scene's bake: it must be gone and the frame differ from `reference`'s.
+    Unload {
+        reference: String,
+    },
+    /// Loads the newest bake again.
+    Reload,
+    /// Sets the exposure's EV100 this much above the scene's own (darker).
+    Exposure {
+        delta: f32,
+        reference: String,
+    },
+    /// Multiplies every lamp's intensity.
+    LampScale {
+        scale: f32,
+        reference: String,
+    },
+    /// Moves the sun to this height (degrees) and halves its intensity.
+    Sun {
+        elevation: f32,
+        reference: String,
+    },
+    /// Switches the coverage view on.
+    Coverage {
+        reference: String,
+    },
+    /// Moves the camera, saves the view, resets the camera and goes back to the saved view.
+    Bookmark,
+    /// Opens the scene's file by path, as the Scene panel's field does.
+    OpenFile,
+    /// Shows set `other` on the left of the split view and these settings live on the right.
+    Split {
+        other: GraphicsSettings,
+        left_reference: String,
+        right_reference: String,
+    },
+    /// Captures with the panels shown. Not checked for black.
     ShowUi,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ClickCheck {
+    /// The preset became Raster.
+    PresetRaster,
+    /// The bounce override went on.
+    BouncesOn,
 }
 
 #[derive(Clone, Debug)]
@@ -100,10 +162,21 @@ struct Step {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
-    /// The step's settings and action go in.
+    /// The step's settings and scene go in.
     Start,
+    /// Waiting for the scene, then the step's action.
+    Opening,
+    /// Clicking a widget: 0 moves the cursor there; 3 (egui has seen the cursor and the camera gate has
+    /// run) checks the pointer and presses; 5 releases. The stages between wait a frame.
+    Clicking {
+        stage: u32,
+        pointer_over: bool,
+        camera_held: bool,
+    },
     /// Waiting for a bake to finish and load.
     Baking { finished_before: u32 },
+    /// Waiting for the split view's left side.
+    Splitting { taken_before: u32 },
     /// Waiting for the scene and the pipelines, then holding.
     Settling {
         changed_at: u32,
@@ -123,6 +196,8 @@ pub struct SelfTest {
     /// The scenes baked and loaded.
     bake: Vec<String>,
     steps: Vec<Step>,
+    /// Scenes of the list left out because their files are missing.
+    missing: Vec<String>,
     index: usize,
     state: State,
     frame: u32,
@@ -130,6 +205,9 @@ pub struct SelfTest {
     started: Instant,
     capture: Arc<Mutex<Option<Image>>>,
     references: HashMap<String, Vec<u8>>,
+    /// What a step's action recorded for its check (a bookmark's view, a click's pointer state).
+    noted: serde_json::Map<String, Value>,
+    bookmark: Option<Transform>,
     results: Vec<Value>,
     failures: Vec<String>,
     done: bool,
@@ -137,11 +215,12 @@ pub struct SelfTest {
 
 pub const HELP: &str = "
 Self-test:
-  --self-test DIR                every scene x every preset, overrides, lamps, panel, A/B and a bake on
-                                 interior; screenshots and report.json in DIR; exit 0 when every step passes
+  --self-test DIR                every scene x every preset, overrides, lamps, the panels' controls, A/B, the
+                                 split view and a bake on interior; screenshots and report.json in DIR; exit 0
+                                 when every step passes
   --self-test-presets auto,raster,rt-lite,rt-full
                                  the presets each scene is shown with (default all four)
-  --self-test-scenes NAME,...    only these scenes (default every scene of the list)
+  --self-test-scenes NAME,...    only these scenes (default every scene of the list that is downloaded)
   --self-test-bake NAME,...      the scenes baked and loaded (default interior; an empty value bakes none)
 ";
 
@@ -185,6 +264,7 @@ impl SelfTest {
                 },
             ),
             steps: Vec::new(),
+            missing: Vec::new(),
             index: 0,
             state: State::Start,
             frame: 0,
@@ -192,6 +272,8 @@ impl SelfTest {
             started: Instant::now(),
             capture: Arc::default(),
             references: HashMap::new(),
+            noted: serde_json::Map::new(),
+            bookmark: None,
             results: Vec::new(),
             failures: Vec::new(),
             done: false,
@@ -224,6 +306,10 @@ impl SelfTest {
             if !wanted(&entry.name) {
                 continue;
             }
+            if !entry.available {
+                self.missing.push(entry.name.clone());
+                continue;
+            }
             let mut step = |name: &str, settings: GraphicsSettings, kind: Kind| {
                 steps.push(Step {
                     name: format!("{}-{name}", entry.name),
@@ -235,8 +321,10 @@ impl SelfTest {
             for preset in &self.presets {
                 step(preset_name(*preset), with(*preset), Kind::Plain);
             }
-            use GraphicsPreset::{Raster, RtFull, RtLite};
+            use GraphicsPreset::{Auto, Raster, RtFull, RtLite};
+            let reference = |preset: &str| format!("{}-{preset}", entry.name);
             let interior = matches!(entry.source, Source::Builtin("interior"));
+            let gltf = matches!(entry.source, Source::Gltf(_));
             if interior && has(Raster) {
                 let mut s = with(Raster);
                 s.overrides.ssr = Some(false);
@@ -264,9 +352,26 @@ impl SelfTest {
                     "raster-lamps-off",
                     with(Raster),
                     Kind::LampsOff {
-                        reference: format!("{}-raster", entry.name),
+                        reference: reference("raster"),
                     },
                 );
+                step(
+                    "raster-ev100-plus-2",
+                    with(Raster),
+                    Kind::Exposure {
+                        delta: 2.0,
+                        reference: reference("raster"),
+                    },
+                );
+                step(
+                    "raster-lamps-x0.25",
+                    with(Raster),
+                    Kind::LampScale {
+                        scale: 0.25,
+                        reference: reference("raster"),
+                    },
+                );
+                step("raster-bookmark", with(Raster), Kind::Bookmark);
             }
             if interior && has(RtLite) {
                 let mut s = with(RtLite);
@@ -284,7 +389,7 @@ impl SelfTest {
                     "rt-lite-lamps-off",
                     with(RtLite),
                     Kind::LampsOff {
-                        reference: format!("{}-rt-lite", entry.name),
+                        reference: reference("rt-lite"),
                     },
                 );
             }
@@ -294,9 +399,24 @@ impl SelfTest {
                 s.overrides.max_bounces = Some(1);
                 s.overrides.bloom = Some(false);
                 step("rt-full-no-restir-1-bounce-no-bloom", s, Kind::Plain);
+                step(
+                    "click-bounces",
+                    with(RtFull),
+                    Kind::Click {
+                        widget: "bounces override",
+                        check: ClickCheck::BouncesOn,
+                    },
+                );
             }
             if interior {
-                step("panel-click", with(GraphicsPreset::Auto), Kind::PanelClick);
+                step(
+                    "click-preset",
+                    with(Auto),
+                    Kind::Click {
+                        widget: "preset raster",
+                        check: ClickCheck::PresetRaster,
+                    },
+                );
             }
             if interior && has(Raster) && has(RtLite) {
                 step(
@@ -306,13 +426,42 @@ impl SelfTest {
                         other: with(RtLite),
                     },
                 );
+                step(
+                    "split",
+                    with(Raster),
+                    Kind::Split {
+                        other: with(RtLite),
+                        left_reference: reference("rt-lite"),
+                        right_reference: reference("raster"),
+                    },
+                );
+            }
+            if SUN_SCENES.contains(&entry.name.as_str()) && has(Raster) {
+                step(
+                    "raster-sun-low",
+                    with(Raster),
+                    Kind::Sun {
+                        elevation: 8.0,
+                        reference: reference("raster"),
+                    },
+                );
+            }
+            if gltf && entry.name == "flighthelmet" && has(Raster) {
+                step("raster-open-by-path", with(Raster), Kind::OpenFile);
             }
             if self.bake.contains(&entry.name) && has(Raster) {
                 step(
                     "raster-baked",
                     with(Raster),
                     Kind::Bake {
-                        reference: format!("{}-raster", entry.name),
+                        reference: reference("raster"),
+                    },
+                );
+                step(
+                    "raster-baked-coverage",
+                    with(Raster),
+                    Kind::Coverage {
+                        reference: reference("raster-baked"),
                     },
                 );
                 let mut s = with(Raster);
@@ -324,13 +473,37 @@ impl SelfTest {
                 if has(RtFull) {
                     step("rt-full-baked", with(RtFull), Kind::Plain);
                 }
+                step(
+                    "raster-unloaded",
+                    with(Raster),
+                    Kind::Unload {
+                        reference: reference("raster-baked"),
+                    },
+                );
+                step("raster-reloaded", with(Raster), Kind::Reload);
             }
             if interior {
-                step("ui", with(GraphicsPreset::Auto), Kind::ShowUi);
+                step("ui", with(Auto), Kind::ShowUi);
             }
         }
+        // The panels over Bistro, for the owner.
+        if let Some(index) = catalog.find("bistro-exterior")
+            && catalog.entries[index].available
+            && wanted("bistro-exterior")
+        {
+            steps.push(Step {
+                name: "bistro-exterior-ui".into(),
+                scene: index,
+                settings: with(GraphicsPreset::Auto),
+                kind: Kind::ShowUi,
+            });
+        }
         self.steps = steps;
-        info!("gfx_viewer self-test: {} steps", self.steps.len());
+        info!(
+            "gfx_viewer self-test: {} steps; not downloaded, skipped: {:?}",
+            self.steps.len(),
+            self.missing
+        );
     }
 }
 
@@ -365,6 +538,14 @@ pub fn drive(world: &mut World) {
     world.insert_resource(test);
 }
 
+fn settling(test: &SelfTest) -> State {
+    State::Settling {
+        changed_at: test.frame,
+        calm: 0,
+        held: None,
+    }
+}
+
 fn step(world: &mut World, test: &mut SelfTest) {
     let Some(current) = test.steps.get(test.index).cloned() else {
         finish(world, test);
@@ -373,65 +554,140 @@ fn step(world: &mut World, test: &mut SelfTest) {
     match test.state {
         State::Start => {
             test.step_started = Instant::now();
+            test.noted.clear();
             info!(
                 "gfx_viewer self-test: step {} {}",
                 test.index + 1,
                 current.name
             );
-            // The lamps of a lamp step are switched back on by the step after it.
+            // What the step before changed goes back: lamps on, controls as the scene has them, no split.
             if !world.resource::<crate::actions::Lamps>().on {
                 world.write_message(Action::ToggleLamps);
             }
-            if world.resource::<Stage>().index != current.scene || test.index == 0 {
+            {
+                let exposure = world.resource::<Stage>().exposure;
+                let mut controls = world.resource_mut::<ViewControls>();
+                let mut reset = controls.clone();
+                reset.exposure = exposure;
+                reset.lamp_scale = 1.0;
+                reset.coverage = false;
+                reset.sun = reset.initial_sun;
+                if *controls != reset {
+                    *controls = reset;
+                }
+            }
+            if world.resource::<Split>().on {
+                world.write_message(Action::Split(false));
+            }
+            world.resource_mut::<AbCompare>().showing_b = false;
+            if current.kind != Kind::OpenFile
+                && (world.resource::<Stage>().index != current.scene || test.index == 0)
+            {
                 world.write_message(Action::OpenScene(current.scene));
+            } else {
+                // Every step of a scene sees it from where it starts (a bookmark step moves the camera).
+                world.write_message(Action::ResetCamera);
             }
             *world.resource_mut::<GraphicsSettings>() = current.settings.clone();
-            match &current.kind {
-                Kind::LampsOff { .. } => {
-                    world.write_message(Action::ToggleLamps);
-                }
-                Kind::PanelClick => {
-                    let button = world
-                        .query::<(Entity, &Field)>()
-                        .iter(world)
-                        .find(|(_, field)| **field == Field::Preset)
-                        .map(|(entity, _)| entity);
-                    match button {
-                        Some(entity) => world.trigger(Activate { entity }),
-                        None => test.failures.push("panel-click: no preset row".into()),
-                    }
-                }
-                Kind::AbFlip { other } => {
-                    let mut ab = world.resource_mut::<AbCompare>();
-                    ab.other = other.clone();
-                    ab.showing_b = false;
-                    world.write_message(Action::FlipAb);
-                }
-                Kind::ShowUi => {
-                    world.write_message(Action::ToggleHelp);
-                }
-                Kind::Plain | Kind::Bake { .. } => {}
+            if current.kind == Kind::OpenFile {
+                let Source::Gltf(scene) =
+                    &world.resource::<Catalog>().entries[current.scene].source
+                else {
+                    unreachable!("planned for glTF scenes only")
+                };
+                let path = scene.files[0].0.to_string_lossy().into_owned();
+                // Opened from another scene, as a person would.
+                world.write_message(Action::OpenScene(0));
+                world.write_message(Action::OpenFile(path));
             }
-            test.state = if matches!(current.kind, Kind::Bake { .. }) {
-                if !world.resource::<GraphicsCapabilities>().ray_query {
-                    record_skip(
+            test.state = State::Opening;
+        }
+        State::Opening => {
+            let generation = world.resource::<Stage>().generation;
+            if !scene_ready(world) || world.resource::<ViewControls>().generation != generation {
+                if test.step_started.elapsed() > STEP_LIMIT {
+                    fail_step(world, test, &current, "the scene never got ready".into());
+                }
+                return;
+            }
+            act(world, test, &current);
+        }
+        State::Clicking {
+            stage,
+            pointer_over,
+            camera_held,
+        } => {
+            let Kind::Click { widget, .. } = current.kind else {
+                unreachable!("only a click step clicks")
+            };
+            let Some(rect) = world.resource::<UiState>().rects.get(widget).copied() else {
+                if test.step_started.elapsed() > Duration::from_secs(20) {
+                    fail_step(
                         world,
                         test,
                         &current,
-                        "baking needs ray tracing; this GPU has none",
+                        format!("the panels never drew {widget}"),
                     );
-                    return;
                 }
-                State::Baking {
-                    finished_before: world.resource::<Bakes>().finished,
-                }
-            } else {
-                State::Settling {
-                    changed_at: test.frame,
-                    calm: 0,
-                    held: None,
-                }
+                return;
             };
+            let window = world
+                .query_filtered::<Entity, With<PrimaryWindow>>()
+                .single(world)
+                .expect("the viewer has a window");
+            let position = Vec2::new(rect.center().x, rect.center().y);
+            match stage {
+                1 | 2 | 4 => {
+                    test.state = State::Clicking {
+                        stage: stage + 1,
+                        pointer_over,
+                        camera_held,
+                    };
+                }
+                0 => {
+                    world.write_message(WindowEvent::CursorMoved(CursorMoved {
+                        window,
+                        position,
+                        delta: None,
+                    }));
+                    test.state = State::Clicking {
+                        stage: 1,
+                        pointer_over,
+                        camera_held,
+                    };
+                }
+                3 => {
+                    // The cursor rests over the panel: egui has the pointer and the camera stands still.
+                    let over = world.resource::<UiState>().pointer;
+                    let held = world
+                        .query_filtered::<&FreeCameraState, With<ViewerCamera>>()
+                        .iter(world)
+                        .all(|state| !state.enabled);
+                    world.write_message(WindowEvent::MouseButtonInput(MouseButtonInput {
+                        button: MouseButton::Left,
+                        state: ButtonState::Pressed,
+                        window,
+                    }));
+                    test.state = State::Clicking {
+                        stage: 4,
+                        pointer_over: over,
+                        camera_held: held,
+                    };
+                }
+                _ => {
+                    world.write_message(WindowEvent::MouseButtonInput(MouseButtonInput {
+                        button: MouseButton::Left,
+                        state: ButtonState::Released,
+                        window,
+                    }));
+                    test.noted
+                        .insert("pointer_over_panel".into(), json!(pointer_over));
+                    test.noted.insert("camera_held".into(), json!(camera_held));
+                    test.noted
+                        .insert("clicked_at".into(), json!([position.x, position.y]));
+                    test.state = settling(test);
+                }
+            }
         }
         State::Baking { finished_before } => {
             // The scene must be open before `B` means anything; then one bake, then its load.
@@ -442,17 +698,30 @@ fn step(world: &mut World, test: &mut SelfTest) {
             }
             let bakes = world.resource::<Bakes>();
             if bakes.finished > finished_before {
-                test.state = State::Settling {
-                    changed_at: test.frame,
-                    calm: 0,
-                    held: None,
-                };
+                test.noted.insert(
+                    "bake_seconds".into(),
+                    json!(test.step_started.elapsed().as_secs_f64()),
+                );
+                test.state = settling(test);
             } else if test.step_started.elapsed() > BAKE_LIMIT {
                 fail_step(
                     world,
                     test,
                     &current,
                     "the bake did not finish in time".into(),
+                );
+            }
+        }
+        State::Splitting { taken_before } => {
+            let split = world.resource::<Split>();
+            if split.taken > taken_before && split.ready() {
+                test.state = settling(test);
+            } else if test.step_started.elapsed() > STEP_LIMIT {
+                fail_step(
+                    world,
+                    test,
+                    &current,
+                    "the split view never took its left side".into(),
                 );
             }
         }
@@ -480,6 +749,10 @@ fn step(world: &mut World, test: &mut SelfTest) {
                 return;
             }
             if let Some(held) = held {
+                // egui's output reaches the frame a frame or two late: the panels go a few frames early.
+                if held + UI_LAG_FRAMES == HOLD_FRAMES && current.kind != Kind::ShowUi {
+                    world.resource_mut::<UiState>().visible = false;
+                }
                 if held + 1 >= HOLD_FRAMES {
                     request_capture(world, test, &current);
                     test.state = State::Capturing;
@@ -512,14 +785,109 @@ fn step(world: &mut World, test: &mut SelfTest) {
         State::Capturing => {
             let image = test.capture.lock().unwrap().take();
             if let Some(image) = image {
-                set_ui_visible(world, true);
+                world.resource_mut::<UiState>().visible = true;
                 evaluate(world, test, &current, image);
                 test.index += 1;
                 test.state = State::Start;
             } else if test.step_started.elapsed() > STEP_LIMIT + Duration::from_secs(30) {
-                set_ui_visible(world, true);
+                world.resource_mut::<UiState>().visible = true;
                 fail_step(world, test, &current, "the screenshot never arrived".into());
             }
+        }
+    }
+}
+
+/// The step's action, once its scene is ready.
+fn act(world: &mut World, test: &mut SelfTest, current: &Step) {
+    test.state = settling(test);
+    match &current.kind {
+        Kind::Plain | Kind::OpenFile => {}
+        Kind::LampsOff { .. } => {
+            world.write_message(Action::ToggleLamps);
+        }
+        Kind::Click { .. } => {
+            let mut ui = world.resource_mut::<UiState>();
+            ui.visible = true;
+            ui.windows.render = true;
+            test.state = State::Clicking {
+                stage: 0,
+                pointer_over: false,
+                camera_held: false,
+            };
+        }
+        Kind::AbFlip { other } => {
+            let mut ab = world.resource_mut::<AbCompare>();
+            ab.other = other.clone();
+            ab.showing_b = false;
+            world.write_message(Action::FlipAb);
+        }
+        Kind::Split { other, .. } => {
+            world.resource_mut::<AbCompare>().other = other.clone();
+            test.state = State::Splitting {
+                taken_before: world.resource::<Split>().taken,
+            };
+            world.write_message(Action::Split(true));
+        }
+        Kind::Bake { .. } => {
+            if !world.resource::<GraphicsCapabilities>().ray_query {
+                record_skip(
+                    world,
+                    test,
+                    current,
+                    "baking needs ray tracing; this GPU has none",
+                );
+                return;
+            }
+            test.state = State::Baking {
+                finished_before: world.resource::<Bakes>().finished,
+            };
+        }
+        Kind::Unload { .. } => {
+            world.write_message(Action::UnloadBake);
+        }
+        Kind::Reload => {
+            world.write_message(Action::LoadBake);
+        }
+        Kind::Exposure { delta, .. } => {
+            world.resource_mut::<ViewControls>().exposure += delta;
+        }
+        Kind::LampScale { scale, .. } => {
+            world.resource_mut::<ViewControls>().lamp_scale = *scale;
+        }
+        Kind::Sun { elevation, .. } => {
+            let mut controls = world.resource_mut::<ViewControls>();
+            match &mut controls.sun {
+                Some(sun) => {
+                    sun.elevation = *elevation;
+                    sun.lux *= 0.5;
+                }
+                None => {
+                    record_skip(world, test, current, "this scene has no sun");
+                }
+            }
+        }
+        Kind::Coverage { .. } => {
+            world.resource_mut::<ViewControls>().coverage = true;
+        }
+        Kind::Bookmark => {
+            let start = world.resource::<Stage>().start;
+            let moved = Transform::from_translation(start.translation + Vec3::new(0.4, 0.2, -0.3))
+                .with_rotation(start.rotation * Quat::from_rotation_y(0.35));
+            crate::stage::place_camera(world, moved, world.resource::<Stage>().fov, 1.0);
+            test.bookmark = Some(moved);
+            let saved = world
+                .resource::<Bookmarks>()
+                .for_scene(&world.resource::<Stage>().name)
+                .len();
+            world.write_message(Action::SaveBookmark);
+            world.write_message(Action::ResetCamera);
+            world.write_message(Action::GoBookmark(saved));
+        }
+        Kind::ShowUi => {
+            let mut ui = world.resource_mut::<UiState>();
+            ui.visible = true;
+            ui.windows.baked = true;
+            ui.windows.compare = true;
         }
     }
 }
@@ -551,21 +919,7 @@ fn scene_failed(world: &World) -> bool {
     })
 }
 
-fn set_ui_visible(world: &mut World, visible: bool) {
-    let mut roots = world.query_filtered::<&mut Visibility, With<ViewerUi>>();
-    for mut visibility in roots.iter_mut(world) {
-        *visibility = if visible {
-            Visibility::Inherited
-        } else {
-            Visibility::Hidden
-        };
-    }
-}
-
-fn request_capture(world: &mut World, test: &mut SelfTest, current: &Step) {
-    if current.kind != Kind::ShowUi {
-        set_ui_visible(world, false);
-    }
+fn request_capture(world: &mut World, test: &mut SelfTest, _current: &Step) {
     let slot = test.capture.clone();
     world
         .spawn(Screenshot::primary_window())
@@ -613,6 +967,71 @@ fn luma_stats(rgb: &[u8]) -> (f64, f64) {
     (sum / pixels, lit / pixels)
 }
 
+/// The frame is Raster's, no light of the scene is visible, and no bake shows: nothing can light it but its
+/// emissive surfaces.
+fn unlit_raster(world: &mut World) -> bool {
+    let raster = world
+        .get_resource::<ResolvedGraphics>()
+        .is_some_and(|resolved| resolved.rung == GraphicsRung::Raster);
+    // A bake lights the frame only when it is loaded and not hidden by the override.
+    let baked = world.get_resource::<BakedGiStatus>().copied() == Some(BakedGiStatus::Loaded)
+        && world.resource::<GraphicsSettings>().overrides.baked_gi != Some(false);
+    let mut lights = world.query_filtered::<&InheritedVisibility, Or<(
+        With<PointLight>,
+        With<SpotLight>,
+        With<RectLight>,
+        With<DirectionalLight>,
+    )>>();
+    let lit = lights.iter(world).any(|visibility| visibility.get());
+    raster && !baked && !lit
+}
+
+/// This process's resident memory in MiB (Linux), to see it grow over scenes.
+fn resident_mib() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib / 1024)
+}
+
+/// The width of the captures (the window's).
+fn image_width(world: &mut World) -> Option<usize> {
+    world
+        .query_filtered::<&Window, With<PrimaryWindow>>()
+        .iter(world)
+        .next()
+        .map(|window| window.physical_width() as usize)
+}
+
+/// The mean absolute difference of two RGB8 frames over the part left (or right) of `divider`, a margin of 2 %
+/// away from it.
+fn half_difference(a: &[u8], b: &[u8], width: usize, divider: f32, left: bool) -> f64 {
+    if a.len() != b.len() || width == 0 {
+        return f64::MAX;
+    }
+    let split = (divider * width as f32) as usize;
+    let margin = width / 50;
+    let columns = if left {
+        0..split.saturating_sub(margin)
+    } else {
+        (split + margin).min(width)..width
+    };
+    let (mut sum, mut count) = (0.0, 0usize);
+    for (row_a, row_b) in a.chunks_exact(width * 3).zip(b.chunks_exact(width * 3)) {
+        for x in columns.clone() {
+            for c in 0..3 {
+                sum += (row_a[x * 3 + c] as f64 - row_b[x * 3 + c] as f64).abs();
+                count += 1;
+            }
+        }
+    }
+    if count == 0 {
+        f64::MAX
+    } else {
+        sum / count as f64
+    }
+}
+
 fn mean_abs_difference(a: &[u8], b: &[u8]) -> Option<f64> {
     (a.len() == b.len() && !a.is_empty()).then(|| {
         a.iter()
@@ -640,11 +1059,21 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         }
     };
     let (mean, lit) = luma_stats(&rgb);
+    let mut dark_reason = None;
     if current.kind != Kind::ShowUi && (mean < MIN_MEAN_LUMA || lit < MIN_LIT_SHARE) {
-        failures.push(format!(
-            "the frame is black: mean luma {mean:.2}, {:.3} % of pixels lit",
-            lit * 100.0
-        ));
+        if unlit_raster(world) {
+            // Raster takes no light from emissive surfaces: a scene lit by them alone (Zero Day) is dark there
+            // until it is baked. Recorded, not failed.
+            dark_reason = Some(format!(
+                "dark by nature: no analytic light, Raster, no bake (mean luma {mean:.2}, {:.3} % lit)",
+                lit * 100.0
+            ));
+        } else {
+            failures.push(format!(
+                "the frame is black: mean luma {mean:.2}, {:.3} % of pixels lit",
+                lit * 100.0
+            ));
+        }
     }
 
     if scene_failed(world) {
@@ -660,45 +1089,143 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         }
         None => failures.push("nothing resolved".into()),
     }
+    if let Some(reason) = dark_reason {
+        extra.insert("dark".into(), json!(reason));
+    }
+    for (key, value) in std::mem::take(&mut test.noted) {
+        extra.insert(key, value);
+    }
+    let changed_from = |reference: &str,
+                        failures: &mut Vec<String>,
+                        extra: &mut serde_json::Map<String, Value>| {
+        let change = test
+            .references
+            .get(reference)
+            .and_then(|before| mean_abs_difference(before, &rgb));
+        extra.insert("change_from".into(), json!(reference));
+        extra.insert("mean_abs_change".into(), json!(change));
+        match change {
+            None => failures.push(format!("no frame of {reference} to compare with")),
+            Some(change) if change < MIN_CHANGE => failures.push(format!(
+                "the frame barely changed from {reference}: mean difference {change:.3}"
+            )),
+            Some(_) => {}
+        }
+    };
+    let status = world.get_resource::<BakedGiStatus>().copied();
     match &current.kind {
-        Kind::LampsOff { reference } | Kind::Bake { reference } => {
-            let change = test
-                .references
-                .get(reference)
-                .and_then(|before| mean_abs_difference(before, &rgb));
-            extra.insert("change_from".into(), json!(reference));
-            extra.insert("mean_abs_change".into(), json!(change));
-            match change {
-                None => failures.push(format!("no frame of {reference} to compare with")),
-                Some(change) if change < MIN_CHANGE => failures.push(format!(
-                    "the frame barely changed from {reference}: mean difference {change:.3}"
-                )),
-                Some(_) => {}
-            }
-            if matches!(current.kind, Kind::Bake { .. }) {
-                let status = world.get_resource::<BakedGiStatus>().copied();
-                let bakes = world.resource::<Bakes>();
-                extra.insert("bake_succeeded".into(), json!(bakes.succeeded > 0));
-                extra.insert(
-                    "bake_folder".into(),
-                    json!(bakes.loaded.as_ref().map(|dir| dir.display().to_string())),
-                );
-                if status != Some(BakedGiStatus::Loaded) {
-                    failures.push(format!("after the bake, the baked GI status is {status:?}"));
-                }
+        Kind::LampsOff { reference } | Kind::Coverage { reference } => {
+            changed_from(reference, &mut failures, &mut extra);
+        }
+        Kind::Bake { reference } => {
+            changed_from(reference, &mut failures, &mut extra);
+            let bakes = world.resource::<Bakes>();
+            extra.insert("bake_succeeded".into(), json!(bakes.succeeded > 0));
+            extra.insert(
+                "bake_folder".into(),
+                json!(bakes.loaded.as_ref().map(|dir| dir.display().to_string())),
+            );
+            if status != Some(BakedGiStatus::Loaded) {
+                failures.push(format!("after the bake, the baked GI status is {status:?}"));
             }
         }
-        Kind::PanelClick => {
-            // The step set Auto; one click on the preset row moves it to Raster.
-            extra.insert(
-                "preset_after_click".into(),
-                json!(format!("{:?}", settings.preset)),
-            );
-            if settings.preset != GraphicsPreset::Raster {
+        Kind::Unload { reference } => {
+            changed_from(reference, &mut failures, &mut extra);
+            if world.resource::<Bakes>().loaded.is_some()
+                || matches!(status, Some(BakedGiStatus::Loaded))
+            {
+                failures.push(format!("after Unload the bake is still there ({status:?})"));
+            }
+        }
+        Kind::Reload => {
+            if status != Some(BakedGiStatus::Loaded) {
                 failures.push(format!(
-                    "clicking the preset row from Auto gave {:?}, not Raster",
-                    settings.preset
+                    "after Load newest the baked GI status is {status:?}"
                 ));
+            }
+        }
+        Kind::Exposure { delta, reference } => {
+            changed_from(reference, &mut failures, &mut extra);
+            let wanted = world.resource::<Stage>().exposure + delta;
+            let ev = world
+                .query_filtered::<&Exposure, With<ViewerCamera>>()
+                .iter(world)
+                .next()
+                .map(|e| e.ev100);
+            extra.insert("ev100".into(), json!(ev));
+            if ev.is_none_or(|ev| (ev - wanted).abs() > 1e-3) {
+                failures.push(format!("the camera's EV100 is {ev:?}, not {wanted}"));
+            }
+            if let Some(before) = test.references.get(reference)
+                && luma_stats(before).0 <= mean
+            {
+                failures.push("a higher EV100 did not darken the frame".into());
+            }
+        }
+        Kind::LampScale { scale, reference } => {
+            changed_from(reference, &mut failures, &mut extra);
+            let mut lamps = world.query::<(&crate::actions::BaseIntensity, &PointLight)>();
+            let wrong = lamps
+                .iter(world)
+                .filter(|(base, light)| {
+                    (base.0 * scale - light.intensity).abs() > 1e-3 * base.0.max(1.0)
+                })
+                .count();
+            if wrong > 0 {
+                failures.push(format!(
+                    "{wrong} point lights do not carry {scale} × their intensity"
+                ));
+            }
+        }
+        Kind::Sun {
+            elevation,
+            reference,
+        } => {
+            changed_from(reference, &mut failures, &mut extra);
+            let sun = world.resource::<ViewControls>().sun;
+            let mut suns = world.query::<(&DirectionalLight, &Transform)>();
+            let found = suns.iter(world).any(|(_, transform)| {
+                let height = ops::asin(-transform.forward().y).to_degrees();
+                (height - elevation).abs() < 0.5
+            });
+            extra.insert(
+                "sun".into(),
+                json!(sun.map(|s| [s.azimuth, s.elevation, s.lux])),
+            );
+            if !found {
+                failures.push(format!("no sun stands {elevation}° high"));
+            }
+        }
+        Kind::Click { check, .. } => {
+            if extra.get("pointer_over_panel") != Some(&json!(true)) {
+                failures
+                    .push("with the cursor over the panel, egui did not have the pointer".into());
+            }
+            if extra.get("camera_held") != Some(&json!(true)) {
+                failures.push("with the cursor over the panel, the camera was not held".into());
+            }
+            match check {
+                ClickCheck::PresetRaster => {
+                    extra.insert(
+                        "preset_after_click".into(),
+                        json!(format!("{:?}", settings.preset)),
+                    );
+                    if settings.preset != GraphicsPreset::Raster {
+                        failures.push(format!(
+                            "clicking Raster from Auto gave {:?}",
+                            settings.preset
+                        ));
+                    }
+                }
+                ClickCheck::BouncesOn => {
+                    extra.insert(
+                        "bounces_after_click".into(),
+                        json!(settings.overrides.max_bounces),
+                    );
+                    if settings.overrides.max_bounces.is_none() {
+                        failures.push("clicking the bounce override left it off".into());
+                    }
+                }
             }
         }
         Kind::AbFlip { other } => {
@@ -708,12 +1235,94 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
                 failures.push("C did not swap set A for set B".into());
             }
         }
+        Kind::Bookmark => {
+            let camera = world
+                .query_filtered::<&Transform, With<ViewerCamera>>()
+                .iter(world)
+                .next()
+                .copied();
+            let wanted = test.bookmark.take();
+            let close = match (camera, wanted) {
+                (Some(c), Some(w)) => {
+                    c.translation.distance(w.translation) < 1e-3
+                        && c.rotation.dot(w.rotation).abs() > 1.0 - 1e-6
+                }
+                _ => false,
+            };
+            extra.insert(
+                "camera".into(),
+                json!(camera.map(|c| c.translation.to_array())),
+            );
+            extra.insert(
+                "saved".into(),
+                json!(wanted.map(|c| c.translation.to_array())),
+            );
+            if !close {
+                failures.push("going to the saved view did not bring the camera back to it".into());
+            }
+        }
+        Kind::OpenFile => {
+            let stage = world.resource::<Stage>();
+            extra.insert("opened".into(), json!(stage.name));
+            if stage.index != current.scene {
+                failures.push(format!("opening the file by path opened {}", stage.name));
+            }
+        }
+        Kind::Split {
+            other,
+            left_reference,
+            right_reference,
+        } => {
+            let width = image_width(world);
+            let split = world.resource::<Split>();
+            let ab = world.resource::<AbCompare>();
+            extra.insert("divider".into(), json!(split.divider));
+            if !split.ready() || settings != current.settings || ab.other != *other {
+                failures.push(format!(
+                    "the split view is not showing the other set on the left and these settings live ({})",
+                    split.status()
+                ));
+            }
+            // Each half is closer to the frame of its own set than to the other's.
+            match (
+                test.references.get(left_reference),
+                test.references.get(right_reference),
+                width,
+            ) {
+                (Some(left), Some(right), Some(width)) => {
+                    let half = |a: &[u8], b: &[u8], left_half: bool| {
+                        half_difference(a, b, width, split.divider, left_half)
+                    };
+                    let l_own = half(&rgb, left, true);
+                    let l_other = half(&rgb, right, true);
+                    let r_own = half(&rgb, right, false);
+                    let r_other = half(&rgb, left, false);
+                    extra.insert("left_vs_left_set".into(), json!(l_own));
+                    extra.insert("left_vs_right_set".into(), json!(l_other));
+                    extra.insert("right_vs_right_set".into(), json!(r_own));
+                    extra.insert("right_vs_left_set".into(), json!(r_other));
+                    if l_own >= l_other || r_own >= r_other {
+                        failures.push(
+                            "a half of the split view is closer to the other set's frame than to its own".into(),
+                        );
+                    }
+                }
+                _ => failures.push(format!(
+                    "no frames of {left_reference} and {right_reference} to compare with"
+                )),
+            }
+        }
         Kind::Plain | Kind::ShowUi => {}
     }
-    if matches!(current.kind, Kind::Plain) {
+    if matches!(current.kind, Kind::Plain | Kind::Bake { .. }) {
         test.references.insert(current.name.clone(), rgb);
     }
 
+    let camera_ev100 = world
+        .query_filtered::<&Exposure, With<ViewerCamera>>()
+        .iter(world)
+        .next()
+        .map(|exposure| exposure.ev100);
     let frame_ms = world.resource::<FrameTimes>().median_ms();
     let passes: Vec<Value> = gpu_passes(world.resource::<DiagnosticsStore>())
         .into_iter()
@@ -735,6 +1344,8 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         "mean_luma": mean,
         "lit_share": lit,
         "frame_ms_median": frame_ms,
+        "rss_mib": resident_mib(),
+        "camera_ev100": camera_ev100,
         "gpu_ms_top": passes,
         "failures": failures,
     });
@@ -945,11 +1556,12 @@ fn write_report(world: &mut World, test: &SelfTest, outcome: Option<bool>) {
         "adapter": capabilities.adapter_name,
         "capabilities": capabilities,
         "window": world
-            .query_filtered::<&Window, With<bevy::window::PrimaryWindow>>()
+            .query_filtered::<&Window, With<PrimaryWindow>>()
             .iter(world)
             .next()
             .map(|window| [window.physical_width(), window.physical_height()]),
         "steps_planned": test.steps.iter().map(|step| step.name.clone()).collect::<Vec<_>>(),
+        "scenes_not_downloaded": test.missing,
         "steps": test.results,
         "failures": test.failures,
     });

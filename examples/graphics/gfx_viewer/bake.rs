@@ -65,6 +65,40 @@ impl Bakes {
             .map(|running| running.started.elapsed().as_secs())
     }
 
+    /// The last line the running bake wrote to its log (its progress), without colour codes.
+    pub fn progress_line(&self) -> Option<String> {
+        let running = self.child.as_ref()?;
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(running.dir.join("bake.log")).ok()?;
+        let length = file.seek(SeekFrom::End(0)).ok()?;
+        file.seek(SeekFrom::Start(length.saturating_sub(4096)))
+            .ok()?;
+        let mut tail = Vec::new();
+        file.read_to_end(&mut tail).ok()?;
+        let text = String::from_utf8_lossy(&tail);
+        let line = text.lines().rev().find(|line| !line.trim().is_empty())?;
+        let mut clean = String::new();
+        let mut escape = false;
+        for c in line.chars() {
+            match (escape, c) {
+                (false, '\u{1b}') => escape = true,
+                (true, c) if c.is_ascii_alphabetic() => escape = false,
+                (true, _) => {}
+                (false, c) => clean.push(c),
+            }
+        }
+        Some(
+            clean
+                .chars()
+                .rev()
+                .take(160)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect(),
+        )
+    }
+
     /// Shows `message` in the overlay for a while, and logs it.
     pub fn say(&mut self, message: impl Into<String>) {
         let message = message.into();
@@ -131,14 +165,23 @@ pub fn start_bake(world: &mut World) {
             .say("the scene is still loading: bake when it is there");
         return;
     }
-    let (scene, generation, gltf_file, default_sun) = (
+    let (scene, generation, gltf, default_sun) = (
         stage.name.clone(),
         stage.generation,
-        stage
-            .is_gltf()
-            .then(|| world.resource::<crate::catalog::Catalog>().entries[stage.index].clone()),
+        stage.gltf.clone(),
         stage.default_sun,
     );
+    // The sun as it is now (the Render panel may have turned it), for the child to bake with.
+    let sun = default_sun
+        .then(|| {
+            let mut suns = world
+                .query_filtered::<(&DirectionalLight, &Transform), With<crate::stage::DefaultSun>>(
+                );
+            suns.iter(world)
+                .next()
+                .map(|(light, transform)| (transform.forward().as_vec3(), light.illuminance))
+        })
+        .flatten();
     let regions = bake_regions(world);
     if regions.is_empty() {
         world.resource_mut::<Bakes>().say(format!(
@@ -160,20 +203,19 @@ pub fn start_bake(world: &mut World) {
         let log = std::fs::File::create(dir.join("bake.log"))?;
         let mut command = Command::new(std::env::current_exe()?);
         command.arg("--bake-gi").arg(&dir);
-        match &gltf_file {
-            Some(entry) => {
-                let crate::catalog::Source::Gltf(file) = &entry.source else {
-                    unreachable!("a glTF stage comes from a glTF entry")
-                };
-                command.arg("--bake-gltf").arg(file);
+        match &gltf {
+            Some(gltf) => {
+                command.arg("--bake-gltf").arg(files_json(&gltf.files));
                 let (transform, region) = regions[0];
                 let (t, s) = (transform.translation, transform.scale);
                 command.arg("--bake-region").arg(format!(
                     "{},{},{},{},{},{},{}",
                     t.x, t.y, t.z, s.x, s.y, s.z, region.spacing
                 ));
-                if default_sun {
-                    command.arg("--bake-default-sun");
+                if let Some((d, lux)) = sun {
+                    command
+                        .arg("--bake-sun")
+                        .arg(format!("{},{},{},{lux}", d.x, d.y, d.z));
                 }
             }
             None => {
@@ -284,22 +326,28 @@ pub fn child(flags: &mut Flags) -> Option<AppExit> {
     if !flags.args.iter().any(|arg| arg == "--bake-gi") {
         return None;
     }
-    let gltf = flags.value("--bake-gltf").map(PathBuf::from);
+    let gltf = flags.value("--bake-gltf");
     let region = flags.value("--bake-region");
-    let default_sun = flags.switch("--bake-default-sun");
+    let sun = flags.value("--bake-sun");
     let scene = flags.value("--scene");
     let exit = match gltf {
-        Some(file) => {
+        Some(files) => {
             let dir = flags.value("--bake-gi").map(PathBuf::from);
             let region = region.as_deref().and_then(parse_region);
-            match (dir, region) {
-                (Some(dir), Some(region)) if flags.args.is_empty() => {
-                    gltf_bake::run(file, dir, region, default_sun)
+            let files = parse_files(&files);
+            let sun = match sun.as_deref().map(parse_numbers) {
+                None => Some(None),
+                Some(Some(n)) if n.len() == 4 => Some(Some((Vec3::new(n[0], n[1], n[2]), n[3]))),
+                Some(_) => None,
+            };
+            match (dir, region, files, sun) {
+                (Some(dir), Some(region), Some(files), Some(sun)) if flags.args.is_empty() => {
+                    gltf_bake::run(files, dir, region, sun)
                 }
                 _ => {
                     eprintln!(
-                        "gfx_viewer: a glTF bake takes --bake-gi DIR --bake-gltf FILE --bake-region \
-                         TX,TY,TZ,SX,SY,SZ,SPACING [--bake-default-sun], not {:?}",
+                        "gfx_viewer: a glTF bake takes --bake-gi DIR --bake-gltf FILES_JSON --bake-region \
+                         TX,TY,TZ,SX,SY,SZ,SPACING [--bake-sun DX,DY,DZ,LUX], not {:?}",
                         flags.args
                     );
                     AppExit::from_code(2)
@@ -319,11 +367,48 @@ pub fn child(flags: &mut Flags) -> Option<AppExit> {
     Some(exit)
 }
 
+/// The files of a glTF scene and their transforms, for the child's command line.
+fn files_json(files: &[(PathBuf, Transform)]) -> String {
+    let list: Vec<serde_json::Value> = files
+        .iter()
+        .map(|(file, t)| {
+            serde_json::json!([
+                file.to_string_lossy(),
+                t.translation.to_array(),
+                t.rotation.to_array(),
+                t.scale.to_array()
+            ])
+        })
+        .collect();
+    serde_json::Value::Array(list).to_string()
+}
+
+type Files = Vec<(PathBuf, Transform)>;
+
+fn parse_files(text: &str) -> Option<Files> {
+    let list: Vec<(String, [f32; 3], [f32; 4], [f32; 3])> = serde_json::from_str(text).ok()?;
+    Some(
+        list.into_iter()
+            .map(|(file, t, r, s)| {
+                (
+                    PathBuf::from(file),
+                    Transform {
+                        translation: t.into(),
+                        rotation: Quat::from_array(r),
+                        scale: s.into(),
+                    },
+                )
+            })
+            .collect(),
+    )
+}
+
+fn parse_numbers(text: &str) -> Option<Vec<f32>> {
+    text.split(',').map(|n| n.trim().parse().ok()).collect()
+}
+
 fn parse_region(text: &str) -> Option<(Transform, f32)> {
-    let numbers: Vec<f32> = text
-        .split(',')
-        .map(|n| n.trim().parse().ok())
-        .collect::<Option<_>>()?;
+    let numbers = parse_numbers(text)?;
     let [tx, ty, tz, sx, sy, sz, spacing] = numbers[..] else {
         return None;
     };
@@ -337,7 +422,7 @@ fn parse_region(text: &str) -> Option<(Transform, f32)> {
 mod gltf_bake {
     use crate::{
         catalog::{fs_asset_path, fs_root},
-        stage::{default_sun, default_sun_transform},
+        stage::manifest_sun,
     };
     use bevy::{
         app::ScheduleRunnerPlugin,
@@ -354,15 +439,26 @@ mod gltf_bake {
     };
     use std::{path::PathBuf, time::Duration};
 
+    type Files = Vec<(PathBuf, Transform)>;
+
+    /// How many of the files are spawned, of how many.
+    #[derive(Resource)]
+    struct Arrivals(usize, usize);
+
     /// Stands in the level until the glTF instance is spawned: a mesh whose assets never load, so the baker
     /// keeps waiting instead of finding an empty level settled and refusing it.
     #[derive(Component)]
     struct Placeholder;
 
-    /// Bakes the glTF `file` under one region, with the default sun when the viewer gave the scene one, as
+    /// Bakes the glTF `files` under one region, with the sun the viewer gave the scene (direction, lux), as
     /// `gfx_testbed`'s baker sets its app up.
-    pub fn run(file: PathBuf, out: PathBuf, region: (Transform, f32), sun: bool) -> AppExit {
-        println!("baking {} to {}", file.display(), out.display());
+    pub fn run(
+        files: Files,
+        out: PathBuf,
+        region: (Transform, f32),
+        sun: Option<(Vec3, f32)>,
+    ) -> AppExit {
+        println!("baking {:?} to {}", files, out.display());
         let settings = GiBakeSettings {
             output: out,
             ..default()
@@ -396,19 +492,30 @@ mod gltf_bake {
                     Mesh3d(Handle::default()),
                     MeshMaterial3d::<StandardMaterial>(Handle::default()),
                 ));
-                commands
-                    .spawn(WorldAssetRoot(assets.load(
-                        GltfAssetLabel::Scene(0).from_asset(fs_asset_path(&file)),
-                    )))
-                    .observe(
-                        |_: On<WorldInstanceReady>,
-                         mut commands: Commands,
-                         placeholders: Query<Entity, With<Placeholder>>| {
-                            for entity in &placeholders {
-                                commands.entity(entity).despawn();
-                            }
-                        },
-                    );
+                commands.insert_resource(Arrivals(0, files.len()));
+                for (file, transform) in &files {
+                    commands
+                        .spawn((
+                            WorldAssetRoot(assets.load(
+                                GltfAssetLabel::Scene(0).from_asset(fs_asset_path(file)),
+                            )),
+                            *transform,
+                        ))
+                        .observe(
+                            |_: On<WorldInstanceReady>,
+                             mut arrivals: ResMut<Arrivals>,
+                             mut commands: Commands,
+                             placeholders: Query<Entity, With<Placeholder>>| {
+                                arrivals.0 += 1;
+                                if arrivals.0 < arrivals.1 {
+                                    return;
+                                }
+                                for entity in &placeholders {
+                                    commands.entity(entity).despawn();
+                                }
+                            },
+                        );
+                }
                 let (transform, spacing) = region;
                 commands.spawn((
                     Name::new("glTF bounds"),
@@ -418,12 +525,8 @@ mod gltf_bake {
                     },
                     transform,
                 ));
-                if sun {
-                    commands.spawn((
-                        Name::new("default sun"),
-                        default_sun(),
-                        default_sun_transform(),
-                    ));
+                if let Some((direction, lux)) = sun {
+                    commands.spawn((Name::new("viewer sun"), manifest_sun(direction, lux)));
                 }
             },
         )
@@ -436,7 +539,12 @@ mod gltf_bake {
     use bevy::prelude::*;
     use std::path::PathBuf;
 
-    pub fn run(_: PathBuf, _: PathBuf, _: (Transform, f32), _: bool) -> AppExit {
+    pub fn run(
+        _: Vec<(PathBuf, Transform)>,
+        _: PathBuf,
+        _: (Transform, f32),
+        _: Option<(Vec3, f32)>,
+    ) -> AppExit {
         eprintln!("gfx_viewer: baking needs a binary built with the bevy_baked_gi_bake feature");
         AppExit::from_code(2)
     }

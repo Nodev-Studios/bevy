@@ -3,9 +3,11 @@
 //! anything differs from what was asked) and the GPU time of each pass always on screen.
 //!
 //! Scenes: the testbed's `interior`, `many-lights`, `contract`, `rooms` and `two-rooms-door` (reused from
-//! `gfx_testbed/` through `#[path]`), Bevy's `FlightHelmet`, and every glTF file under `--scenes-dir` (default
-//! `~/.local/share/bevy-graficos/scenes`, which `tools/fetch-scenes.sh` fills). A glTF file without lights gets
-//! a default sun and an atmosphere for a sky.
+//! `gfx_testbed/` through `#[path]`), every scene of `tools/scenes.ron` (files under `--scenes-dir`, default
+//! `~/.local/share/bevy-graficos/scenes`, which `tools/fetch-scenes.sh` fills; the format is documented in that
+//! file), and any glTF file by path. A glTF scene without lights gets a default sun and an atmosphere for a sky.
+//!
+//! The panels are `bevy_egui` windows (`ui.rs`), drawn by their own 2D camera over the ladder's camera.
 //!
 //! Start it with `tools/gfx-viewer.sh`, which builds it with the features the ladder ships with and points DLSS
 //! at its libraries. Pass `--help` for the flags and `H` in the window for the keys. `--self-test DIR` checks it
@@ -34,6 +36,7 @@ mod contract;
 mod actions;
 mod bake;
 mod catalog;
+mod compare;
 mod selftest;
 mod shim;
 mod stage;
@@ -47,11 +50,13 @@ pub use shim::{
 
 use bevy::{
     asset::io::AssetSourceBuilder,
+    camera::{CameraOutputMode, ClearColorConfig},
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     graphics::{GraphicsCamera, GraphicsPlugin, GraphicsPreset, GraphicsSettings},
     prelude::*,
     render::{
-        diagnostic::RenderDiagnosticsPlugin, render_resource::PipelineCache, Render, RenderApp,
+        diagnostic::RenderDiagnosticsPlugin,
+        render_resource::{BlendState, PipelineCache}, Render, RenderApp,
         RenderSystems,
     },
     solari::prelude::SolariPlugins,
@@ -74,7 +79,10 @@ const USAGE: &str = "\
 gfx_viewer: fly around a scene and change the graphics settings live.
 
   --scene NAME|FILE.gltf|FILE.glb  the scene to open first (default interior)
-  --scenes-dir DIR               where to look for glTF files (default ~/.local/share/bevy-graficos/scenes)
+  --scenes-dir DIR               the folder tools/scenes.ron's paths start from
+                                 (default ~/.local/share/bevy-graficos/scenes)
+  --scenes-manifest FILE         the scene list (default tools/scenes.ron of this repository)
+  --list-scenes                  print the scene list (licence, downloaded or not) and exit
   --preset auto|raster|rt-lite|rt-full
                                  the preset to start with (default auto)
   --res WxH                      window size (default 1600x900)
@@ -118,6 +126,8 @@ fn main() -> AppExit {
         .value("--scenes-dir")
         .map(PathBuf::from)
         .or_else(catalog::default_scenes_dir);
+    let manifest = flags.value("--scenes-manifest").map(PathBuf::from);
+    let list_scenes = flags.switch("--list-scenes");
     let preset = flags.choice(
         "--preset",
         &[
@@ -147,8 +157,54 @@ fn main() -> AppExit {
         .as_ref()
         .map(PathBuf::from)
         .filter(|path| path.is_file());
-    let catalog = catalog::Catalog::build(scenes_dir.as_deref(), extra.as_deref());
+    let catalog =
+        match catalog::Catalog::build(scenes_dir.as_deref(), manifest.as_deref(), extra.as_deref())
+        {
+            Ok(catalog) => catalog,
+            Err(error) => {
+                eprintln!("gfx_viewer: {error}");
+                return AppExit::from_code(2);
+            }
+        };
+    if list_scenes {
+        println!(
+            "scenes of {} (files under {}):",
+            catalog.manifest,
+            scenes_dir
+                .as_deref()
+                .map_or("?".into(), |d| d.display().to_string())
+        );
+        for entry in &catalog.entries {
+            println!(
+                "  {:<22} {:<10} {}{}",
+                entry.name,
+                if entry.available { "ok" } else { "missing" },
+                entry
+                    .licence
+                    .as_deref()
+                    .unwrap_or("this repository's test scene"),
+                if entry.non_commercial {
+                    "  [no comercial]"
+                } else {
+                    ""
+                }
+            );
+        }
+        return AppExit::Success;
+    }
     let start = scene.as_deref().map_or(Some(0), |name| catalog.find(name));
+    if let Some(index) = start
+        && !catalog.entries[index].available
+    {
+        flags.error(format!(
+            "{} is not downloaded: run {}",
+            catalog.entries[index].name,
+            catalog.entries[index]
+                .fetch
+                .as_deref()
+                .unwrap_or("tools/fetch-scenes.sh")
+        ));
+    }
     if start.is_none() {
         let names: Vec<&str> = catalog.entries.iter().map(|e| e.name.as_str()).collect();
         flags.error(format!(
@@ -224,7 +280,13 @@ fn main() -> AppExit {
         SolariPlugins,
         RenderDiagnosticsPlugin,
         FreeCameraPlugin,
+        bevy_egui::EguiPlugin::default(),
     ))
+    .insert_resource(bevy_egui::EguiGlobalSettings {
+        // The panels get their own camera (see `spawn_camera`), not the ladder's.
+        auto_create_primary_context: false,
+        ..default()
+    })
     .insert_resource(settings.clone())
     .add_plugins(GraphicsPlugin)
     .insert_resource(AbCompare {
@@ -242,29 +304,43 @@ fn main() -> AppExit {
     .insert_resource(bake::Bakes::new(bakes_dir))
     .insert_resource(pending.clone())
     .init_resource::<actions::Lamps>()
+    .init_resource::<actions::CoverageSaved>()
+    .insert_resource(actions::Bookmarks::load(
+        (!testing)
+            .then(|| catalog::data_dir().map(|dir| dir.join("viewer-bookmarks.json")))
+            .flatten(),
+    ))
     .init_resource::<ui::FrameTimes>()
+    .init_resource::<ui::UiState>()
+    .init_resource::<ui::ViewControls>()
+    .init_resource::<compare::Split>()
     .add_message::<actions::Action>()
-    .add_systems(Startup, (spawn_camera, ui::spawn_ui))
+    .add_systems(Startup, spawn_camera)
     .add_systems(
         Update,
         (
+            ui::gate_camera,
             actions::read_keys,
             actions::run_actions,
             open_scene,
             stage::place_gltf_scene,
             stage::watch_loading,
             bake::poll_bake,
-            ui::refresh_panel,
+            actions::apply_view_controls,
+            compare::run_split,
             ui::record_frame_time,
-            ui::update_overlay,
         )
             .chain(),
+    )
+    .add_systems(
+        bevy_egui::EguiPrimaryContextPass,
+        (ui::style, ui::draw).chain(),
     );
     if let Some(test) = self_test {
         app.insert_resource(test).add_systems(
             Update,
             // The actions it writes are carried out the next frame, as a key's would be.
-            selftest::drive.after(ui::update_overlay),
+            selftest::drive.after(ui::record_frame_time),
         );
     }
     app.sub_app_mut(RenderApp)
@@ -284,6 +360,25 @@ fn spawn_camera(mut commands: Commands) {
         Msaa::Off,
         Transform::from_xyz(0.0, 1.6, 3.0),
         FreeCamera::default(),
+    ));
+    // The panels' camera: drawn after the ladder's, over the whole window. Its own target is cleared to
+    // transparent every frame (left uncleared, it kept the panels of earlier frames) and blended over the frame.
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            clear_color: ClearColorConfig::Custom(Color::NONE),
+            output_mode: CameraOutputMode::Write {
+                blend_state: Some(BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                clear_color: ClearColorConfig::None,
+            },
+            ..default()
+        },
+        Msaa::Off,
+        // The panels' colours as egui draws them.
+        bevy::render::view::Tonemapping::None,
+        bevy::render::view::DebandDither::Disabled,
+        bevy_egui::PrimaryEguiContext,
     ));
 }
 

@@ -3,13 +3,13 @@
 
 use crate::{
     baked as testbed_baked,
-    catalog::{fs_asset_path, Catalog, Source},
+    catalog::{fs_asset_path, Catalog, GltfScene, Source, SunChoice},
     contract, scenes, Args, ViewerCamera,
 };
 use bevy::{
     camera::{primitives::Aabb, Exposure},
     camera_controller::free_camera::{FreeCamera, FreeCameraState},
-    graphics::baked::GiBakeRegion,
+    graphics::{apply::CameraCut, baked::GiBakeRegion},
     light::{
         atmosphere::ScatteringMedium, light_consts::lux, Atmosphere, AtmosphereEnvironmentMapLight,
     },
@@ -42,9 +42,20 @@ pub fn default_sun() -> DirectionalLight {
     }
 }
 
+/// The sun a scene's entry asks for, as a light and its transform.
+pub fn manifest_sun(direction: Vec3, illuminance: f32) -> (DirectionalLight, Transform) {
+    (
+        DirectionalLight {
+            illuminance,
+            ..default_sun()
+        },
+        Transform::default().looking_to(direction.normalize_or(Vec3::NEG_Y), Vec3::Y),
+    )
+}
+
 /// The exposure of a glTF scene under the default sun. to tune: the atmosphere example's 13 makes a shaded
 /// courtyard dark under Raster, which has no bounce light without a bake.
-const SUN_EV100: f32 = 12.0;
+pub const SUN_EV100: f32 = 12.0;
 
 /// The scene that is open.
 #[derive(Resource, Default)]
@@ -63,14 +74,20 @@ pub struct Stage {
     pub fov: f32,
     /// The glTF scene's root, while it is a glTF scene.
     pub gltf_root: Option<Entity>,
-    /// The glTF scene's instance is spawned.
+    /// The glTF scene's instances are spawned (one per file).
     pub instance_ready: bool,
+    /// How many of the glTF scene's files are spawned, and how many it has.
+    pub instances: (usize, usize),
+    /// The glTF scene's files and sun, while it is a glTF scene (the bake's child loads the same).
+    pub gltf: Option<GltfScene>,
     /// Everything is placed: the camera stands where it starts, the default lights are there.
     pub placed: bool,
     /// The world-space bounds of the scene's meshes, once known.
     pub bounds: Option<(Vec3, Vec3)>,
-    /// The viewer gave this scene the default sun (and the bake must too).
+    /// The viewer gave this scene a sun (the default one or its entry's; the bake must have it too).
     pub default_sun: bool,
+    /// The exposure the scene opened with (EV100), for the Render panel's reset.
+    pub exposure: f32,
     /// How many times a scene was opened, so systems can tell a scene from the next.
     pub generation: u32,
     /// A file of the scene failed to load.
@@ -90,6 +107,8 @@ pub fn watch_loading(server: Res<AssetServer>, mut stage: ResMut<Stage>) {
     });
     if failed {
         stage.failed = true;
+        // Nothing more will come: the scene is as placed as it gets (the overlay says a file failed).
+        stage.placed = true;
     }
 }
 
@@ -146,20 +165,31 @@ pub fn open_requested_scene(world: &mut World) {
             stage.instance_ready = true;
             stage.placed = true;
         }
-        Source::Gltf(file) => {
-            let handle: Handle<WorldAsset> = world
-                .resource::<AssetServer>()
-                .load(GltfAssetLabel::Scene(0).from_asset(fs_asset_path(file)));
-            stage.assets = vec![handle.clone().untyped()];
+        Source::Gltf(scene) => {
+            let root = world
+                .spawn((
+                    Name::new(entry.name.clone()),
+                    Transform::IDENTITY,
+                    Visibility::default(),
+                ))
+                .id();
+            for (file, transform) in &scene.files {
+                let handle: Handle<WorldAsset> = world
+                    .resource::<AssetServer>()
+                    .load(GltfAssetLabel::Scene(0).from_asset(fs_asset_path(file)));
+                stage.assets.push(handle.clone().untyped());
+                world
+                    .spawn((WorldAssetRoot(handle), *transform, ChildOf(root)))
+                    .observe(|_: On<WorldInstanceReady>, mut stage: ResMut<Stage>| {
+                        stage.instances.0 += 1;
+                        stage.instance_ready = stage.instances.0 >= stage.instances.1;
+                    });
+            }
+            stage.instances = (0, scene.files.len());
             stage.fov = 1.0;
             stage.start = Transform::from_xyz(0.0, 1.6, 3.0).looking_at(Vec3::ZERO, Vec3::Y);
-            let root = world
-                .spawn((Name::new(entry.name.clone()), WorldAssetRoot(handle)))
-                .observe(|_: On<WorldInstanceReady>, mut stage: ResMut<Stage>| {
-                    stage.instance_ready = true;
-                })
-                .id();
             stage.gltf_root = Some(root);
+            stage.gltf = Some(scene.clone());
         }
     }
     let after: Vec<Entity> = world
@@ -170,7 +200,7 @@ pub fn open_requested_scene(world: &mut World) {
         world.entity_mut(entity).insert(SceneEntity);
     }
 
-    let gltf = stage.gltf_root.is_some();
+    let gltf = stage.gltf.clone();
     let (start, fov) = (stage.start, stage.fov);
     *world.resource_mut::<Stage>() = stage;
     place_camera(world, start, fov, 1.0);
@@ -178,7 +208,19 @@ pub fn open_requested_scene(world: &mut World) {
         .query_filtered::<Entity, With<ViewerCamera>>()
         .single(world)
         .expect("the viewer has one camera");
-    if gltf {
+    let sky = gltf
+        .as_ref()
+        .is_some_and(|scene| scene.sun != SunChoice::Off);
+    let exposure = match &gltf {
+        Some(scene) => scene.exposure.unwrap_or(if sky {
+            SUN_EV100
+        } else {
+            Exposure::default().ev100
+        }),
+        None => Exposure::default().ev100,
+    };
+    world.resource_mut::<Stage>().exposure = exposure;
+    if sky {
         // The sky: an atmosphere lights and reflects on Raster through its environment map, and Solari traces
         // it on the traced rungs.
         let medium = world
@@ -188,17 +230,20 @@ pub fn open_requested_scene(world: &mut World) {
         world.entity_mut(camera).insert((
             AtmosphereSettings::default(),
             AtmosphereEnvironmentMapLight::default(),
-            Exposure { ev100: SUN_EV100 },
         ));
     } else {
         world
             .entity_mut(camera)
-            .remove::<(AtmosphereSettings, AtmosphereEnvironmentMapLight)>()
-            .insert(Exposure::default());
+            .remove::<(AtmosphereSettings, AtmosphereEnvironmentMapLight)>();
     }
+    world
+        .entity_mut(camera)
+        .insert(Exposure { ev100: exposure });
 }
 
-/// Puts the camera at `start`, and restarts the free camera there (it keeps its own yaw and pitch).
+/// Puts the camera at `start`, and restarts the free camera there (it keeps its own yaw and pitch). It is a cut:
+/// every temporal history on the camera drops (Solari's world cache would otherwise keep the light of the last
+/// scene when the rung does not change).
 pub fn place_camera(world: &mut World, start: Transform, fov: f32, speed: f32) {
     let Ok(camera) = world
         .query_filtered::<Entity, With<ViewerCamera>>()
@@ -215,6 +260,7 @@ pub fn place_camera(world: &mut World, start: Transform, fov: f32, speed: f32) {
             ..default()
         },
         FreeCameraState::default(),
+        CameraCut,
     ));
 }
 
@@ -262,18 +308,42 @@ pub fn place_gltf_scene(world: &mut World) {
         With<RectLight>,
         With<DirectionalLight>,
     )>>();
-    let has_light = lights
+    let own_lights: Vec<Entity> = lights
         .iter(world)
         .collect::<Vec<_>>()
         .into_iter()
-        .any(|light| descends_from(world, &mut parents, light, root));
-    if !has_light {
+        .filter(|light| descends_from(world, &mut parents, *light, root))
+        .collect();
+    let has_light = !own_lights.is_empty();
+    let has_sun = own_lights
+        .iter()
+        .any(|light| world.get::<DirectionalLight>(*light).is_some());
+    let scene = world
+        .resource::<Stage>()
+        .gltf
+        .clone()
+        .unwrap_or_else(|| GltfScene {
+            files: Vec::new(),
+            exposure: None,
+            camera: None,
+            sun: SunChoice::Auto,
+        });
+    let sun = match scene.sun {
+        SunChoice::Auto if !has_light => Some((default_sun(), default_sun_transform())),
+        SunChoice::Sun {
+            direction,
+            illuminance,
+        } if !has_sun => Some(manifest_sun(direction.into(), illuminance)),
+        _ => None,
+    };
+    let gave_sun = sun.is_some();
+    if let Some((light, transform)) = sun {
         world.spawn((
             SceneEntity,
             DefaultSun,
-            Name::new("default sun"),
-            default_sun(),
-            default_sun_transform(),
+            Name::new("viewer sun"),
+            light,
+            transform,
         ));
     }
 
@@ -287,21 +357,22 @@ pub fn place_gltf_scene(world: &mut World) {
     ));
 
     let (start, speed) = start_from_bounds(min, max);
+    let start = scene.camera.unwrap_or(start);
     let fov = world.resource::<Stage>().fov;
     {
         let mut stage = world.resource_mut::<Stage>();
         stage.bounds = Some((min, max));
         stage.start = start;
         stage.placed = true;
-        stage.default_sun = !has_light;
+        stage.default_sun = gave_sun;
     }
     place_camera(world, start, fov, speed);
     info!(
         "gfx_viewer: glTF scene placed: {count} meshes within {min} .. {max}, {}",
-        if has_light {
-            "with its own lights"
-        } else {
-            "no light of its own: default sun and sky added"
+        match (has_light, gave_sun) {
+            (_, true) => "the viewer added a sun",
+            (true, false) => "with its own lights",
+            (false, false) => "no light at all (its entry says sun: Off)",
         }
     );
 }
