@@ -1,0 +1,37 @@
+#![enable(implicit_some)]
+// The ladder under the Khronos Vulkan validation layer, with synchronization validation on. Report-only: the log
+// gate fails these runs on the first validation message, and that is expected; what matters is the list of
+// distinct messages (see the fix round's P4 report for how it is read). Small frames, because the layer makes
+// every call slow. Run it from the repository root:
+//
+//   eval "$(tools/fetch-sdks.sh dlss nrd validation)"   # validation: the layer, under ~/.local/share/bevy-graficos
+//   cargo build --release --example gfx_testbed --features bevy_solari,area_light_luts,bevy_graphics,nrd,dlss,bevy_baked_gi_bake
+//   cargo build --release -p gfx-check
+//   # the bake the last run loads (see baked.ron)
+//   tools/gfx-headless.sh target/release/examples/gfx_testbed --scene interior --bake-gi target/gfx-check/gi/interior
+//   WGPU_VALIDATION=1 VK_KHRONOS_VALIDATION_VALIDATE_SYNC=1 \
+//     target/release/gfx-check run tools/gfx-check/smoke-validation.ron --out target/gfx-check/validation
+//   grep -h "VALIDATION\|Validation" target/gfx-check/validation/*/*/*/*/console.txt
+//
+// WGPU_VALIDATION=1 makes wgpu ask for the layer and send its messages to the log (release builds do not); the
+// two VK_* variables from fetch-sdks.sh load the layer even where wgpu would not. The integrated Radeon has no ray
+// tracing, so its traced runs resolve to Raster: they still check the ladder's fallback path. DLSS runs on NVIDIA
+// only.
+(
+    adapters: [
+        (name: "NVIDIA", resolutions: ["640x360"]),
+        (name: "AMD", resolutions: ["320x180"]),
+    ],
+    scenes: ["interior"],
+    warmup: 10,
+    frames: 10,
+    seconds: 900,
+    runs: [
+        (name: "raster", args: ["--preset", "raster", "--upscaler", "off"]),
+        // Raster with the ladder's own upscaler: DLSS Super Resolution on an RTX card, TSR elsewhere.
+        (name: "raster-auto", args: ["--preset", "raster"]),
+        (name: "rt-lite-nrd-tsr", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"]),
+        (name: "rt-full-dlss-rr", args: ["--preset", "rt-full", "--denoiser", "dlss-rr"], adapters: ["NVIDIA"]),
+        (name: "raster-baked", args: ["--preset", "raster", "--upscaler", "off", "--baked-gi", "target/gfx-check/gi"]),
+    ],
+)
