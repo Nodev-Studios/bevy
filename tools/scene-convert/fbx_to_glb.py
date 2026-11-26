@@ -10,7 +10,8 @@ _Specular (R occlusion, G roughness, B metalness: glTF's own ORM layout), _Norma
 _Emissive. Each material is rebuilt as one Principled BSDF from those files, found by name next to the FBX:
     base colour + a cut-out (alpha MASK 0.5) when the base colour's alpha has holes
     roughness = Specular.G, metalness = Specular.B (one metallicRoughness texture)
-    normal map with its green channel flipped to glTF's convention (the converter writes a flipped copy)
+    normal map with its green channel flipped to glTF's convention (a flipped copy)
+Every DDS is converted once to a PNG in png-cache/ next to the FBX, so the exporter copies files instead of decoding.
     emission = the _Emissive texture x --emissive-scale (the scale ORCA's own Falcor scene files use)
 Lost: ambient occlusion (Specular.R), the HDR environment maps, anything UE's materials did beyond the textures.
 Without --orca, materials are simplified like a .blend's (common.simplify_material).
@@ -56,11 +57,36 @@ if textures_dir:
         files[name.lower()] = os.path.join(textures_dir, name)
 
 loaded = {}
+png_dir = os.path.join(os.path.dirname(src), "png-cache")  # DDS converted once to PNG, reused by later runs
+
+
+def to_png(path, flip_green=False):
+    """`path` as a PNG file in png_dir (decoded one at a time and freed: decoded float textures of a whole ORCA
+    scene do not fit in memory). With flip_green, a DirectX normal map becomes an OpenGL (glTF) one."""
+    os.makedirs(png_dir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(path))[0] + ("_gl" if flip_green else "")
+    out_path = os.path.join(png_dir, stem + ".png")
+    if not os.path.exists(out_path):
+        src_img = bpy.data.images.load(path)
+        w, h = src_img.size
+        px = pixels(src_img)
+        if flip_green:
+            px[:, 1] = 1.0 - px[:, 1]
+        tmp = bpy.data.images.new(stem, w, h, alpha=True, float_buffer=False, is_data=True)
+        tmp.colorspace_settings.name = "Non-Color"  # pixels are written as they were read
+        tmp.pixels.foreach_set(px.ravel())
+        tmp.filepath_raw = out_path
+        tmp.file_format = "PNG"
+        tmp.save()
+        del px
+        bpy.data.images.remove(tmp)
+        bpy.data.images.remove(src_img)
+    return out_path
 
 
 def load(path, non_color=False):
     if path not in loaded:
-        img = bpy.data.images.load(path, check_existing=True)
+        img = bpy.data.images.load(to_png(path) if path.lower().endswith(".dds") else path, check_existing=True)
         if non_color:
             img.colorspace_settings.name = "Non-Color"
         loaded[path] = img
@@ -73,27 +99,10 @@ def pixels(img):
     return buf.reshape(-1, 4)
 
 
-flipped = {}
-
-
 def opengl_normal(path):
-    """A copy of a DirectX normal map with green flipped, packed into the .blend so the exporter writes it."""
-    if path in flipped:
-        return flipped[path]
-    src_img = load(path, non_color=True)
-    w, h = src_img.size
-    px = pixels(src_img)
-    px[:, 1] = 1.0 - px[:, 1]
-    img = bpy.data.images.new(os.path.splitext(os.path.basename(path))[0] + "_gl", w, h, alpha=False, float_buffer=False, is_data=True)
+    """A DirectX normal map with its green flipped (a PNG in png_dir)."""
+    img = bpy.data.images.load(to_png(path, flip_green=True), check_existing=True)
     img.colorspace_settings.name = "Non-Color"
-    img.pixels.foreach_set(px.ravel())
-    img.file_format = "PNG"
-    img.pack()
-    img.buffers_free()
-    del px
-    flipped[path] = img
-    bpy.data.images.remove(src_img)
-    loaded.pop(path, None)
     return img
 
 
@@ -182,6 +191,14 @@ if a.get("--orca"):
         common.log(kind, f"material {what} [{len(names)}: {', '.join(names[:6])}{' ...' if len(names) > 6 else ''}]")
 else:
     common.simplify_materials()
+# ORCA's second UV set is UE's lightmap UVs: nothing reads it, and it costs export memory.
+extra_uv = 0
+for mesh in {o.data for o in scene.objects if o.type == "MESH"}:
+    while len(mesh.uv_layers) > 1:
+        mesh.uv_layers.remove(mesh.uv_layers[-1])
+        extra_uv += 1
+if extra_uv:
+    common.log("LOST", f"UV sets after the first ({extra_uv}: UE lightmap UVs, unused)")
 common.area_lights_to_spots()
 common.log("LOST", "environment: the HDR sky / reflection maps that come with the FBX (glTF has no environment light)")
 common.export_glb(out)
