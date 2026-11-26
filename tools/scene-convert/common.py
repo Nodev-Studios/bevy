@@ -102,6 +102,24 @@ def realize_particles():
             log("LOST", f"volume: {obj.name}")
 
 
+def remove_volume_only():
+    """Objects whose every material is a volume (fog boxes) would export as opaque boxes: they are removed."""
+    for obj in list(bpy.context.scene.objects):
+        mats = [slot.material for slot in obj.material_slots if slot.material]
+        if obj.type != "MESH" or not mats:
+            continue
+
+        def volume_only(m):
+            if not m.use_nodes:
+                return False
+            outs = [n for n in m.node_tree.nodes if n.type == "OUTPUT_MATERIAL"]
+            return bool(outs) and all(not o.inputs["Surface"].is_linked and o.inputs["Volume"].is_linked for o in outs)
+
+        if all(volume_only(m) for m in mats):
+            log("LOST", f"volume: {obj.name} (a {mats[0].name} volume box, removed: glTF has no volumes)")
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+
 def note_world():
     world = bpy.context.scene.world
     if world is None or not world.use_nodes:
@@ -122,8 +140,13 @@ def camera_pose(obj=None):
     if obj is None:
         return
     world = obj.matrix_world
-    position = world.translation
+    position = world.translation.copy()
     forward = (world.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    clip = obj.data.clip_start if obj.type == "CAMERA" else 0.0
+    if clip > 0.3:
+        # A source camera that looks through a wall with its near clip: start past the clip instead.
+        position += forward * clip
+        log("NOTE", f"camera {obj.name}: near clip {clip:.2f} m, start pose moved forward past it")
     target = position + forward * 3.0
 
     def gl(v):
@@ -135,7 +158,26 @@ def camera_pose(obj=None):
 
 def area_lights_to_spots():
     """glTF has no area light. Each area lamp becomes a spot light at its centre, aimed where it shines, with a
-    180-degree cone and full blend (a hemisphere), power x AREA_TO_SPOT_POWER. Its shape and softness are lost."""
+    180-degree cone and full blend (a hemisphere), power x AREA_TO_SPOT_POWER. Its shape and softness are lost.
+    First, a lamp's node tree's Emission strength (a constant, or the Light Falloff node feeding it) is folded
+    into its power, which is all glTF carries; the falloff curve itself is lost."""
+    for obj in bpy.context.scene.objects:
+        if obj.type != "LIGHT" or not obj.data.use_nodes or obj.data.node_tree is None:
+            continue
+        emission = next((n for n in obj.data.node_tree.nodes if n.type == "EMISSION"), None)
+        if emission is None:
+            continue
+        sock = emission.inputs["Strength"]
+        strength = sock.default_value
+        if sock.is_linked:
+            src = sock.links[0].from_node
+            strength = src.inputs["Strength"].default_value if src.type == "LIGHT_FALLOFF" else strength
+            if src.type == "LIGHT_FALLOFF":
+                log("LOST", f"light falloff: {obj.name} ({sock.links[0].from_socket.name}; exported as inverse-square)")
+        if abs(strength - 1.0) > 1e-6:
+            log("NOTE", f"light node strength folded in: {obj.name} {obj.data.energy:.4g} W x {strength:.4g}")
+            obj.data.energy *= strength
+        obj.data.use_nodes = False
     for obj in list(bpy.context.scene.objects):
         if obj.type != "LIGHT" or obj.data.type != "AREA":
             continue
@@ -629,6 +671,9 @@ def stats():
 def export_glb(path, **extra):
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     stats()
+    final = path
+    # Written under a temporary name and renamed when complete, so a killed run leaves no half file behind.
+    path = os.path.join(os.path.dirname(os.path.abspath(final)), ".partial-" + os.path.basename(final))
     options = dict(
         filepath=path,
         export_format="GLB",
@@ -645,6 +690,8 @@ def export_glb(path, **extra):
     options.update(extra)
     bpy.ops.export_scene.gltf(**options)
     check_glb(path)
+    os.replace(path, final)
+    path = final
     log("WROTE", f"{path} {os.path.getsize(path) / 1e6:.1f} MB")
 
 

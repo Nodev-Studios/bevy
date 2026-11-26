@@ -31,6 +31,7 @@ for cam in cameras:
     common.camera_pose(cam)
     bpy.data.objects.remove(cam, do_unlink=True)
 common.keep_render_visible()
+common.remove_volume_only()
 common.simplify_materials()
 common.area_lights_to_spots()
 common.note_world()

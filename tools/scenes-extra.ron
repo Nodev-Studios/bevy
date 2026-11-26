@@ -1,0 +1,49 @@
+// More downloaded scenes for gfx_viewer, in the format of tools/scenes.ron (its header lists every field). The lead
+// merges these entries into tools/scenes.ron. Files come from tools/fetch-scenes-extra.sh <id> (downloads, prints
+// the licence, converts to .glb with Blender headless); nothing here is in this repository.
+//
+// camera: the source file's own camera (Blender / Mitsuba), in the glTF's frame; for the ORCA scenes one of their
+// cameras. exposure: EV100, set where the default was clearly wrong on the NVIDIA self-test sheets ("to tune": the
+// owner's eye decides). non_commercial: true for NC licences and "personal / educational / research use" terms.
+(
+    scenes: [
+        (
+            id: "classroom",
+            name: "Classroom (Blender demo)",
+            path: "classroom/Classroom.glb",
+            licence: "CC0: Classroom by Christophe Seux (Blender demo files)",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes-extra.sh classroom",
+            camera: (position: (2.576, 1.094, 4.466), look_at: (1.820, 1.128, 1.563)),
+        ),
+        (
+            id: "barbershop",
+            name: "Barbershop (Blender demo)",
+            path: "barbershop/Barbershop.glb",
+            licence: "CC-BY 4.0: Barbershop Interior, credit Blender Animation Studio (Agent 327)",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes-extra.sh barbershop",
+            camera: (position: (2.656, 1.489, -8.902), look_at: (1.807, 1.334, -6.029)),
+        ),
+        (
+            id: "bathroom",
+            name: "Salle de bain (Bitterli)",
+            path: "bathroom/Bathroom.glb",
+            licence: "CC-BY 3.0: 'Salle de bain' by nacimus, Mitsuba version by Benedikt Bitterli",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes-extra.sh bathroom",
+            camera: (position: (0.444, 1.693, 4.991), look_at: (0.101, 1.354, 2.030)),
+            sun: Off,
+        ),
+        (
+            id: "living-room",
+            name: "Modern Living Room (Bitterli)",
+            path: "living-room/LivingRoom.glb",
+            licence: "CC-BY 3.0: 'The Modern Living Room' by Wig42, Mitsuba version by Benedikt Bitterli",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes-extra.sh living-room",
+            camera: (position: (0.277, 1.018, -5.193), look_at: (-1.036, 0.932, -2.497)),
+            sun: Off,
+        ),
+    ],
+)

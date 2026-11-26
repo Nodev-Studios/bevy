@@ -107,7 +107,7 @@ run_blender() {
     "$blender" --background --factory-startup --python-exit-code 1 \
     --python "$convert_dir/$script" -- "$@" >"$dir/$id/${log_name:-convert.log}" 2>&1 \
     || { echo "  conversion FAILED, see $dir/$id/${log_name:-convert.log}" >&2; tail -n 20 "$dir/$id/${log_name:-convert.log}" >&2; return 1; }
-  grep -E '^(LOST|NOTE|WROTE)' "$dir/$id/${log_name:-convert.log}" | sort | uniq -c | sort -rn | head -n 30 | sed -e 's/^/  /'
+  grep -E '^(LOST|NOTE|WROTE)' "$dir/$id/${log_name:-convert.log}" | sort | uniq -c | sort -rn | head -n 30 | sed -e 's/^/  /' || true
   echo "  converted in $((SECONDS - start)) s"
 }
 
@@ -196,7 +196,10 @@ scene_intel-sponza() {
     fetch "https://cdrdv2.intel.com/v1/dl/getContent/$id" "$d/download/$name.zip"
     unpack "$d/download/$name.zip" "$d/source" '(?i)\.(max|fbx|usd|usda|usdc|usdz)$|/Render_[^/]*\.(png|jpg)$'
   done
-  licence $(find "$d/source" -iname '*licen*.txt' | sort)
+  licence "$d/source/main_sponza/credits_license.txt"
+  # Its sun and lamps are at intensity 0 in the glTF: a lit copy beside it (the original is left as it is).
+  python3 -I "$convert_dir/gltf_light_patch.py" --input "$d/source/main_sponza/NewSponza_Main_glTF_003.gltf" \
+    --output "$d/source/main_sponza/NewSponza_Main_day.gltf" --sun-lux 20000 --drop-zero-lights | sed -e 's/^/  /'
   find "$d/source" -name '*.gltf' -printf '  %p\n'
 }
 
