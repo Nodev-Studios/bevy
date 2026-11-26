@@ -1,0 +1,27 @@
+# Regression gates for Raster's light table on the integrated Radeon (RADV, Ryzen 5 9600X, 2 CUs) at 1920x1080,
+# checked against a run of budget.ron:
+#
+#   target/release/gfx-check run tools/gfx-check/budget.ron
+#   target/release/gfx-check budget --table tools/gfx-check/budgets-radv.toml target/gfx-check/budget
+#
+# Not an fps target: each limit is this GPU's own measured baseline (2026-11-25, Mesa 26.3.1, the median of three
+# repeats' median frames, which spread 0.05 ms) times 1.15 (to tune: room for a driver update, small enough to
+# catch a pass that regresses by a fifth). `auto` is what `Auto` runs here: the light table at Balanced with TSR.
+# The full table (`raster-taa`, 73.3 / 62.5 ms) is recorded. When a change is meant to move these, measure again
+# and write the new baseline with the reason in the commit.
+
+adapter = "RADV RAPHAEL_MENDOCINO"
+
+# Baseline 24.79 ms.
+[[gate]]
+run = "auto"
+resolution = "1920x1080"
+scene = "interior"
+max_frame_ms = 28.5
+
+# Baseline 27.53 ms.
+[[gate]]
+run = "auto"
+resolution = "1920x1080"
+scene = "many-lights"
+max_frame_ms = 31.7

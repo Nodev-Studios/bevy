@@ -40,6 +40,10 @@ struct Gate {
     run: String,
     /// The window size, `WxH`.
     resolution: String,
+    /// The scene it applies to; absent means every scene. A regression gate against one adapter's own baseline
+    /// names its scene, since each scene has its own baseline.
+    #[serde(default)]
+    scene: Option<String>,
     /// Largest median frame time allowed, in milliseconds: the median over the repeats of each run's median.
     max_frame_ms: f64,
 }
@@ -190,7 +194,12 @@ pub fn table(results: &Path, table: &Path) -> Result<bool, String> {
         let gate = budgets
             .gate
             .iter()
-            .find(|gate| on_gated && gate.run == run && gate.resolution == resolution);
+            .find(|gate| {
+                on_gated
+                    && gate.run == run
+                    && gate.resolution == resolution
+                    && gate.scene.as_ref().is_none_or(|only| *only == scene)
+            });
         let failed_runs = members
             .iter()
             .filter(|cell| !cell.failures.is_empty())
@@ -231,6 +240,7 @@ pub fn table(results: &Path, table: &Path) -> Result<bool, String> {
         let present = cells.iter().any(|cell| {
             config(cell) == gate.run
                 && cell.resolution == gate.resolution
+                && gate.scene.as_ref().is_none_or(|only| *only == cell.scene)
                 && cell.adapter_reported.contains(&budgets.adapter)
         });
         if !present
