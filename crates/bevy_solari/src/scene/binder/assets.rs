@@ -224,8 +224,7 @@ impl AssetState {
             // Rays test glass hit by hit to let light through it
             AlphaMode::Opaque => !is_glass,
             AlphaMode::Mask(_) | AlphaMode::AlphaToCoverage => false,
-            // TODO: Solari doesn't support transparency yet, so these are traced as opaque for now
-            #[expect(clippy::match_same_arms, reason = "Transparency not yet supported")]
+            // TODO: Solari doesn't support blending yet, so these are traced as opaque for now
             AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
                 true
             }

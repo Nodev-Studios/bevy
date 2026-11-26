@@ -35,3 +35,17 @@ scene = "many-lights"
 file = "raster-many-lights.png"
 tolerance = 0.11
 written_from = [0.05, 0.054, 0.049]
+
+[[image]]
+run = "auto"
+scene = "glass"
+file = "auto-glass.png"
+tolerance = 0.35
+written_from = [0.172, 0.072, 0.146]
+
+[[image]]
+run = "raster"
+scene = "glass"
+file = "raster-glass.png"
+tolerance = 0.12
+written_from = [0.059, 0.024, 0.027]
