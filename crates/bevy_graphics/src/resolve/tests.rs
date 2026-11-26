@@ -1002,11 +1002,7 @@ fn rows() -> Vec<Row> {
             auto(),
             GraphicsCapabilities {
                 nrd: true,
-                ..card(
-                    "Intel(R) Arc(tm) A580 Graphics (DG2)",
-                    GpuVendor::Intel,
-                    7.9,
-                )
+                ..card("Intel(R) Arc(tm) A580 Graphics (DG2)", GpuVendor::Intel, 7.9)
             },
             P1080,
             (Raster, D::None, U::Taa, NativeAa),
@@ -1025,11 +1021,7 @@ fn rows() -> Vec<Row> {
             auto(),
             GraphicsCapabilities {
                 nrd: true,
-                ..card(
-                    "Intel(R) Arc(tm) A770 Graphics (DG2)",
-                    GpuVendor::Intel,
-                    15.9,
-                )
+                ..card("Intel(R) Arc(tm) A770 Graphics (DG2)", GpuVendor::Intel, 15.9)
             },
             P1080,
             (RtLite, D::Nrd, U::Tsr, Balanced),
