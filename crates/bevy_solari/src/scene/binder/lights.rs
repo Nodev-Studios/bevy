@@ -21,6 +21,18 @@ const LIGHT_SOURCE_KIND_DIRECTIONAL: u32 = 1;
 const LIGHT_SOURCE_KIND_POINT: u32 = 2;
 const LIGHT_SOURCE_KIND_RECT: u32 = 3;
 
+/// Bits of an emissive mesh light's `kind` holding its triangle count, above the kind bits.
+///
+/// A light sample stores its triangle in 16 bits (`LightSample::light_id`), so one light source
+/// covers at most `u16::MAX` triangles. Bigger meshes become several light sources ("chunks"), each
+/// covering the next `EMISSIVE_MESH_CHUNK_TRIANGLES` triangles; the chunk index fills the bits above
+/// the count. Keep in step with `scene/bindings.wesl`.
+const EMISSIVE_MESH_COUNT_BITS: u32 = 16;
+pub const EMISSIVE_MESH_CHUNK_TRIANGLES: u32 = u16::MAX as u32;
+const EMISSIVE_MESH_CHUNK_SHIFT: u32 = LIGHT_SOURCE_KIND_BITS + EMISSIVE_MESH_COUNT_BITS;
+/// 13 bits of chunk index: 8191 chunks, about 537 million triangles per mesh.
+pub const MAX_EMISSIVE_MESH_CHUNKS: u32 = 1 << (32 - EMISSIVE_MESH_CHUNK_SHIFT);
+
 #[derive(Clone, Copy, Default, PartialEq, Pod, Zeroable)]
 #[repr(C)]
 pub struct GpuLightSource {
@@ -31,7 +43,8 @@ pub struct GpuLightSource {
 /// Stable identity for one light in the light array.
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub enum LightSourceId {
-    EmissiveMesh(Entity),
+    /// One chunk of an emissive mesh's triangles (see [`EMISSIVE_MESH_CHUNK_TRIANGLES`]).
+    EmissiveMesh(Entity, u16),
     DirectionalLight(Entity),
     PointLight(Entity),
     SpotLight(Entity),
@@ -51,7 +64,7 @@ pub enum RaytracingLightKind {
 impl LightSourceId {
     fn kind_and_entity(self) -> (RaytracingLightKind, Entity) {
         match self {
-            Self::EmissiveMesh(entity) => (RaytracingLightKind::EmissiveMesh, entity),
+            Self::EmissiveMesh(entity, _) => (RaytracingLightKind::EmissiveMesh, entity),
             Self::DirectionalLight(entity) => (RaytracingLightKind::Directional, entity),
             Self::PointLight(entity) => (RaytracingLightKind::Point, entity),
             Self::SpotLight(entity) => (RaytracingLightKind::Spot, entity),
@@ -121,13 +134,16 @@ impl LightIndex {
 }
 
 impl GpuLightSource {
-    pub fn new_emissive_mesh_light(instance_id: u32, triangle_count: u32) -> GpuLightSource {
-        if triangle_count > u16::MAX as u32 {
-            panic!("Too many triangles ({triangle_count}) in an emissive mesh, maximum is 65535.");
-        }
+    /// The light source for chunk `chunk` of an emissive mesh with `mesh_triangle_count` triangles.
+    fn new_emissive_mesh_light(instance_id: u32, chunk: u32, mesh_triangle_count: u32) -> Self {
+        debug_assert!(chunk < MAX_EMISSIVE_MESH_CHUNKS);
+        let first = chunk * EMISSIVE_MESH_CHUNK_TRIANGLES;
+        let triangle_count = (mesh_triangle_count - first).min(EMISSIVE_MESH_CHUNK_TRIANGLES);
 
         Self {
-            kind: (triangle_count << LIGHT_SOURCE_KIND_BITS) | LIGHT_SOURCE_KIND_EMISSIVE_MESH,
+            kind: (chunk << EMISSIVE_MESH_CHUNK_SHIFT)
+                | (triangle_count << LIGHT_SOURCE_KIND_BITS)
+                | LIGHT_SOURCE_KIND_EMISSIVE_MESH,
             id: instance_id,
         }
     }
@@ -264,6 +280,8 @@ pub struct LightState {
     /// Light ids as of the last frame whose translation table the lighting shader actually read.
     previous_index: HashMap<LightSourceId, u32>,
     nonidentity_translations: Vec<u32>,
+    /// How many light sources (chunks) each emissive mesh holds.
+    emissive_mesh_chunks: HashMap<Entity, u16>,
     directional_light_slots: SlotAllocator<Entity>,
     /// Spot lights share the point light buffer, and so cannot be keyed by just Entity.
     point_light_slots: SlotAllocator<LightSourceId>,
@@ -298,6 +316,7 @@ impl LightState {
             index: LightIndex::default(),
             previous_index: HashMap::default(),
             nonidentity_translations: Vec::new(),
+            emissive_mesh_chunks: HashMap::default(),
             directional_light_slots: SlotAllocator::new(),
             point_light_slots: SlotAllocator::new(),
             rect_light_slots: SlotAllocator::new(),
@@ -404,6 +423,43 @@ impl LightState {
         }
     }
 
+    /// Makes instance `slot`'s mesh of `triangle_count` triangles a light, one light source per
+    /// chunk of at most [`EMISSIVE_MESH_CHUNK_TRIANGLES`] triangles.
+    pub fn set_emissive_mesh(&mut self, entity: Entity, slot: u32, triangle_count: u32) {
+        let mut chunks = triangle_count.div_ceil(EMISSIVE_MESH_CHUNK_TRIANGLES);
+        if chunks > MAX_EMISSIVE_MESH_CHUNKS {
+            tracing::warn!(
+                "An emissive mesh has {triangle_count} triangles; only the first {} emit light.",
+                MAX_EMISSIVE_MESH_CHUNKS * EMISSIVE_MESH_CHUNK_TRIANGLES
+            );
+            chunks = MAX_EMISSIVE_MESH_CHUNKS;
+        }
+        let chunks = chunks as u16;
+
+        // Removals first: the mesh may have shrunk since its last update
+        let previous = self.emissive_mesh_chunks.insert(entity, chunks).unwrap_or(0);
+        for chunk in (chunks..previous).rev() {
+            self.remove_light(LightSourceId::EmissiveMesh(entity, chunk));
+        }
+        for chunk in 0..chunks {
+            self.add_light(
+                LightSourceId::EmissiveMesh(entity, chunk),
+                GpuLightSource::new_emissive_mesh_light(slot, chunk as u32, triangle_count),
+            );
+        }
+        if chunks == 0 {
+            self.emissive_mesh_chunks.remove(&entity);
+        }
+    }
+
+    /// Removes every light source of an emissive mesh; does nothing if it is not a light.
+    pub fn remove_emissive_mesh(&mut self, entity: Entity) {
+        let chunks = self.emissive_mesh_chunks.remove(&entity).unwrap_or(0);
+        for chunk in (0..chunks).rev() {
+            self.remove_light(LightSourceId::EmissiveMesh(entity, chunk));
+        }
+    }
+
     fn set_point_or_spot_light(&mut self, id: LightSourceId, light: GpuPointLight) {
         let slot = self.point_light_slots.get_or_allocate(id);
         self.point_lights.grow_and_set(slot, light);
@@ -416,13 +472,13 @@ impl LightState {
         }
     }
 
-    pub fn add_light(&mut self, id: LightSourceId, source: GpuLightSource) {
+    fn add_light(&mut self, id: LightSourceId, source: GpuLightSource) {
         let index = self.index.insert(id);
         self.sources.grow_and_set(index, source);
     }
 
     /// Removes a light, moving the last one down into the hole so the array stays gap-free.
-    pub fn remove_light(&mut self, id: LightSourceId) {
+    fn remove_light(&mut self, id: LightSourceId) {
         let Some((index, last)) = self.index.remove(id) else {
             return;
         };
@@ -493,16 +549,81 @@ impl LightState {
 
 #[cfg(test)]
 mod tests {
-    use super::{LightIndex, LightSourceId};
+    use super::{
+        GpuLightSource, LightIndex, LightSourceId, LightState, EMISSIVE_MESH_CHUNK_SHIFT,
+        EMISSIVE_MESH_CHUNK_TRIANGLES, LIGHT_SOURCE_KIND_BITS, LIGHT_SOURCE_KIND_EMISSIVE_MESH,
+    };
     use bevy_ecs::entity::Entity;
 
     const ENTITY: Entity = Entity::PLACEHOLDER;
+
+    /// What `scene/bindings.wesl` decodes: (kind, triangle count, first triangle).
+    fn decode(source: GpuLightSource) -> (u32, u32, u32) {
+        let kind = source.kind & ((1 << LIGHT_SOURCE_KIND_BITS) - 1);
+        let count = (source.kind >> LIGHT_SOURCE_KIND_BITS) & 0xFFFF;
+        let first = (source.kind >> EMISSIVE_MESH_CHUNK_SHIFT) * EMISSIVE_MESH_CHUNK_TRIANGLES;
+        (kind, count, first)
+    }
+
+    fn emissive_chunks(lights: &LightState) -> Vec<(u32, u32, u32)> {
+        let mut chunks: Vec<_> = (0..lights.index.len() as u32)
+            .map(|index| decode(lights.sources.get(index)))
+            .collect();
+        chunks.sort_by_key(|(_, _, first)| *first);
+        chunks
+    }
+
+    #[test]
+    fn a_200k_triangle_emissive_mesh_becomes_four_chunks_covering_every_triangle() {
+        let mut lights = LightState::new();
+        lights.set_emissive_mesh(ENTITY, 7, 200_000);
+
+        let chunks = emissive_chunks(&lights);
+        assert_eq!(chunks.len(), 4);
+        let mut next = 0;
+        for (index, &(kind, count, first)) in chunks.iter().enumerate() {
+            assert_eq!(kind, LIGHT_SOURCE_KIND_EMISSIVE_MESH);
+            assert_eq!(first, next, "chunk {index} starts where the last ended");
+            assert!(count >= 1 && count <= u16::MAX as u32);
+            next += count;
+        }
+        assert_eq!(next, 200_000);
+        for index in 0..4 {
+            assert_eq!(lights.sources.get(index).id, 7);
+        }
+    }
+
+    #[test]
+    fn a_small_emissive_mesh_stays_one_light_with_the_old_encoding() {
+        let source = GpuLightSource::new_emissive_mesh_light(3, 0, 1000);
+        assert_eq!(source.kind, 1000 << LIGHT_SOURCE_KIND_BITS);
+        let source = GpuLightSource::new_emissive_mesh_light(3, 0, 65_535);
+        assert_eq!(decode(source), (LIGHT_SOURCE_KIND_EMISSIVE_MESH, 65_535, 0));
+    }
+
+    #[test]
+    fn shrinking_and_removing_an_emissive_mesh_drops_its_chunks() {
+        let mut lights = LightState::new();
+        lights.set_emissive_mesh(ENTITY, 0, 200_000);
+        lights.set_emissive_mesh(ENTITY, 0, 70_000);
+        assert_eq!(
+            emissive_chunks(&lights),
+            vec![
+                (LIGHT_SOURCE_KIND_EMISSIVE_MESH, 65_535, 0),
+                (LIGHT_SOURCE_KIND_EMISSIVE_MESH, 70_000 - 65_535, 65_535),
+            ]
+        );
+        lights.remove_emissive_mesh(ENTITY);
+        assert!(lights.index.is_empty());
+        lights.remove_emissive_mesh(ENTITY);
+        assert!(lights.index.is_empty());
+    }
 
     #[test]
     fn light_index_keeps_sources_on_the_same_entity_independent() {
         let mut lights = LightIndex::default();
 
-        assert_eq!(lights.insert(LightSourceId::EmissiveMesh(ENTITY)), 0);
+        assert_eq!(lights.insert(LightSourceId::EmissiveMesh(ENTITY, 0)), 0);
         assert_eq!(lights.insert(LightSourceId::DirectionalLight(ENTITY)), 1);
         assert_eq!(lights.insert(LightSourceId::PointLight(ENTITY)), 2);
         assert_eq!(lights.insert(LightSourceId::SpotLight(ENTITY)), 3);
@@ -522,7 +643,7 @@ mod tests {
 
     #[test]
     fn light_index_remove_moves_the_last_source_into_the_hole() {
-        let emissive = LightSourceId::EmissiveMesh(ENTITY);
+        let emissive = LightSourceId::EmissiveMesh(ENTITY, 0);
         let point = LightSourceId::PointLight(ENTITY);
         let rect = LightSourceId::RectLight(ENTITY);
         let mut lights = LightIndex::default();
@@ -561,7 +682,7 @@ mod tests {
 
     #[test]
     fn light_index_remove_of_every_source_leaves_it_empty() {
-        let emissive = LightSourceId::EmissiveMesh(ENTITY);
+        let emissive = LightSourceId::EmissiveMesh(ENTITY, 0);
         let directional = LightSourceId::DirectionalLight(ENTITY);
         let mut lights = LightIndex::default();
         lights.insert(emissive);

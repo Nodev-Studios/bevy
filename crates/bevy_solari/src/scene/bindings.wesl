@@ -83,8 +83,25 @@ fn light_source_kind(light_source: LightSource) -> u32 {
     return light_source.kind & ((1u << LIGHT_SOURCE_KIND_BITS) - 1u);
 }
 
+// An emissive mesh light covers at most EMISSIVE_MESH_CHUNK_TRIANGLES triangles (a light sample keeps its triangle in
+// 16 bits); bigger meshes are split into several light sources ("chunks"). Its kind holds the chunk's triangle count in
+// the 16 bits above the kind and the chunk index above that. Keep in step with `binder/lights.rs`.
+const EMISSIVE_MESH_CHUNK_TRIANGLES = 65535u;
+
+/// The number of triangles this emissive mesh light source covers.
 fn emissive_mesh_triangle_count(light_source: LightSource) -> u32 {
-    return light_source.kind >> LIGHT_SOURCE_KIND_BITS;
+    return (light_source.kind >> LIGHT_SOURCE_KIND_BITS) & 0xFFFFu;
+}
+
+/// The mesh triangle the light source's triangle 0 is.
+fn emissive_mesh_first_triangle(light_source: LightSource) -> u32 {
+    return (light_source.kind >> (LIGHT_SOURCE_KIND_BITS + 16u)) * EMISSIVE_MESH_CHUNK_TRIANGLES;
+}
+
+/// How many triangles the emissive light source holding `triangle_id` covers, for a mesh of `mesh_triangle_count`.
+fn emissive_chunk_triangle_count(mesh_triangle_count: u32, triangle_id: u32) -> u32 {
+    let first = (triangle_id / EMISSIVE_MESH_CHUNK_TRIANGLES) * EMISSIVE_MESH_CHUNK_TRIANGLES;
+    return min(mesh_triangle_count - first, EMISSIVE_MESH_CHUNK_TRIANGLES);
 }
 
 struct DirectionalLight {
@@ -202,6 +219,7 @@ struct ResolvedRayHitFull {
     world_tangent: vec4<f32>,
     uv: vec2<f32>,
     triangle_area: f32,
+    /// Triangles in the light source (emissive chunk) holding this triangle, for light-sampling pdfs.
     triangle_count: u32,
     material: ResolvedMaterial,
     double_sided: bool,
@@ -350,7 +368,7 @@ fn resolve_triangle_data_full(instance_id: u32, triangle_id: u32, barycentrics: 
         world_tangent,
         uv,
         triangle_area,
-        instance_geometry_ids.triangle_count,
+        emissive_chunk_triangle_count(instance_geometry_ids.triangle_count, triangle_id),
         resolved_material,
         (material.flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0u,
         instance_id,

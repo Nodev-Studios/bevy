@@ -1,7 +1,7 @@
 use super::{
     allocator::{IndexAllocator, RetainedBindingArray},
     assets::AssetState,
-    lights::{GpuLightSource, LightSourceId, LightState},
+    lights::LightState,
     BlasKey, BlasManager, BlasOpacity, RaytracingMesh3d, RaytracingSceneBindings,
 };
 use bevy_asset::AssetId;
@@ -420,12 +420,9 @@ impl InstanceState {
             .emissive_materials
             .contains(&instance.material);
         if is_emissive {
-            lights.add_light(
-                LightSourceId::EmissiveMesh(entity),
-                GpuLightSource::new_emissive_mesh_light(slot, triangle_count),
-            );
+            lights.set_emissive_mesh(entity, slot, triangle_count);
         } else {
-            lights.remove_light(LightSourceId::EmissiveMesh(entity));
+            lights.remove_emissive_mesh(entity);
         }
         true
     }
@@ -469,7 +466,7 @@ impl InstanceState {
         instance: &mut Instance,
     ) {
         self.set_blas_ref(instance.slot, GpuBlasRef::NONE);
-        lights.remove_light(LightSourceId::EmissiveMesh(entity));
+        lights.remove_emissive_mesh(entity);
         self.release_buffers(instance.buffers.take());
     }
 
