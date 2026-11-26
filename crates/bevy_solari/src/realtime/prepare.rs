@@ -14,6 +14,7 @@ use bevy_render::{
     renderer::{RenderDevice, RenderQueue},
 };
 use bytemuck::{Pod, Zeroable};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Size of the `LightSample` shader struct in bytes.
 const LIGHT_SAMPLE_STRUCT_SIZE: u64 = 8;
@@ -105,6 +106,9 @@ pub struct SolariLightingResources {
     pub world_cache: Buffer,
     pub world_cache_active_cells_dispatch: Buffer,
     pub view_size: UVec2,
+    /// A [`SolariLighting::reset`] the lighting node has not recorded yet. While set, the constants say reset;
+    /// the node clears the world cache and then this flag.
+    pub reset_pending: AtomicBool,
 }
 
 pub struct SolariReservoirBuffers {
@@ -137,10 +141,19 @@ pub fn prepare_solari_lighting_resources(
         let reusable = solari_lighting_resources.filter(|r| {
             r.view_size == view_size && r.reservoirs.is_some() == solari_lighting.restir
         });
-        let uniforms =
+        let mut uniforms =
             SolariLightingUniforms::new(solari_lighting, frame_count.0, reusable.is_none());
 
         if let Some(solari_lighting_resources) = reusable {
+            // A reset holds until the lighting node has recorded it (it skips frames while its pipelines compile).
+            if solari_lighting.reset {
+                solari_lighting_resources
+                    .reset_pending
+                    .store(true, Ordering::Relaxed);
+            }
+            uniforms.reset |= solari_lighting_resources
+                .reset_pending
+                .load(Ordering::Relaxed) as u32;
             // The constants uniform can change every frame, so always upload it.
             render_queue.write_buffer(
                 &solari_lighting_resources.constants,
@@ -190,7 +203,8 @@ pub fn prepare_solari_lighting_resources(
         let world_cache = render_device.create_buffer(&BufferDescriptor {
             label: Some("solari_lighting_world_cache"),
             size: WORLD_CACHE_BUFFER_SIZE,
-            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+            // COPY_DST: a reset clears it.
+            usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
@@ -209,6 +223,8 @@ pub fn prepare_solari_lighting_resources(
             world_cache,
             world_cache_active_cells_dispatch,
             view_size,
+            // New buffers start empty and the uniforms above already reset.
+            reset_pending: AtomicBool::new(false),
         });
     }
 }

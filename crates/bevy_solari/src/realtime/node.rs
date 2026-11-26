@@ -371,6 +371,15 @@ pub fn solari_lighting(
 
     let command_encoder = ctx.command_encoder();
 
+    // A reset (a camera cut, a new scene) drops the world cache too: its cells are keyed by world position, so
+    // the last scene's light would otherwise answer queries in the next one until each cell is resampled.
+    if s
+        .reset_pending
+        .swap(false, core::sync::atomic::Ordering::Relaxed)
+    {
+        command_encoder.clear_buffer(&s.world_cache, 0, None);
+    }
+
     // Clear the view target if we're the first node to write to it
     if matches!(view_target_attachment.ops.load, LoadOp::Clear(_)) {
         command_encoder.begin_render_pass(&RenderPassDescriptor {
