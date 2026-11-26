@@ -23,8 +23,8 @@
         (name: "AMD", resolutions: ["320x180"]),
     ],
     scenes: ["interior"],
-    warmup: 10,
-    frames: 10,
+    warmup: 60,
+    frames: 30,
     seconds: 900,
     runs: [
         (name: "raster", args: ["--preset", "raster", "--upscaler", "off"]),
