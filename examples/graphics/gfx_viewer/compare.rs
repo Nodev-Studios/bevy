@@ -113,8 +113,9 @@ impl Split {
 
 fn same_view(a: &GlobalTransform, b: &GlobalTransform) -> bool {
     a.translation().distance(b.translation()) < 1e-4
-        // Not `angle_between`: for equal rotations its f32 acos returns about 1e-3.
-        && a.rotation().dot(b.rotation()).abs() > 1.0 - 1e-7
+        // Not `angle_between`: for equal rotations its f32 acos returns about 1e-3. The dot product of equal
+        // rotations reads 1 - 1.2e-7 at worst; 1e-6 is about 0.16 degrees.
+        && a.rotation().dot(b.rotation()).abs() > 1.0 - 1e-6
 }
 
 /// Drives the left side's capture.
