@@ -14,17 +14,28 @@
 
 mod ffi;
 
-use std::{borrow::Cow, collections::HashMap, ffi::CStr, fmt, num::NonZero, ptr::NonNull};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    ffi::CStr,
+    fmt,
+    future::Future,
+    num::NonZero,
+    pin::pin,
+    ptr::NonNull,
+    sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
+};
 use wgpu::{
     BindGroup, BindGroupDescriptor, BindGroupEntry, BindGroupLayout, BindGroupLayoutDescriptor,
     BindGroupLayoutEntry, BindingResource, BindingType, Buffer, BufferBinding, BufferBindingType,
     BufferDescriptor, BufferUsages, CommandEncoder, ComputePassDescriptor,
-    ComputePassTimestampWrites, ComputePipeline, ComputePipelineDescriptor, Device, Extent3d,
-    Features, FilterMode, MapMode, PassthroughShaderEntryPoint, PipelineLayoutDescriptor, PollType,
-    QuerySet, QuerySetDescriptor, QueryType, Queue, Sampler, SamplerBindingType, SamplerDescriptor,
-    ShaderModule, ShaderModuleDescriptorPassthrough, ShaderStages, StorageTextureAccess,
-    TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
-    TextureViewDimension,
+    ComputePassTimestampWrites, ComputePipeline, ComputePipelineDescriptor, Device, ErrorFilter,
+    Extent3d, Features, FilterMode, MapMode, PassthroughShaderEntryPoint, PipelineLayoutDescriptor,
+    PollType, QuerySet, QuerySetDescriptor, QueryType, Queue, Sampler, SamplerBindingType,
+    SamplerDescriptor, ShaderModule, ShaderModuleDescriptorPassthrough, ShaderStages,
+    StorageTextureAccess, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    TextureView, TextureViewDimension,
 };
 
 /// Bytes of the uniform block shared by the pack and unpack passes.
@@ -269,6 +280,9 @@ pub enum NrdError {
     },
     /// A dispatch of NRD's uses a resource this crate does not provide.
     UnsupportedResource(String),
+    /// wgpu or the driver refused to create a shader module, a pipeline or a texture (a wgpu validation,
+    /// internal or out-of-memory error, caught in an error scope).
+    Device(String),
 }
 
 impl fmt::Display for NrdError {
@@ -289,6 +303,7 @@ impl fmt::Display for NrdError {
                 "a texture is {}x{}, the denoiser was created for {}x{}",
                 found[0], found[1], expected[0], expected[1]
             ),
+            Self::Device(error) => write!(f, "the device refused NRD's {error}"),
             Self::UnsupportedResource(dispatch) => {
                 write!(
                     f,
@@ -347,13 +362,41 @@ struct Previous {
     jitter: [f32; 2],
 }
 
-/// An NRD denoiser for one resolution. A different resolution needs a new `Denoiser`.
-pub struct Denoiser {
-    instance: NonNull<ffi::NrdwInstance>,
-    size: [u32; 2],
-    settings: ReblurSettings,
-    previous: Option<Previous>,
+/// The formats of the textures a frame's [`DenoiserInputs`] bind. With the precision they fix every pipeline a frame
+/// uses, so [`DenoiserPipelines::warm_up`] can create those pipelines before the first frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InputFormats {
+    /// The format of [`DenoiserInputs::diffuse`].
+    pub diffuse: TextureFormat,
+    /// The format of [`DenoiserInputs::specular`].
+    pub specular: TextureFormat,
+    /// The format of [`DenoiserInputs::normal_roughness`].
+    pub normal_roughness: TextureFormat,
+    /// The format of [`DenoiserInputs::view_depth`].
+    pub view_depth: TextureFormat,
+    /// The format of [`DenoiserInputs::motion_vectors`].
+    pub motion_vectors: TextureFormat,
+    /// The format of [`DenoiserInputs::history_confidence`], `None` when the frames give none.
+    pub history_confidence: Option<TextureFormat>,
+}
 
+impl InputFormats {
+    /// The formats of `inputs`' textures.
+    pub fn of(inputs: &DenoiserInputs) -> Self {
+        let format = |view: &TextureView| view.texture().format();
+        Self {
+            diffuse: format(inputs.diffuse),
+            specular: format(inputs.specular),
+            normal_roughness: format(inputs.normal_roughness),
+            view_depth: format(inputs.view_depth),
+            motion_vectors: format(inputs.motion_vectors),
+            history_confidence: inputs.history_confidence.map(format),
+        }
+    }
+}
+
+/// What NRD's library says about its shaders' bindings. The same for every instance of one library.
+struct LibraryLayout {
     entry_point: String,
     resources_set: u32,
     constants_set: u32,
@@ -361,21 +404,471 @@ pub struct Denoiser {
     first_storage_binding: u32,
     first_sampler_binding: u32,
     constants_binding: u32,
+    constants_size: u32,
+    permanent_pool_size: u32,
+    transient_pool_size: u32,
+}
 
+/// The part of a denoiser that does not depend on its size: NRD's shader modules, the pack and unpack passes, the
+/// bind group layouts, the samplers and the compute pipelines. Create it once per device and share it (it is a
+/// cheap [`Clone`]) between every [`Denoiser`] of that device, so that a new denoiser, or one that changes size
+/// ([`Denoiser::resize`]), compiles nothing.
+///
+/// Every module and pipeline is created inside wgpu error scopes: a driver or wgpu refusing one comes back as
+/// [`NrdError::Device`] instead of reaching the device's uncaptured-error handler.
+#[derive(Clone)]
+pub struct DenoiserPipelines(Arc<SharedPipelines>);
+
+struct SharedPipelines {
+    kind: DenoiserKind,
+    layout: LibraryLayout,
+    samplers: Vec<Sampler>,
+    constants_layout: BindGroupLayout,
     nrd_pipelines: Vec<NrdPipeline>,
     pack_module: ShaderModule,
     unpack_module: ShaderModule,
     /// One pipeline per shader **and** per set of bound texture formats: wgpu fixes the formats in the layout.
-    pipelines: HashMap<(PipelineId, Vec<TextureFormat>), CachedPipeline>,
+    pipelines: Mutex<HashMap<(PipelineId, Vec<TextureFormat>), CachedPipeline>>,
+}
 
-    constants_layout: BindGroupLayout,
-    samplers: Vec<Sampler>,
-    constants_size: u32,
-    constants_stride: u32,
-    constants_capacity: u32,
-    constants: Option<(Buffer, BindGroup)>,
-    params: Buffer,
+/// The environment variable that makes [`DenoiserPipelines::new`] provoke a wgpu validation error inside its error
+/// scope, so that an application's handling of a driver that refuses NRD can be tested on a driver that does not.
+pub const FORCE_DEVICE_ERROR_VARIABLE: &str = "NRD_WGPU_FORCE_DEVICE_ERROR";
 
+impl DenoiserPipelines {
+    /// Loads NRD's shaders for `kind` and creates the layouts and samplers they need. No pipeline is created
+    /// yet: [`warm_up`](Self::warm_up) creates those of a precision and a set of input formats, and anything a
+    /// frame needs beyond them is created when the frame is recorded.
+    pub fn new(device: &Device, kind: DenoiserKind) -> Result<Self, NrdError> {
+        if cfg!(feature = "mock") {
+            return Err(NrdError::UnsupportedLibrary(
+                "built with the `mock` feature, without NRD",
+            ));
+        }
+        let (guard, info) = create_instance(kind)?;
+        let instance = guard.0;
+        // SAFETY: NRD returns a NUL-terminated string that lives as long as the library.
+        let entry_point = unsafe { CStr::from_ptr(info.entry_point) }
+            .to_string_lossy()
+            .into_owned();
+        let layout = LibraryLayout {
+            entry_point,
+            resources_set: info.resources_set,
+            constants_set: info.constants_and_samplers_set,
+            first_texture_binding: info.first_texture_binding,
+            first_storage_binding: info.first_storage_binding,
+            first_sampler_binding: info.first_sampler_binding,
+            constants_binding: info.constants_binding,
+            constants_size: info.constants_max_size.next_multiple_of(16),
+            permanent_pool_size: info.permanent_pool_size,
+            transient_pool_size: info.transient_pool_size,
+        };
+
+        let (shared, error) = capture_device_errors(device, || {
+            let samplers: Vec<Sampler> = (0..info.sampler_count)
+                .map(|index| {
+                    // SAFETY: `index` is below the sampler count NRD reported.
+                    let linear =
+                        unsafe { ffi::nrdw_sampler_is_linear(instance.as_ptr(), index) } != 0;
+                    let filter = if linear {
+                        FilterMode::Linear
+                    } else {
+                        FilterMode::Nearest
+                    };
+                    device.create_sampler(&SamplerDescriptor {
+                        label: Some("nrd_sampler"),
+                        mag_filter: filter,
+                        min_filter: filter,
+                        ..Default::default()
+                    })
+                })
+                .collect();
+
+            // The set that holds the samplers and the constant buffer is the same for every NRD pipeline.
+            let mut constants_slots = Vec::new();
+            for index in 0..info.sampler_count {
+                constants_slots.push((
+                    info.first_sampler_binding + index,
+                    BindingType::Sampler(SamplerBindingType::Filtering),
+                ));
+            }
+            constants_slots.push((
+                info.constants_binding,
+                BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: None,
+                },
+            ));
+            let constants_layout = dense_layout(device, "nrd_constants_layout", &constants_slots);
+
+            let nrd_pipelines = (0..info.pipeline_count)
+                .map(|index| {
+                    let mut raw = core::mem::MaybeUninit::<ffi::NrdwPipeline>::uninit();
+                    // SAFETY: `index` is below the pipeline count NRD reported, and the shim fills the struct.
+                    let raw = unsafe {
+                        ffi::nrdw_pipeline(instance.as_ptr(), index, raw.as_mut_ptr());
+                        raw.assume_init()
+                    };
+                    // SAFETY: NRD embeds each shader as `spirv_bytes` bytes of 4-byte SPIR-V words in static
+                    // storage, and the name is a NUL-terminated string inside the instance.
+                    let (spirv, name) = unsafe {
+                        (
+                            core::slice::from_raw_parts(raw.spirv, raw.spirv_bytes as usize / 4),
+                            CStr::from_ptr(raw.name).to_string_lossy().into_owned(),
+                        )
+                    };
+                    NrdPipeline {
+                        module: passthrough_module(device, &name, &layout.entry_point, spirv),
+                        name,
+                        texture_count: raw.texture_count,
+                        storage_count: raw.storage_count,
+                    }
+                })
+                .collect();
+
+            if std::env::var_os(FORCE_DEVICE_ERROR_VARIABLE).is_some() {
+                // A buffer that is both mappable for reading and a storage buffer is a validation error.
+                let _ = device.create_buffer(&BufferDescriptor {
+                    label: Some("nrd_forced_device_error"),
+                    size: 4,
+                    usage: BufferUsages::MAP_READ | BufferUsages::STORAGE,
+                    mapped_at_creation: false,
+                });
+            }
+
+            SharedPipelines {
+                kind,
+                samplers,
+                constants_layout,
+                nrd_pipelines,
+                pack_module: passthrough_module(
+                    device,
+                    "nrd_pack",
+                    "main",
+                    &spirv_words(PACK_SPIRV),
+                ),
+                unpack_module: passthrough_module(
+                    device,
+                    "nrd_unpack",
+                    "main",
+                    &spirv_words(UNPACK_SPIRV),
+                ),
+                pipelines: Mutex::new(HashMap::new()),
+                layout,
+            }
+        });
+        drop(guard);
+        match error {
+            Some(error) => Err(NrdError::Device(error)),
+            None => Ok(Self(Arc::new(shared))),
+        }
+    }
+
+    /// Creates every pipeline a frame at `precision` with inputs of these formats uses at the default ReBLUR
+    /// settings, the first frame of a history and the frames after it. Pipelines that exist already are kept, so
+    /// calling it again is cheap.
+    pub fn warm_up(
+        &self,
+        device: &Device,
+        precision: TexturePrecision,
+        inputs: &InputFormats,
+    ) -> Result<(), NrdError> {
+        let missing = Denoiser::required_features(precision) - device.features();
+        if !missing.is_empty() {
+            return Err(NrdError::MissingFeatures(missing));
+        }
+        let shared = &self.0;
+        let (guard, _) = create_instance(shared.kind)?;
+        let instance = guard.0;
+
+        let packed = |resource: u32| match resource {
+            ffi::NRDW_RESOURCE_MOTION_VECTORS => Some(PACKED_MOTION_VECTORS_FORMAT),
+            ffi::NRDW_RESOURCE_NORMAL_ROUGHNESS => Some(PACKED_NORMAL_ROUGHNESS_FORMAT),
+            ffi::NRDW_RESOURCE_VIEW_Z => Some(PACKED_VIEW_Z_FORMAT),
+            ffi::NRDW_RESOURCE_IN_DIFFUSE | ffi::NRDW_RESOURCE_IN_SPECULAR => {
+                Some(PACKED_RADIANCE_FORMAT)
+            }
+            ffi::NRDW_RESOURCE_OUT_DIFFUSE | ffi::NRDW_RESOURCE_OUT_SPECULAR => {
+                Some(precision.apply(PACKED_RADIANCE_FORMAT))
+            }
+            ffi::NRDW_RESOURCE_IN_DIFFUSE_CONFIDENCE
+            | ffi::NRDW_RESOURCE_IN_SPECULAR_CONFIDENCE => inputs.history_confidence,
+            _ => None,
+        };
+        let pool_format = |permanent: bool, index: u32| -> Option<TextureFormat> {
+            let mut raw = ffi::NrdwPoolTexture::default();
+            // SAFETY: `index` is below the pool size NRD reported for this library.
+            unsafe {
+                ffi::nrdw_pool_texture(instance.as_ptr(), permanent as u32, index, &mut raw);
+            }
+            convert_format(raw.format).map(|format| precision.apply(format))
+        };
+
+        // SAFETY: the shim copies the settings before returning.
+        if unsafe {
+            ffi::nrdw_set_reblur_settings(instance.as_ptr(), &ReblurSettings::default().to_raw())
+        } == 0
+        {
+            return Err(NrdError::InvalidSettings("NRD refused the ReBLUR settings"));
+        }
+        let size = 256;
+        for (frame_index, reset) in [(0, 2), (1, 0)] {
+            let frame = ffi::NrdwFrame {
+                view_to_clip: WARM_UP_PROJECTION,
+                view_to_clip_previous: WARM_UP_PROJECTION,
+                world_to_view: IDENTITY,
+                world_to_view_previous: IDENTITY,
+                motion_vector_scale: [-1.0, -1.0],
+                jitter: [0.0; 2],
+                jitter_previous: [0.0; 2],
+                width: size,
+                height: size,
+                denoising_range: 1000.0,
+                frame_index,
+                reset,
+                history_confidence: inputs.history_confidence.is_some() as u32,
+            };
+            // SAFETY: the instance is alive and the shim copies the frame before returning.
+            if unsafe { ffi::nrdw_set_frame(instance.as_ptr(), &frame) } == 0 {
+                return Err(NrdError::InvalidSettings("NRD refused the frame settings"));
+            }
+            // SAFETY: the dispatch list stays valid until the next call into the instance.
+            let dispatch_count = unsafe { ffi::nrdw_begin_dispatches(instance.as_ptr()) };
+            let dispatch_count = u32::try_from(dispatch_count)
+                .map_err(|_| NrdError::InvalidSettings("NRD returned no dispatches"))?;
+            for index in 0..dispatch_count {
+                let mut raw = core::mem::MaybeUninit::<ffi::NrdwDispatch>::uninit();
+                // SAFETY: `index` is below the dispatch count, and the shim fills the struct.
+                let raw = unsafe {
+                    ffi::nrdw_dispatch(instance.as_ptr(), index, raw.as_mut_ptr());
+                    raw.assume_init()
+                };
+                let texture_count = shared.nrd_pipelines[raw.pipeline as usize].texture_count;
+                let mut slots = Vec::with_capacity(raw.resource_count as usize);
+                for resource_index in 0..raw.resource_count {
+                    let mut resource = ffi::NrdwResource::default();
+                    // SAFETY: both indices are in range for the current dispatch list.
+                    unsafe {
+                        ffi::nrdw_dispatch_resource(
+                            instance.as_ptr(),
+                            index,
+                            resource_index,
+                            &mut resource,
+                        );
+                    };
+                    let format = match resource.kind {
+                        ffi::NRDW_RESOURCE_TRANSIENT_POOL => {
+                            pool_format(false, resource.pool_index)
+                        }
+                        ffi::NRDW_RESOURCE_PERMANENT_POOL => pool_format(true, resource.pool_index),
+                        kind => packed(kind),
+                    };
+                    let Some(format) = format else {
+                        // `denoise` reports what this dispatch lacks when a frame asks for it.
+                        slots.clear();
+                        break;
+                    };
+                    slots.push(shared.nrd_slot(resource_index, texture_count, format));
+                }
+                if !slots.is_empty() {
+                    self.pipeline(device, PipelineId::Nrd(raw.pipeline), &slots, false)?;
+                }
+            }
+        }
+        drop(guard);
+
+        let own_slots = |formats: &[(TextureFormat, bool)]| -> Vec<(u32, TextureFormat, bool)> {
+            formats
+                .iter()
+                .enumerate()
+                .map(|(index, (format, is_storage))| (index as u32 + 1, *format, *is_storage))
+                .collect()
+        };
+        self.pipeline(
+            device,
+            PipelineId::Pack,
+            &own_slots(&pack_formats(inputs)),
+            true,
+        )?;
+        self.pipeline(
+            device,
+            PipelineId::Unpack,
+            &own_slots(&unpack_formats(precision)),
+            true,
+        )?;
+        Ok(())
+    }
+
+    /// How many compute pipelines exist, for every precision and set of input formats seen so far.
+    pub fn pipeline_count(&self) -> usize {
+        self.0.pipelines.lock().unwrap().len()
+    }
+
+    /// The pipeline of shader `id` for the texture formats of `slots`, created on first use inside wgpu error
+    /// scopes.
+    fn pipeline(
+        &self,
+        device: &Device,
+        id: PipelineId,
+        slots: &[(u32, TextureFormat, bool)],
+        own: bool,
+    ) -> Result<CachedPipeline, NrdError> {
+        let shared = &self.0;
+        let formats: Vec<TextureFormat> = slots.iter().map(|(_, format, _)| *format).collect();
+        if let Some(cached) = shared.pipelines.lock().unwrap().get(&(id, formats.clone())) {
+            return Ok(cached.clone());
+        }
+
+        let mut layout_slots = Vec::new();
+        if own {
+            layout_slots.push((0, Slot::Uniform));
+        }
+        for (binding, format, is_storage) in slots {
+            let slot = if *is_storage {
+                Slot::Storage(*format)
+            } else {
+                Slot::Texture(*format)
+            };
+            layout_slots.push((*binding, slot));
+        }
+        let mut entries = Vec::new();
+        for (binding, slot) in layout_slots {
+            let ty = match slot {
+                Slot::Uniform => BindingType::Buffer {
+                    ty: BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                Slot::Texture(format) => BindingType::Texture {
+                    sample_type: format
+                        .sample_type(None, Some(device.features()))
+                        .ok_or(NrdError::UnsupportedTextureFormat(format))?,
+                    view_dimension: TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                // Declared write-only whatever the shader does: Vulkan has one kind of storage image, and a
+                // read-write declaration would need a format capability wgpu grants to few formats.
+                Slot::Storage(format) => BindingType::StorageTexture {
+                    access: StorageTextureAccess::WriteOnly,
+                    format,
+                    view_dimension: TextureViewDimension::D2,
+                },
+            };
+            entries.push((binding, ty));
+        }
+
+        let (module, entry_point, label) = match id {
+            PipelineId::Nrd(index) => {
+                let pipeline = &shared.nrd_pipelines[index as usize];
+                (
+                    &pipeline.module,
+                    shared.layout.entry_point.as_str(),
+                    pipeline.name.as_str(),
+                )
+            }
+            PipelineId::Pack => (&shared.pack_module, "main", "nrd_pack"),
+            PipelineId::Unpack => (&shared.unpack_module, "main", "nrd_unpack"),
+        };
+        let (cached, error) = capture_device_errors(device, || {
+            let layout = dense_layout(device, "nrd_resources_layout", &entries);
+            let mut sets = [None, None];
+            if own {
+                sets[0] = Some(&layout);
+            } else {
+                sets[shared.layout.resources_set as usize] = Some(&layout);
+                sets[shared.layout.constants_set as usize] = Some(&shared.constants_layout);
+            }
+            let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: if own { &sets[..1] } else { &sets },
+                immediate_size: 0,
+            });
+            let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                module,
+                entry_point: Some(entry_point),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+            CachedPipeline { pipeline, layout }
+        });
+        if let Some(error) = error {
+            return Err(NrdError::Device(format!("pipeline {label}: {error}")));
+        }
+        shared
+            .pipelines
+            .lock()
+            .unwrap()
+            .insert((id, formats), cached.clone());
+        Ok(cached)
+    }
+}
+
+impl SharedPipelines {
+    /// The binding of the `position`-th resource of an NRD dispatch: the textures it reads come first, then the
+    /// ones it writes.
+    fn nrd_slot(
+        &self,
+        position: u32,
+        texture_count: u32,
+        format: TextureFormat,
+    ) -> (u32, TextureFormat, bool) {
+        let is_storage = position >= texture_count;
+        let binding = if is_storage {
+            self.layout.first_storage_binding + position - texture_count
+        } else {
+            self.layout.first_texture_binding + position
+        };
+        (binding, format, is_storage)
+    }
+}
+
+/// The formats of the textures this crate creates around NRD.
+const PACKED_RADIANCE_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
+const PACKED_NORMAL_ROUGHNESS_FORMAT: TextureFormat = TextureFormat::Rgb10a2Unorm;
+const PACKED_VIEW_Z_FORMAT: TextureFormat = TextureFormat::R32Float;
+const PACKED_MOTION_VECTORS_FORMAT: TextureFormat = TextureFormat::Rg16Float;
+
+/// The pack pass's bindings after its uniform block: the five inputs, then the five packed textures.
+fn pack_formats(inputs: &InputFormats) -> [(TextureFormat, bool); 10] {
+    [
+        (inputs.diffuse, false),
+        (inputs.specular, false),
+        (inputs.normal_roughness, false),
+        (inputs.view_depth, false),
+        (inputs.motion_vectors, false),
+        (PACKED_RADIANCE_FORMAT, true),
+        (PACKED_RADIANCE_FORMAT, true),
+        (PACKED_NORMAL_ROUGHNESS_FORMAT, true),
+        (PACKED_VIEW_Z_FORMAT, true),
+        (PACKED_MOTION_VECTORS_FORMAT, true),
+    ]
+}
+
+/// The unpack pass's bindings after its uniform block: NRD's two outputs and the view depth, then the two outputs.
+fn unpack_formats(precision: TexturePrecision) -> [(TextureFormat, bool); 5] {
+    [
+        (precision.apply(PACKED_RADIANCE_FORMAT), false),
+        (precision.apply(PACKED_RADIANCE_FORMAT), false),
+        (PACKED_VIEW_Z_FORMAT, false),
+        (OUTPUT_FORMAT, true),
+        (OUTPUT_FORMAT, true),
+    ]
+}
+
+const IDENTITY: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+];
+/// A reverse-Z infinite perspective (Bevy's), 90° vertical field of view, near plane 0.1: only to list a frame's
+/// dispatches, which do not depend on it.
+const WARM_UP_PROJECTION: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.1, 0.0,
+];
+
+/// The textures of a [`Denoiser`], all at its size.
+struct SizedTextures {
     permanent_pool: Vec<TextureView>,
     transient_pool: Vec<TextureView>,
     packed_diffuse: TextureView,
@@ -385,6 +878,134 @@ pub struct Denoiser {
     packed_motion_vectors: TextureView,
     denoised_diffuse: TextureView,
     denoised_specular: TextureView,
+}
+
+impl SizedTextures {
+    fn new(
+        device: &Device,
+        instance: NonNull<ffi::NrdwInstance>,
+        layout: &LibraryLayout,
+        size: [u32; 2],
+        precision: TexturePrecision,
+    ) -> Result<Self, NrdError> {
+        let pool = |permanent: bool, count: u32| -> Result<Vec<TextureView>, NrdError> {
+            (0..count)
+                .map(|index| {
+                    let mut raw = ffi::NrdwPoolTexture::default();
+                    // SAFETY: `index` is below the pool size NRD reported.
+                    unsafe {
+                        ffi::nrdw_pool_texture(
+                            instance.as_ptr(),
+                            permanent as u32,
+                            index,
+                            &mut raw,
+                        );
+                    };
+                    let format = convert_format(raw.format).ok_or(NrdError::UnsupportedFormat)?;
+                    let format = precision.apply(format);
+                    let factor = raw.downsample_factor.max(1);
+                    let label = if permanent {
+                        "nrd_permanent"
+                    } else {
+                        "nrd_transient"
+                    };
+                    Ok(create_texture(
+                        device,
+                        label,
+                        [size[0].div_ceil(factor), size[1].div_ceil(factor)],
+                        format,
+                    ))
+                })
+                .collect()
+        };
+        let (textures, error) = capture_device_errors(device, || -> Result<Self, NrdError> {
+            Ok(Self {
+                permanent_pool: pool(true, layout.permanent_pool_size)?,
+                transient_pool: pool(false, layout.transient_pool_size)?,
+                packed_diffuse: create_texture(
+                    device,
+                    "nrd_packed_diffuse",
+                    size,
+                    PACKED_RADIANCE_FORMAT,
+                ),
+                packed_specular: create_texture(
+                    device,
+                    "nrd_packed_specular",
+                    size,
+                    PACKED_RADIANCE_FORMAT,
+                ),
+                packed_normal_roughness: create_texture(
+                    device,
+                    "nrd_packed_normal_roughness",
+                    size,
+                    PACKED_NORMAL_ROUGHNESS_FORMAT,
+                ),
+                packed_view_z: create_texture(
+                    device,
+                    "nrd_packed_view_z",
+                    size,
+                    PACKED_VIEW_Z_FORMAT,
+                ),
+                packed_motion_vectors: create_texture(
+                    device,
+                    "nrd_packed_motion_vectors",
+                    size,
+                    PACKED_MOTION_VECTORS_FORMAT,
+                ),
+                // NRD also uses its two outputs as scratch space inside a frame, so they follow the precision too.
+                denoised_diffuse: create_texture(
+                    device,
+                    "nrd_denoised_diffuse",
+                    size,
+                    precision.apply(PACKED_RADIANCE_FORMAT),
+                ),
+                denoised_specular: create_texture(
+                    device,
+                    "nrd_denoised_specular",
+                    size,
+                    precision.apply(PACKED_RADIANCE_FORMAT),
+                ),
+            })
+        });
+        match error {
+            Some(error) => Err(NrdError::Device(format!("textures: {error}"))),
+            None => textures,
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &TextureView> {
+        self.permanent_pool
+            .iter()
+            .chain(&self.transient_pool)
+            .chain([
+                &self.packed_diffuse,
+                &self.packed_specular,
+                &self.packed_normal_roughness,
+                &self.packed_view_z,
+                &self.packed_motion_vectors,
+                &self.denoised_diffuse,
+                &self.denoised_specular,
+            ])
+    }
+}
+
+/// An NRD denoiser for one view: its NRD instance, which keeps the history's bookkeeping, and its textures, which
+/// are at one size. [`resize`](Self::resize) changes the size without compiling anything.
+pub struct Denoiser {
+    instance: NonNull<ffi::NrdwInstance>,
+    size: [u32; 2],
+    precision: TexturePrecision,
+    settings: ReblurSettings,
+    previous: Option<Previous>,
+    pipelines: DenoiserPipelines,
+    /// NRD's shaders a frame of this denoiser has dispatched.
+    used: HashSet<u32>,
+
+    constants_stride: u32,
+    constants_capacity: u32,
+    constants: Option<(Buffer, BindGroup)>,
+    params: Buffer,
+    textures: SizedTextures,
     /// Bound at the binding numbers a shader leaves unused, see [`dense_layout`].
     filler: TextureView,
     timestamps: Option<Timestamps>,
@@ -465,7 +1086,8 @@ impl Denoiser {
     /// NRD's SPIR-V also declares its storage images without a format, which in Vulkan needs the device features
     /// `shaderStorageImageWriteWithoutFormat` and `shaderStorageImageReadWithoutFormat`. wgpu has no way to ask
     /// for them and never enables them. The shaders ran correctly without them on the two drivers tried (see the
-    /// README); a driver is free not to.
+    /// README); a driver is free not to. An application can at least check that the device supports them, from
+    /// the raw Vulkan adapter.
     pub fn required_features(precision: TexturePrecision) -> Features {
         let features =
             Features::PASSTHROUGH_SHADERS | Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
@@ -475,232 +1097,54 @@ impl Denoiser {
         }
     }
 
-    /// Creates a denoiser for textures of `size` pixels.
+    /// Creates a denoiser for textures of `size` pixels, with pipelines of its own that the first frames create.
+    /// A denoiser that has [`DenoiserPipelines`] to share is made with [`with_pipelines`](Self::with_pipelines).
     pub fn new(
         device: &Device,
         kind: DenoiserKind,
         size: [u32; 2],
         precision: TexturePrecision,
     ) -> Result<Self, NrdError> {
-        if cfg!(feature = "mock") {
-            return Err(NrdError::UnsupportedLibrary(
-                "built with the `mock` feature, without NRD",
-            ));
-        }
-        let missing = Self::required_features(precision) - device.features();
-        if !missing.is_empty() {
-            return Err(NrdError::MissingFeatures(missing));
-        }
-        // NRD keeps sizes in 16 bits.
-        if size[0] == 0 || size[1] == 0 || size[0] > 0xffff || size[1] > 0xffff {
-            return Err(NrdError::InvalidSettings(
-                "the size must be 1..=65535 on each axis",
-            ));
-        }
+        Self::with_pipelines(
+            device,
+            &DenoiserPipelines::new(device, kind)?,
+            size,
+            precision,
+        )
+    }
 
-        let raw_kind = match kind {
-            DenoiserKind::ReblurDiffuseSpecular => ffi::NRDW_DENOISER_REBLUR_DIFFUSE_SPECULAR,
-        };
-        let mut info = core::mem::MaybeUninit::<ffi::NrdwInfo>::uninit();
-        // SAFETY: `nrdw_create` fills `info` whenever it returns an instance.
-        let instance = unsafe { ffi::nrdw_create(raw_kind, info.as_mut_ptr()) };
-        let instance = NonNull::new(instance).ok_or(NrdError::CreationFailed)?;
-        // SAFETY: the instance is not null, so `info` was written.
-        let info = unsafe { info.assume_init() };
-        // From here on the instance is owned by a guard, so that an early return destroys it.
-        let guard = InstanceGuard(instance);
-
-        if info.normal_roughness_is_10_10_10_2 == 0 {
-            return Err(NrdError::UnsupportedLibrary(
-                "normals and roughness must be packed as 10:10:10:2",
-            ));
-        }
-        if info.resources_set > 1
-            || info.constants_and_samplers_set > 1
-            || info.resources_set == info.constants_and_samplers_set
-        {
-            return Err(NrdError::UnsupportedLibrary("unexpected descriptor sets"));
-        }
-        // SAFETY: NRD returns a NUL-terminated string that lives as long as the library.
-        let entry_point = unsafe { CStr::from_ptr(info.entry_point) }
-            .to_string_lossy()
-            .into_owned();
-
-        let samplers: Vec<Sampler> = (0..info.sampler_count)
-            .map(|index| {
-                // SAFETY: `index` is below the sampler count NRD reported.
-                let linear = unsafe { ffi::nrdw_sampler_is_linear(instance.as_ptr(), index) } != 0;
-                let filter = if linear {
-                    FilterMode::Linear
-                } else {
-                    FilterMode::Nearest
-                };
-                device.create_sampler(&SamplerDescriptor {
-                    label: Some("nrd_sampler"),
-                    mag_filter: filter,
-                    min_filter: filter,
-                    ..Default::default()
-                })
-            })
-            .collect();
-
-        // The set that holds the samplers and the constant buffer is the same for every NRD pipeline.
-        let mut constants_slots = Vec::new();
-        for index in 0..info.sampler_count {
-            constants_slots.push((
-                info.first_sampler_binding + index,
-                BindingType::Sampler(SamplerBindingType::Filtering),
-            ));
-        }
-        constants_slots.push((
-            info.constants_binding,
-            BindingType::Buffer {
-                ty: BufferBindingType::Uniform,
-                has_dynamic_offset: true,
-                min_binding_size: None,
-            },
-        ));
-        let constants_layout = dense_layout(device, "nrd_constants_layout", &constants_slots);
-
-        let mut nrd_pipelines = Vec::new();
-        for index in 0..info.pipeline_count {
-            let mut raw = core::mem::MaybeUninit::<ffi::NrdwPipeline>::uninit();
-            // SAFETY: `index` is below the pipeline count NRD reported, and the shim fills the struct.
-            let raw = unsafe {
-                ffi::nrdw_pipeline(instance.as_ptr(), index, raw.as_mut_ptr());
-                raw.assume_init()
-            };
-            // SAFETY: NRD embeds each shader as `spirv_bytes` bytes of 4-byte SPIR-V words in static storage,
-            // and the name is a NUL-terminated string inside the instance.
-            let (spirv, name) = unsafe {
-                (
-                    core::slice::from_raw_parts(raw.spirv, raw.spirv_bytes as usize / 4),
-                    CStr::from_ptr(raw.name).to_string_lossy().into_owned(),
-                )
-            };
-            nrd_pipelines.push(NrdPipeline {
-                module: passthrough_module(device, &name, &entry_point, spirv),
-                name,
-                texture_count: raw.texture_count,
-                storage_count: raw.storage_count,
-            });
-        }
-
-        let pool = |permanent: bool, count: u32| -> Result<Vec<TextureView>, NrdError> {
-            (0..count)
-                .map(|index| {
-                    let mut raw = ffi::NrdwPoolTexture::default();
-                    // SAFETY: `index` is below the pool size NRD reported.
-                    unsafe {
-                        ffi::nrdw_pool_texture(
-                            instance.as_ptr(),
-                            permanent as u32,
-                            index,
-                            &mut raw,
-                        );
-                    };
-                    let format = convert_format(raw.format).ok_or(NrdError::UnsupportedFormat)?;
-                    let format = precision.apply(format);
-                    let factor = raw.downsample_factor.max(1);
-                    let label = if permanent {
-                        "nrd_permanent"
-                    } else {
-                        "nrd_transient"
-                    };
-                    Ok(create_texture(
-                        device,
-                        label,
-                        [size[0].div_ceil(factor), size[1].div_ceil(factor)],
-                        format,
-                    ))
-                })
-                .collect()
-        };
-        let permanent_pool = pool(true, info.permanent_pool_size)?;
-        let transient_pool = pool(false, info.transient_pool_size)?;
-
+    /// Creates a denoiser for textures of `size` pixels that uses, and adds to, `pipelines`.
+    pub fn with_pipelines(
+        device: &Device,
+        pipelines: &DenoiserPipelines,
+        size: [u32; 2],
+        precision: TexturePrecision,
+    ) -> Result<Self, NrdError> {
+        check_size_and_features(device, size, precision)?;
+        let (guard, _) = create_instance(pipelines.0.kind)?;
+        let layout = &pipelines.0.layout;
+        let textures = SizedTextures::new(device, guard.0, layout, size, precision)?;
         let params = device.create_buffer(&BufferDescriptor {
             label: Some("nrd_pack_params"),
             size: PARAMS_SIZE,
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        let constants_size = info.constants_max_size.next_multiple_of(16);
         let mut denoiser = Self {
             instance: guard.release(),
             size,
+            precision,
             settings: ReblurSettings::default(),
             previous: None,
-            entry_point: entry_point.clone(),
-            resources_set: info.resources_set,
-            constants_set: info.constants_and_samplers_set,
-            first_texture_binding: info.first_texture_binding,
-            first_storage_binding: info.first_storage_binding,
-            first_sampler_binding: info.first_sampler_binding,
-            constants_binding: info.constants_binding,
-            nrd_pipelines,
-            pack_module: passthrough_module(device, "nrd_pack", "main", &spirv_words(PACK_SPIRV)),
-            unpack_module: passthrough_module(
-                device,
-                "nrd_unpack",
-                "main",
-                &spirv_words(UNPACK_SPIRV),
-            ),
-            pipelines: HashMap::new(),
-            constants_layout,
-            samplers,
-            constants_size,
-            constants_stride: constants_size
+            pipelines: pipelines.clone(),
+            used: HashSet::new(),
+            constants_stride: layout
+                .constants_size
                 .next_multiple_of(device.limits().min_uniform_buffer_offset_alignment),
             constants_capacity: 0,
             constants: None,
             params,
-            permanent_pool,
-            transient_pool,
-            packed_diffuse: create_texture(
-                device,
-                "nrd_packed_diffuse",
-                size,
-                TextureFormat::Rgba16Float,
-            ),
-            packed_specular: create_texture(
-                device,
-                "nrd_packed_specular",
-                size,
-                TextureFormat::Rgba16Float,
-            ),
-            packed_normal_roughness: create_texture(
-                device,
-                "nrd_packed_normal_roughness",
-                size,
-                TextureFormat::Rgb10a2Unorm,
-            ),
-            packed_view_z: create_texture(
-                device,
-                "nrd_packed_view_z",
-                size,
-                TextureFormat::R32Float,
-            ),
-            packed_motion_vectors: create_texture(
-                device,
-                "nrd_packed_motion_vectors",
-                size,
-                TextureFormat::Rg16Float,
-            ),
-            // NRD also uses its two outputs as scratch space inside a frame, so they follow the precision too.
-            denoised_diffuse: create_texture(
-                device,
-                "nrd_denoised_diffuse",
-                size,
-                precision.apply(TextureFormat::Rgba16Float),
-            ),
-            denoised_specular: create_texture(
-                device,
-                "nrd_denoised_specular",
-                size,
-                precision.apply(TextureFormat::Rgba16Float),
-            ),
+            textures,
             filler: create_texture(device, "nrd_filler", [1, 1], TextureFormat::Rgba8Unorm),
             timestamps: None,
         };
@@ -709,26 +1153,51 @@ impl Denoiser {
         Ok(denoiser)
     }
 
+    /// Changes the size or the precision of the denoiser's textures. Only the textures are made again: the NRD
+    /// instance, its settings and the pipelines stay. The history is dropped, so the next frame starts a new one.
+    /// On an error the denoiser keeps its old textures and size.
+    pub fn resize(
+        &mut self,
+        device: &Device,
+        size: [u32; 2],
+        precision: TexturePrecision,
+    ) -> Result<(), NrdError> {
+        check_size_and_features(device, size, precision)?;
+        // The old textures go first, so the two sets are never in memory together.
+        let textures = SizedTextures::new(
+            device,
+            self.instance,
+            &self.pipelines.0.layout,
+            size,
+            precision,
+        )?;
+        self.textures = textures;
+        self.size = size;
+        self.precision = precision;
+        self.previous = None;
+        Ok(())
+    }
+
     /// The size, in pixels, of every texture this denoiser reads and writes.
     pub fn size(&self) -> [u32; 2] {
         self.size
     }
 
+    /// The precision of the textures this denoiser accumulates in.
+    pub fn precision(&self) -> TexturePrecision {
+        self.precision
+    }
+
+    /// The pipelines this denoiser uses.
+    pub fn pipelines(&self) -> &DenoiserPipelines {
+        &self.pipelines
+    }
+
     /// Bytes of GPU memory in the textures this denoiser owns: NRD's two pools and the packed and denoised
     /// copies around them.
     pub fn texture_bytes(&self) -> u64 {
-        self.permanent_pool
+        self.textures
             .iter()
-            .chain(&self.transient_pool)
-            .chain([
-                &self.packed_diffuse,
-                &self.packed_specular,
-                &self.packed_normal_roughness,
-                &self.packed_view_z,
-                &self.packed_motion_vectors,
-                &self.denoised_diffuse,
-                &self.denoised_specular,
-            ])
             .map(|view| {
                 let texture = view.texture();
                 let texel = texture.format().block_copy_size(None).unwrap_or(0);
@@ -740,35 +1209,22 @@ impl Denoiser {
     /// The version of the NRD library this crate was built against, as `[major, minor, build]`.
     pub fn library_version() -> [u32; 3] {
         // The version is a property of the library, but NRD only reports it through an instance.
-        let mut info = core::mem::MaybeUninit::<ffi::NrdwInfo>::uninit();
-        // SAFETY: `nrdw_create` fills `info` whenever it returns an instance, which is destroyed right away.
-        unsafe {
-            let instance = ffi::nrdw_create(
-                ffi::NRDW_DENOISER_REBLUR_DIFFUSE_SPECULAR,
-                info.as_mut_ptr(),
-            );
-            if instance.is_null() {
-                return [0; 3];
-            }
-            ffi::nrdw_destroy(instance);
-            let info = info.assume_init();
-            [info.version_major, info.version_minor, info.version_build]
+        match create_instance(DenoiserKind::ReblurDiffuseSpecular) {
+            Ok((_guard, info)) => [info.version_major, info.version_minor, info.version_build],
+            Err(_) => [0; 3],
         }
     }
 
-    /// NRD's shaders for this denoiser, as `file|macro=value|...`, each with whether a frame has used it yet.
-    /// Which ones a frame uses depends on the settings; some are debug views this crate never asks for.
+    /// NRD's shaders for this denoiser, as `file|macro=value|...`, each with whether a frame of this denoiser has
+    /// dispatched it. Which ones a frame uses depends on the settings; some are debug views this crate never asks
+    /// for.
     pub fn shaders(&self) -> impl Iterator<Item = (&str, bool)> {
-        self.nrd_pipelines
+        self.pipelines
+            .0
+            .nrd_pipelines
             .iter()
             .enumerate()
-            .map(|(index, pipeline)| {
-                let used = self
-                    .pipelines
-                    .keys()
-                    .any(|(id, _)| *id == PipelineId::Nrd(index as u32));
-                (pipeline.name.as_str(), used)
-            })
+            .map(|(index, pipeline)| (pipeline.name.as_str(), self.used.contains(&(index as u32))))
     }
 
     /// The ReBLUR settings in use.
@@ -816,7 +1272,7 @@ impl Denoiser {
     /// pass. Nothing runs until the encoder is submitted, and the frame's constants are uploaded through `queue`,
     /// so the encoder must be submitted before `denoise` is called again.
     ///
-    /// The first frames create compute pipelines on demand (one per NRD shader and set of texture formats).
+    /// A pipeline the frame needs that [`DenoiserPipelines::warm_up`] did not create is created here.
     pub fn denoise(
         &mut self,
         device: &Device,
@@ -905,6 +1361,7 @@ impl Denoiser {
         let pass_workgroups = [self.size[0].div_ceil(8), self.size[1].div_ceil(8)];
         let mut steps = Vec::new();
 
+        let textures = &self.textures;
         steps.push(self.own_step(
             device,
             PipelineId::Pack,
@@ -914,11 +1371,11 @@ impl Denoiser {
                 (inputs.normal_roughness, false),
                 (inputs.view_depth, false),
                 (inputs.motion_vectors, false),
-                (&self.packed_diffuse.clone(), true),
-                (&self.packed_specular.clone(), true),
-                (&self.packed_normal_roughness.clone(), true),
-                (&self.packed_view_z.clone(), true),
-                (&self.packed_motion_vectors.clone(), true),
+                (&textures.packed_diffuse, true),
+                (&textures.packed_specular, true),
+                (&textures.packed_normal_roughness, true),
+                (&textures.packed_view_z, true),
+                (&textures.packed_motion_vectors, true),
             ],
             pass_workgroups,
         )?);
@@ -930,6 +1387,8 @@ impl Denoiser {
             .map_err(|_| NrdError::InvalidSettings("NRD returned no dispatches"))?;
         self.reserve_constants(device, dispatch_count);
 
+        let shared = &self.pipelines.0;
+        let textures = &self.textures;
         let mut constants_slot = 0;
         for index in 0..dispatch_count {
             let mut raw = core::mem::MaybeUninit::<ffi::NrdwDispatch>::uninit();
@@ -938,7 +1397,7 @@ impl Denoiser {
                 ffi::nrdw_dispatch(self.instance.as_ptr(), index, raw.as_mut_ptr());
                 raw.assume_init()
             };
-            let pipeline = &self.nrd_pipelines[raw.pipeline as usize];
+            let pipeline = &shared.nrd_pipelines[raw.pipeline as usize];
             let (texture_count, storage_count) = (pipeline.texture_count, pipeline.storage_count);
 
             // A dispatch lists the textures it reads first, then the ones it writes.
@@ -956,15 +1415,15 @@ impl Denoiser {
                 };
                 let pool_index = resource.pool_index as usize;
                 let view = match resource.kind {
-                    ffi::NRDW_RESOURCE_MOTION_VECTORS => Some(&self.packed_motion_vectors),
-                    ffi::NRDW_RESOURCE_NORMAL_ROUGHNESS => Some(&self.packed_normal_roughness),
-                    ffi::NRDW_RESOURCE_VIEW_Z => Some(&self.packed_view_z),
-                    ffi::NRDW_RESOURCE_IN_DIFFUSE => Some(&self.packed_diffuse),
-                    ffi::NRDW_RESOURCE_IN_SPECULAR => Some(&self.packed_specular),
-                    ffi::NRDW_RESOURCE_OUT_DIFFUSE => Some(&self.denoised_diffuse),
-                    ffi::NRDW_RESOURCE_OUT_SPECULAR => Some(&self.denoised_specular),
-                    ffi::NRDW_RESOURCE_TRANSIENT_POOL => self.transient_pool.get(pool_index),
-                    ffi::NRDW_RESOURCE_PERMANENT_POOL => self.permanent_pool.get(pool_index),
+                    ffi::NRDW_RESOURCE_MOTION_VECTORS => Some(&textures.packed_motion_vectors),
+                    ffi::NRDW_RESOURCE_NORMAL_ROUGHNESS => Some(&textures.packed_normal_roughness),
+                    ffi::NRDW_RESOURCE_VIEW_Z => Some(&textures.packed_view_z),
+                    ffi::NRDW_RESOURCE_IN_DIFFUSE => Some(&textures.packed_diffuse),
+                    ffi::NRDW_RESOURCE_IN_SPECULAR => Some(&textures.packed_specular),
+                    ffi::NRDW_RESOURCE_OUT_DIFFUSE => Some(&textures.denoised_diffuse),
+                    ffi::NRDW_RESOURCE_OUT_SPECULAR => Some(&textures.denoised_specular),
+                    ffi::NRDW_RESOURCE_TRANSIENT_POOL => textures.transient_pool.get(pool_index),
+                    ffi::NRDW_RESOURCE_PERMANENT_POOL => textures.permanent_pool.get(pool_index),
                     ffi::NRDW_RESOURCE_IN_DIFFUSE_CONFIDENCE
                     | ffi::NRDW_RESOURCE_IN_SPECULAR_CONFIDENCE => inputs.history_confidence,
                     _ => None,
@@ -972,7 +1431,7 @@ impl Denoiser {
                 let is_storage = resource_index >= texture_count;
                 match view {
                     Some(view) if is_storage == (resource.is_storage != 0) => {
-                        views.push((view.clone(), is_storage));
+                        views.push(view.clone());
                     }
                     _ => {
                         // SAFETY: NRD names every dispatch with a NUL-terminated static string.
@@ -1002,37 +1461,40 @@ impl Denoiser {
                 constants_slot += 1;
             }
 
-            let slots: Vec<(u32, &TextureView, bool)> = views
+            let slots: Vec<(u32, TextureFormat, bool)> = views
                 .iter()
                 .enumerate()
-                .map(|(position, (view, is_storage))| {
-                    let position = position as u32;
-                    let binding = if *is_storage {
-                        self.first_storage_binding + position - texture_count
-                    } else {
-                        self.first_texture_binding + position
-                    };
-                    (binding, view, *is_storage)
+                .map(|(position, view)| {
+                    shared.nrd_slot(position as u32, texture_count, view.texture().format())
                 })
                 .collect();
-            let cached = self.pipeline(device, PipelineId::Nrd(raw.pipeline), &slots, false)?;
+            let cached =
+                self.pipelines
+                    .pipeline(device, PipelineId::Nrd(raw.pipeline), &slots, false)?;
+            let bound: Vec<(u32, &TextureView)> = slots
+                .iter()
+                .zip(&views)
+                .map(|((binding, ..), view)| (*binding, view))
+                .collect();
             steps.push(Step {
                 // SAFETY: NRD names every dispatch with a NUL-terminated static string.
                 name: unsafe { CStr::from_ptr(raw.name) },
-                resources: self.resources_bind_group(device, &cached.layout, &slots, false),
+                resources: self.resources_bind_group(device, &cached.layout, &bound, false),
                 pipeline: cached.pipeline,
                 constants_offset: Some(constants_offset),
                 workgroups: [raw.grid_width, raw.grid_height],
             });
+            self.used.insert(raw.pipeline);
         }
 
+        let textures = &self.textures;
         steps.push(self.own_step(
             device,
             PipelineId::Unpack,
             &[
-                (&self.denoised_diffuse.clone(), false),
-                (&self.denoised_specular.clone(), false),
-                (&self.packed_view_z.clone(), false),
+                (&textures.denoised_diffuse, false),
+                (&textures.denoised_specular, false),
+                (&textures.packed_view_z, false),
                 (outputs.diffuse, true),
                 (outputs.specular, true),
             ],
@@ -1066,8 +1528,8 @@ impl Denoiser {
             match step.constants_offset {
                 Some(offset) => {
                     let (_, constants) = self.constants.as_ref().unwrap();
-                    pass.set_bind_group(self.resources_set, &step.resources, &[]);
-                    pass.set_bind_group(self.constants_set, constants, &[offset]);
+                    pass.set_bind_group(shared.layout.resources_set, &step.resources, &[]);
+                    pass.set_bind_group(shared.layout.constants_set, constants, &[offset]);
                 }
                 None => pass.set_bind_group(0, &step.resources, &[]),
             }
@@ -1144,139 +1606,49 @@ impl Denoiser {
 
     /// Builds the pack or the unpack pass: a uniform block at binding 0, then `views` at bindings 1, 2, ...
     fn own_step(
-        &mut self,
+        &self,
         device: &Device,
         id: PipelineId,
         views: &[(&TextureView, bool)],
         workgroups: [u32; 2],
     ) -> Result<Step, NrdError> {
-        let slots: Vec<(u32, &TextureView, bool)> = views
+        let slots: Vec<(u32, TextureFormat, bool)> = views
             .iter()
             .enumerate()
-            .map(|(index, (view, is_storage))| (index as u32 + 1, *view, *is_storage))
+            .map(|(index, (view, is_storage))| {
+                (index as u32 + 1, view.texture().format(), *is_storage)
+            })
             .collect();
-        let cached = self.pipeline(device, id, &slots, true)?;
+        let cached = self.pipelines.pipeline(device, id, &slots, true)?;
+        let bound: Vec<(u32, &TextureView)> = views
+            .iter()
+            .enumerate()
+            .map(|(index, (view, _))| (index as u32 + 1, *view))
+            .collect();
         Ok(Step {
             name: match id {
                 PipelineId::Pack => c"nrd_wgpu pack",
                 _ => c"nrd_wgpu unpack",
             },
-            resources: self.resources_bind_group(device, &cached.layout, &slots, true),
+            resources: self.resources_bind_group(device, &cached.layout, &bound, true),
             pipeline: cached.pipeline,
             constants_offset: None,
             workgroups,
         })
     }
 
-    /// The pipeline of shader `id` for the texture formats of `slots`, created on first use.
-    fn pipeline(
-        &mut self,
-        device: &Device,
-        id: PipelineId,
-        slots: &[(u32, &TextureView, bool)],
-        own: bool,
-    ) -> Result<CachedPipeline, NrdError> {
-        let formats: Vec<TextureFormat> = slots
-            .iter()
-            .map(|(_, view, _)| view.texture().format())
-            .collect();
-        if let Some(cached) = self.pipelines.get(&(id, formats.clone())) {
-            return Ok(cached.clone());
-        }
-
-        let mut layout_slots = Vec::new();
-        if own {
-            layout_slots.push((0, Slot::Uniform));
-        }
-        for ((binding, _, is_storage), format) in slots.iter().zip(&formats) {
-            let slot = if *is_storage {
-                Slot::Storage(*format)
-            } else {
-                Slot::Texture(*format)
-            };
-            layout_slots.push((*binding, slot));
-        }
-        let mut entries = Vec::new();
-        for (binding, slot) in layout_slots {
-            let ty = match slot {
-                Slot::Uniform => BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                Slot::Texture(format) => BindingType::Texture {
-                    sample_type: format
-                        .sample_type(None, Some(device.features()))
-                        .ok_or(NrdError::UnsupportedTextureFormat(format))?,
-                    view_dimension: TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                // Declared write-only whatever the shader does: Vulkan has one kind of storage image, and a
-                // read-write declaration would need a format capability wgpu grants to few formats.
-                Slot::Storage(format) => BindingType::StorageTexture {
-                    access: StorageTextureAccess::WriteOnly,
-                    format,
-                    view_dimension: TextureViewDimension::D2,
-                },
-            };
-            entries.push((binding, ty));
-        }
-        let layout = dense_layout(device, "nrd_resources_layout", &entries);
-
-        let (module, entry_point, label) = match id {
-            PipelineId::Nrd(index) => {
-                let pipeline = &self.nrd_pipelines[index as usize];
-                (
-                    &pipeline.module,
-                    self.entry_point.as_str(),
-                    pipeline.name.as_str(),
-                )
-            }
-            PipelineId::Pack => (&self.pack_module, "main", "nrd_pack"),
-            PipelineId::Unpack => (&self.unpack_module, "main", "nrd_unpack"),
-        };
-        let mut sets = [None, None];
-        if own {
-            sets[0] = Some(&layout);
-        } else {
-            sets[self.resources_set as usize] = Some(&layout);
-            sets[self.constants_set as usize] = Some(&self.constants_layout);
-        }
-        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: if own { &sets[..1] } else { &sets },
-            immediate_size: 0,
-        });
-        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
-            label: Some(label),
-            layout: Some(&pipeline_layout),
-            module,
-            entry_point: Some(entry_point),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        let cached = CachedPipeline { pipeline, layout };
-        self.pipelines.insert((id, formats), cached.clone());
-        Ok(cached)
-    }
-
     fn resources_bind_group(
         &self,
         device: &Device,
         layout: &BindGroupLayout,
-        slots: &[(u32, &TextureView, bool)],
+        slots: &[(u32, &TextureView)],
         own: bool,
     ) -> BindGroup {
-        let last = slots
-            .iter()
-            .map(|(binding, ..)| *binding)
-            .max()
-            .unwrap_or(0);
+        let last = slots.iter().map(|(binding, _)| *binding).max().unwrap_or(0);
         let entries: Vec<BindGroupEntry> = (0..=last)
             .map(|binding| {
-                let resource = match slots.iter().find(|(b, ..)| *b == binding) {
-                    Some((_, view, _)) => BindingResource::TextureView(view),
+                let resource = match slots.iter().find(|(b, _)| *b == binding) {
+                    Some((_, view)) => BindingResource::TextureView(view),
                     None if own && binding == 0 => self.params.as_entire_binding(),
                     None => BindingResource::TextureView(&self.filler),
                 };
@@ -1296,6 +1668,7 @@ impl Denoiser {
         if dispatches <= self.constants_capacity && self.constants.is_some() {
             return;
         }
+        let shared = &self.pipelines.0;
         self.constants_capacity = dispatches.max(1);
         let buffer = device.create_buffer(&BufferDescriptor {
             label: Some("nrd_constants"),
@@ -1303,21 +1676,21 @@ impl Denoiser {
             usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let mut entries: Vec<BindGroupEntry> = self
+        let mut entries: Vec<BindGroupEntry> = shared
             .samplers
             .iter()
             .enumerate()
             .map(|(index, sampler)| BindGroupEntry {
-                binding: self.first_sampler_binding + index as u32,
+                binding: shared.layout.first_sampler_binding + index as u32,
                 resource: BindingResource::Sampler(sampler),
             })
             .collect();
         entries.push(BindGroupEntry {
-            binding: self.constants_binding,
+            binding: shared.layout.constants_binding,
             resource: BindingResource::Buffer(BufferBinding {
                 buffer: &buffer,
                 offset: 0,
-                size: NonZero::new(self.constants_size as u64),
+                size: NonZero::new(shared.layout.constants_size as u64),
             }),
         });
         // Bindings a dense layout had to fill, see `dense_layout`.
@@ -1332,11 +1705,82 @@ impl Denoiser {
         }
         let bind_group = device.create_bind_group(&BindGroupDescriptor {
             label: Some("nrd_constants"),
-            layout: &self.constants_layout,
+            layout: &shared.constants_layout,
             entries: &entries,
         });
         self.constants = Some((buffer, bind_group));
     }
+}
+
+fn check_size_and_features(
+    device: &Device,
+    size: [u32; 2],
+    precision: TexturePrecision,
+) -> Result<(), NrdError> {
+    let missing = Denoiser::required_features(precision) - device.features();
+    if !missing.is_empty() {
+        return Err(NrdError::MissingFeatures(missing));
+    }
+    // NRD keeps sizes in 16 bits.
+    if size[0] == 0 || size[1] == 0 || size[0] > 0xffff || size[1] > 0xffff {
+        return Err(NrdError::InvalidSettings(
+            "the size must be 1..=65535 on each axis",
+        ));
+    }
+    Ok(())
+}
+
+/// Creates an NRD instance of `kind` and checks that this crate can drive it.
+fn create_instance(kind: DenoiserKind) -> Result<(InstanceGuard, ffi::NrdwInfo), NrdError> {
+    if cfg!(feature = "mock") {
+        return Err(NrdError::UnsupportedLibrary(
+            "built with the `mock` feature, without NRD",
+        ));
+    }
+    let raw_kind = match kind {
+        DenoiserKind::ReblurDiffuseSpecular => ffi::NRDW_DENOISER_REBLUR_DIFFUSE_SPECULAR,
+    };
+    let mut info = core::mem::MaybeUninit::<ffi::NrdwInfo>::uninit();
+    // SAFETY: `nrdw_create` fills `info` whenever it returns an instance.
+    let instance = unsafe { ffi::nrdw_create(raw_kind, info.as_mut_ptr()) };
+    let instance = NonNull::new(instance).ok_or(NrdError::CreationFailed)?;
+    // From here on the instance is owned by a guard, so that an early return destroys it.
+    let guard = InstanceGuard(instance);
+    // SAFETY: the instance is not null, so `info` was written.
+    let info = unsafe { info.assume_init() };
+
+    if info.normal_roughness_is_10_10_10_2 == 0 {
+        return Err(NrdError::UnsupportedLibrary(
+            "normals and roughness must be packed as 10:10:10:2",
+        ));
+    }
+    if info.resources_set > 1
+        || info.constants_and_samplers_set > 1
+        || info.resources_set == info.constants_and_samplers_set
+    {
+        return Err(NrdError::UnsupportedLibrary("unexpected descriptor sets"));
+    }
+    Ok((guard, info))
+}
+
+/// Runs `f` inside wgpu error scopes for validation, internal and out-of-memory errors, and returns the first error
+/// any of them caught. On native wgpu every error is known when the scope is popped, so nothing waits.
+fn capture_device_errors<R>(device: &Device, f: impl FnOnce() -> R) -> (R, Option<String>) {
+    let out_of_memory = device.push_error_scope(ErrorFilter::OutOfMemory);
+    let internal = device.push_error_scope(ErrorFilter::Internal);
+    let validation = device.push_error_scope(ErrorFilter::Validation);
+    let result = f();
+    // Scopes are a stack: the last pushed is popped first.
+    let errors = [validation.pop(), internal.pop(), out_of_memory.pop()];
+    let mut context = Context::from_waker(Waker::noop());
+    let error = errors.into_iter().find_map(|future| {
+        let mut future = pin!(future);
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(error) => error.map(|error| error.to_string()),
+            Poll::Pending => None,
+        }
+    });
+    (result, error)
 }
 
 /// Destroys an NRD instance unless it is released.
