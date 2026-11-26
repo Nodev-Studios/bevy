@@ -176,7 +176,7 @@
         (
             id: "emerald-square-day",
             name: "Emerald Square, day (NVIDIA ORCA)",
-            path: "emerald-square/EmeraldSquareDay.glb",
+            path: "emerald-square/EmeraldSquareDay.gltf",
             licence: "CC-BY-NC-SA 3.0: Emerald Square, credit NVIDIA (ORCA)",
             non_commercial: true,
             fetch: "tools/fetch-scenes-extra.sh emerald-square",
@@ -185,11 +185,15 @@
         (
             id: "emerald-square-dusk",
             name: "Emerald Square, dusk (NVIDIA ORCA)",
-            path: "emerald-square/EmeraldSquareDusk.glb",
+            path: "emerald-square/EmeraldSquareDusk.gltf",
             licence: "CC-BY-NC-SA 3.0: Emerald Square, credit NVIDIA (ORCA)",
             non_commercial: true,
             fetch: "tools/fetch-scenes-extra.sh emerald-square",
             camera: (position: (-38.370, 1.460, 75.722), look_at: (-38.005, 1.474, 72.744)),
+            // Dusk has no lights of its own: lit by its emissive surfaces (x100, as Zero Day), so no
+            // viewer sun and no sky. to tune: emissive scale and exposure were picked from one self-test.
+            sun: Off,
+            exposure: 0.0,
         ),
         (
             id: "san-miguel",

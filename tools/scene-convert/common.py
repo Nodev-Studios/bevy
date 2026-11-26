@@ -734,3 +734,76 @@ def check_glb(path):
         total = 12 + 8 + len(text) + len(rest)
         with open(path, "wb") as f:
             f.write(data[:8] + struct.pack("<I", total) + struct.pack("<II", len(text), 0x4E4F534A) + text + rest)
+
+
+# --- Bounded conversion (tools/scene-convert/bounded.py) ---------------------------------------------------------
+
+
+def defer_image_loads():
+    """Importers (FBX's above all) create and decode every texture they meet: Emerald Square's 331 DDS files cost
+    4.9 GB of decoded pixels the converter then throws away. While this is on, an importer's
+    `bpy_extras.image_utils.load_image` makes a 1x1 placeholder that remembers the file in ["source_path"];
+    `load_deferred_images(load)` later swaps each placeholder still in use for `load(path)`."""
+    from bpy_extras import image_utils
+
+    def placeholder(filepath, dirname="", *rest, **kwargs):
+        path = filepath if os.path.isabs(filepath) or not dirname else os.path.join(dirname, filepath)
+        if not os.path.exists(path) and kwargs.get("recursive") and dirname:
+            for root, _, names in os.walk(dirname):  # what use_image_search does
+                if os.path.basename(filepath) in names:
+                    path = os.path.join(root, os.path.basename(filepath))
+                    break
+        img = bpy.data.images.new(os.path.basename(filepath), 1, 1)
+        img["source_path"] = os.path.normpath(path)
+        return img
+
+    image_utils.load_image = placeholder
+
+
+def source_path(img):
+    """The file an image comes from, whether a deferred placeholder or a loaded image."""
+    return img.get("source_path") or bpy.path.abspath(img.filepath)
+
+
+def load_deferred_images(load):
+    swapped = 0
+    for img in [i for i in bpy.data.images if "source_path" in i]:
+        if img.users and os.path.exists(img["source_path"]):
+            img.user_remap(load(img["source_path"]))
+            swapped += 1
+        bpy.data.images.remove(img)
+    if swapped:
+        log("NOTE", f"textures loaded from the importer's placeholders: {swapped}")
+
+
+def finish(out):
+    """The converter's last step: the .glb at `out`, or with --stage-dir DIR, the scene saved for bounded.py
+    (DIR/scene.blend + DIR/objects.json) so it is exported in chunks, each by its own Blender process."""
+    stage = args().get("--stage-dir")
+    if not stage:
+        export_glb(out)
+        return
+    import json
+
+    stats()
+    scene = bpy.context.scene
+    # Flat: each object keeps its world transform and loses its parent, and empties go, so a chunk never needs
+    # an object of another chunk.
+    for obj in scene.objects:
+        if obj.parent is not None:
+            world = obj.matrix_world.copy()
+            obj.parent = None
+            obj.matrix_world = world
+    for obj in [o for o in scene.objects if o.type not in {"MESH", "LIGHT"}]:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    bpy.data.orphans_purge(do_recursive=True)
+    objects = []
+    for obj in scene.objects:
+        tris = sum(len(p.vertices) - 2 for p in obj.data.polygons) if obj.type == "MESH" else 0
+        objects.append({"name": obj.name, "type": obj.type, "data": obj.data.name, "tris": tris})
+    os.makedirs(stage, exist_ok=True)
+    bpy.ops.wm.save_as_mainfile(filepath=os.path.join(stage, ".partial-scene.blend"), compress=False)
+    with open(os.path.join(stage, "objects.json"), "w") as f:
+        json.dump(objects, f)
+    os.replace(os.path.join(stage, ".partial-scene.blend"), os.path.join(stage, "scene.blend"))
+    log("STAGED", f"{stage}: {len(objects)} objects")
