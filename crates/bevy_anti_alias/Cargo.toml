@@ -53,6 +53,8 @@ nrd_wgpu = { path = "../../vendor/nrd_wgpu", optional = true }
 fsr_wgpu = { path = "../../vendor/fsr_wgpu", optional = true }
 # AMD's FSR 3.1 upscaler for TSR (MIT; vendored, see its README).
 wgpu_ffx = { path = "../../vendor/wgpu_ffx" }
+# Error scopes around the backends' shader and pipeline creation (`backend_failure`).
+wgpu = { version = "30", default-features = false }
 
 [lints]
 workspace = true

@@ -1,7 +1,8 @@
 use super::{
     fsr::{TsrFsr, TsrFsrView},
-    Tsr, TsrAlgorithm, TsrPipelines,
+    Tsr, TsrAlgorithm, TsrFsr3Failure, TsrPipelines,
 };
+use crate::backend_failure::{capture_device_errors, is_forced, provoke_validation_error};
 use bevy_camera::{CameraMainTextureUsages, MainPassResolutionOverride};
 use bevy_core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
 use bevy_diagnostic::FrameCount;
@@ -68,6 +69,7 @@ pub fn prepare_tsr(
     >,
     mut pipelines: ResMut<TsrPipelines>,
     mut fsr: ResMut<TsrFsr>,
+    fsr_failure: Res<TsrFsr3Failure>,
     pipeline_cache: Res<PipelineCache>,
     mut texture_cache: ResMut<TextureCache>,
     render_device: Res<RenderDevice>,
@@ -101,22 +103,51 @@ pub fn prepare_tsr(
         entity_commands.insert(MainPassResolutionOverride(render_size));
 
         if tsr.algorithm == TsrAlgorithm::Fsr3 {
-            if fsr.supported {
+            if fsr.supported && fsr_failure.0.has_failed() {
+                // FSR 3.1 failed on this device (here or in `tsr_fsr`): SGSR 2 from now on.
+                fsr.supported = false;
+                fsr.context = None;
+            }
+            if fsr.supported && fsr.context.is_none() {
+                let device = render_device.wgpu_device();
+                let (context, error) = capture_device_errors(device, || {
+                    let context = wgpu_ffx::FsrContext::new(device);
+                    if is_forced("tsr-fsr3") {
+                        provoke_validation_error(device);
+                    }
+                    context
+                });
+                match error {
+                    None => fsr.context = Some(context),
+                    Some(error) => {
+                        fsr_failure.0.report("TSR's FSR 3.1", error);
+                        fsr.supported = false;
+                    }
+                }
+            }
+            if let (true, Some(context)) = (fsr.supported, &fsr.context) {
                 entity_commands.remove::<(TsrContext, TsrTextures)>();
-                let context = fsr
-                    .context
-                    .get_or_insert_with(|| wgpu_ffx::FsrContext::new(render_device.wgpu_device()));
                 // The inputs are output-sized, with the image in their top-left render rectangle: FSR's own
                 // dynamic-resolution layout, with the maximum render size set to the textures' size.
                 if fsr_view.is_none_or(|fsr_view| fsr_view.output_size != output_size) {
-                    entity_commands.insert(TsrFsrView {
-                        view: wgpu_ffx::FsrContext::create_view(
+                    let (view, error) = capture_device_errors(render_device.wgpu_device(), || {
+                        wgpu_ffx::FsrContext::create_view(
                             context,
                             &render_queue,
                             output_size.to_array(),
                             output_size.to_array(),
-                        ),
+                        )
+                    });
+                    if let Some(error) = error {
+                        fsr_failure.0.report("TSR's FSR 3.1", error);
+                        entity_commands.remove::<TsrFsrView>();
+                        // The next frame runs SGSR 2.
+                        continue;
+                    }
+                    entity_commands.insert(TsrFsrView {
+                        view,
                         output_size,
+                        render_size: UVec2::ZERO,
                     });
                 }
                 continue;
