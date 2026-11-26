@@ -11,6 +11,7 @@
 mod baked;
 mod contract;
 mod ladder;
+mod mirrors;
 mod scenes;
 
 use baked::Baked;
@@ -64,7 +65,8 @@ use bevy::anti_alias::dlss::{
 const USAGE: &str = "\
 gfx_testbed: renders a scene one way, measures it, and writes report.json, screenshots and log.txt.
 
-  --scene interior|many-lights   the scene (default interior; the baked-GI flags below add more)
+  --scene interior|many-lights|mirrors
+                                 the scene (default interior; the baked-GI flags below add more)
   --mode raster|solari|reference how the frame is lit (default raster): the deferred rasterizer, Solari's
                                  realtime lighting, or Solari's path tracer accumulating a ground truth
   --restir                       solari: turn ReSTIR on
@@ -379,6 +381,13 @@ pub struct Run {
     /// When each pass's last recorded measurement was taken. A pass that stops running (`blas_build` after the
     /// load) keeps its last value in the diagnostics store, so only measurements newer than this are recorded.
     pass_seen: BTreeMap<String, Instant>,
+    /// Every view's time of each top-level pass, summed per frame: a pass a second view also runs (a planar
+    /// mirror's camera) is recorded under the same name, and `pass_ms` keeps only the last view's.
+    pass_ms_all_views: BTreeMap<String, Vec<f64>>,
+    /// The newest measurement of each pass summed into `pass_ms_all_views`.
+    pass_seen_all_views: BTreeMap<String, Instant>,
+    /// The sum of every view's top-level passes, per measured frame.
+    gpu_frame_ms_all_views: Vec<f64>,
     peak_memory: Option<(u64, u64)>,
 }
 
@@ -556,6 +565,9 @@ fn main() -> AppExit {
         frame_ms: Vec::new(),
         pass_ms: BTreeMap::new(),
         pass_seen: BTreeMap::new(),
+        pass_ms_all_views: BTreeMap::new(),
+        pass_seen_all_views: BTreeMap::new(),
+        gpu_frame_ms_all_views: Vec::new(),
         peak_memory: None,
     })
     .insert_resource(ladder.clone())
@@ -609,6 +621,7 @@ fn setup(world: &mut World) {
         .or_else(|| Contract::scene(&args.scene, world))
         .or_else(|| Ladder::scene(&args.scene, world))
         .or_else(|| Baked::scene(&args.scene, world))
+        .or_else(|| mirrors::spawn(&args.scene, world))
     else {
         return stop(world, format!("there is no scene called {}", args.scene));
     };
@@ -852,8 +865,34 @@ pub fn drive(
     {
         run.frame_ms.push((now - last).as_secs_f64() * 1000.0);
     }
+    let mut frame_all_views = 0.0;
+    let mut frame_has_passes = false;
     for diagnostic in diagnostics.iter() {
         let path = diagnostic.path().as_str();
+        if let Some(pass) = path
+            .strip_prefix("render/")
+            .and_then(|path| path.strip_suffix("/elapsed_gpu"))
+        {
+            let last = run.pass_seen_all_views.get(pass).copied();
+            let new: Vec<_> = diagnostic
+                .measurements()
+                .filter(|measurement| last.is_none_or(|last| measurement.time > last))
+                .collect();
+            if let Some(newest) = new.iter().map(|measurement| measurement.time).max() {
+                run.pass_seen_all_views.insert(pass.to_owned(), newest);
+                let total: f64 = new.iter().map(|measurement| measurement.value).sum();
+                if measured.contains(&frame) {
+                    run.pass_ms_all_views
+                        .entry(pass.to_owned())
+                        .or_default()
+                        .push(total);
+                    if !pass.contains('/') {
+                        frame_all_views += total;
+                        frame_has_passes = true;
+                    }
+                }
+            }
+        }
         let (Some(pass), Some(measurement)) = (
             path.strip_prefix("render/")
                 .and_then(|path| path.strip_suffix("/elapsed_gpu")),
@@ -872,6 +911,9 @@ pub fn drive(
                 .or_default()
                 .push(measurement.value);
         }
+    }
+    if frame_has_passes {
+        run.gpu_frame_ms_all_views.push(frame_all_views);
     }
     // Walking the allocator's list is not free, so not every frame.
     if frame.is_multiple_of(32)
@@ -998,6 +1040,19 @@ fn finish(world: &mut World) {
         gpu_pass_ms.insert(pass.clone(), json!(median(&mut values)));
         gpu_pass_ms_p10.insert(pass, json!(quantile(&values, 0.1)));
     }
+    let mut gpu_pass_ms_p10_all_views = Map::new();
+    for (pass, mut values) in std::mem::take(&mut run.pass_ms_all_views) {
+        values.sort_by(f64::total_cmp);
+        gpu_pass_ms_p10_all_views.insert(pass, json!(quantile(&values, 0.1)));
+    }
+    let mut gpu_frame_all_views = std::mem::take(&mut run.gpu_frame_ms_all_views);
+    gpu_frame_all_views.sort_by(f64::total_cmp);
+    let gpu_frame_ms_all_views = (!gpu_frame_all_views.is_empty()).then(|| {
+        json!({
+            "median": quantile(&gpu_frame_all_views, 0.5),
+            "p10": quantile(&gpu_frame_all_views, 0.1),
+        })
+    });
     let gpu_memory = run.peak_memory.map(|(allocated, reserved)| {
         json!({
             "source": "wgpu's allocator: every heap, without what a vendor SDK allocates itself",
@@ -1055,6 +1110,9 @@ fn finish(world: &mut World) {
         "frame_ms": frame_ms,
         "gpu_pass_ms": gpu_pass_ms,
         "gpu_pass_ms_p10": gpu_pass_ms_p10,
+        // Every view's passes (the main camera's and, e.g., planar mirrors' cameras), summed per frame.
+        "gpu_pass_ms_p10_all_views": gpu_pass_ms_p10_all_views,
+        "gpu_frame_ms_all_views": gpu_frame_ms_all_views,
         "gpu_memory": gpu_memory,
         "screenshots": screenshots,
         "failures": failures,
