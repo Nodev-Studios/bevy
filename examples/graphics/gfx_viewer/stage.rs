@@ -92,6 +92,99 @@ pub struct Stage {
     pub generation: u32,
     /// A file of the scene failed to load.
     pub failed: bool,
+    /// Why the scene is not (all) there: the first load error, or that the file has no mesh.
+    pub error: Option<String>,
+    /// Frames since the glTF scene's instances were spawned.
+    pub frames_since_ready: u32,
+}
+
+/// Frames after a glTF scene is spawned before meshes still without bounds are left out of its placement (bounds
+/// come a frame after a mesh; a mesh with no positions never gets them). to tune.
+const BOUNDS_WAIT_FRAMES: u32 = 30;
+
+/// Frames after a scene is placed before the allocator is asked to give freed memory back: the last scene's
+/// assets and render resources are dropped over the frames after the switch. to tune.
+const TRIM_AFTER_FRAMES: u32 = 60;
+
+/// Once per opened scene, hands the memory the last scene freed back to the system. glibc keeps freed heap pages
+/// otherwise (0.5 to 1.3 GB per switch between the big scenes, measured), so the process only grew.
+pub fn release_freed_memory(stage: Res<Stage>, mut waited: Local<(u32, u32)>) {
+    if waited.0 != stage.generation {
+        *waited = (stage.generation, 0);
+    }
+    if !stage.placed || waited.1 > TRIM_AFTER_FRAMES {
+        return;
+    }
+    waited.1 += 1;
+    if waited.1 == TRIM_AFTER_FRAMES {
+        trim_heap();
+    }
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[expect(unsafe_code, reason = "glibc's malloc_trim has no safe binding in the dependencies")]
+fn trim_heap() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: malloc_trim takes no pointer and is thread-safe.
+    unsafe { malloc_trim(0) };
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn trim_heap() {}
+
+/// When the GPU last ran out of memory: the validation errors that follow it for this long (the objects that could
+/// not be created, used once more before the scene is gone) are let pass too. to tune.
+const AFTER_OUT_OF_MEMORY: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The last time the GPU ran out of memory.
+#[derive(Resource)]
+struct GpuOutOfMemory(std::time::Instant);
+
+/// What the viewer does on a render error: when the GPU runs out of memory (a scene too big for it), the scene is
+/// closed and the Scene panel says why, and the viewer goes on; any other render error still quits, as Bevy's
+/// default does.
+pub fn render_error_handler() -> bevy::render::error_handler::RenderErrorHandler {
+    use bevy::render::error_handler::{ErrorType, RenderErrorHandler, RenderErrorPolicy};
+    RenderErrorHandler(|error, main_world, _| {
+        let recent = main_world
+            .get_resource::<GpuOutOfMemory>()
+            .is_some_and(|at| at.0.elapsed() < AFTER_OUT_OF_MEMORY);
+        match error.ty {
+            ErrorType::OutOfMemory => {
+                close_scene(main_world, "the GPU ran out of memory opening it");
+                main_world.insert_resource(GpuOutOfMemory(std::time::Instant::now()));
+                RenderErrorPolicy::Ignore
+            }
+            ErrorType::Validation if recent => RenderErrorPolicy::Ignore,
+            _ => {
+                error!("gfx_viewer: quitting on a render error: {:?}", error.ty);
+                main_world.write_message(AppExit::error());
+                RenderErrorPolicy::StopRendering
+            }
+        }
+    })
+}
+
+/// Empties the stage after the open scene could not be shown, and keeps the reason for the Scene panel.
+fn close_scene(world: &mut World, reason: &str) {
+    let entities: Vec<Entity> = world
+        .query_filtered::<Entity, With<SceneEntity>>()
+        .iter(world)
+        .collect();
+    for entity in entities {
+        if let Ok(entity) = world.get_entity_mut(entity) {
+            entity.despawn();
+        }
+    }
+    let mut stage = world.resource_mut::<Stage>();
+    warn!("gfx_viewer: {} closed: {reason}", stage.name);
+    // Dropping the handles unloads the scene's meshes and images.
+    stage.assets.clear();
+    stage.placed = true;
+    stage.failed = true;
+    stage.error = Some(reason.to_owned());
 }
 
 /// Notes when a file of the open scene fails to load, for the overlay.
@@ -99,14 +192,16 @@ pub fn watch_loading(server: Res<AssetServer>, mut stage: ResMut<Stage>) {
     if stage.failed {
         return;
     }
-    let failed = stage.assets.iter().any(|asset| {
-        matches!(
-            server.recursive_dependency_load_state(asset.id()),
-            bevy::asset::RecursiveDependencyLoadState::Failed(_)
-        )
+    let error = stage.assets.iter().find_map(|asset| {
+        match server.recursive_dependency_load_state(asset.id()) {
+            bevy::asset::RecursiveDependencyLoadState::Failed(error) => Some(error.to_string()),
+            _ => None,
+        }
     });
-    if failed {
+    if let Some(error) = error {
+        warn!("gfx_viewer: {} failed to load: {error}", stage.name);
         stage.failed = true;
+        stage.error = Some(error);
         // Nothing more will come: the scene is as placed as it gets (the overlay says a file failed).
         stage.placed = true;
     }
@@ -267,10 +362,12 @@ pub fn place_camera(world: &mut World, start: Transform, fov: f32, speed: f32) {
 /// Once a glTF scene's instance is spawned and its meshes have bounds: places the camera from the bounds, and
 /// gives the scene the default sun when it has no light.
 pub fn place_gltf_scene(world: &mut World) {
-    let stage = world.resource::<Stage>();
+    let mut stage = world.resource_mut::<Stage>();
     let (Some(root), true, false) = (stage.gltf_root, stage.instance_ready, stage.placed) else {
         return;
     };
+    stage.frames_since_ready += 1;
+    let waited = stage.frames_since_ready > BOUNDS_WAIT_FRAMES;
     let mut meshes =
         world.query_filtered::<(Entity, Option<&Aabb>, &GlobalTransform), With<Mesh3d>>();
     let mut parents = world.query::<&ChildOf>();
@@ -281,8 +378,11 @@ pub fn place_gltf_scene(world: &mut World) {
         if !descends_from(world, &mut parents, entity, root) {
             continue;
         }
-        // Bounds come a frame after the mesh loads.
+        // Bounds come a frame after the mesh loads; a mesh that never gets them is left out.
         let Some(aabb) = aabb else {
+            if waited {
+                continue;
+            }
             return;
         };
         let (center, half) = (Vec3::from(aabb.center), Vec3::from(aabb.half_extents));
@@ -299,6 +399,13 @@ pub fn place_gltf_scene(world: &mut World) {
         count += 1;
     }
     if count == 0 {
+        if waited {
+            // Nothing to show: say so and stop waiting, the viewer stays usable.
+            let mut stage = world.resource_mut::<Stage>();
+            warn!("gfx_viewer: {} has no mesh to show", stage.name);
+            stage.error = Some("the file has no mesh to show".into());
+            stage.placed = true;
+        }
         return;
     }
 

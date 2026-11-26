@@ -174,8 +174,10 @@
                 (path: "intel-sponza/source/pkg_c_trees/NewSponza_CypressTree_glTF.gltf"),
             ],
         ),
-        // Intel's 10 000-candle package (pkg_d) is downloaded but not listed: its flames are one emissive mesh of
-        // 2 720 000 triangles and Solari panics above 65 535 per emissive mesh (bevy_solari scene/binder/lights.rs).
+        // Intel's 10 000-candle package (pkg_d) is downloaded but not listed: its one mesh holds 19.5 million
+        // triangles (15.5 M of wax, 2.7 M of emissive flame) and building its acceleration structures runs a 12 GB
+        // GPU out of memory, on every rung (2026-11-26). Solari no longer panics on the flames (they are split into
+        // light sources of 65 535 triangles); the viewer now closes the scene and says why.
         (
             id: "sun-temple",
             name: "Sun Temple (Epic, NVIDIA ORCA)",

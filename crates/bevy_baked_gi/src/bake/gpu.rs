@@ -15,7 +15,7 @@ use bevy_ecs::{
     system::{Local, Res},
 };
 use bevy_math::Mat3;
-use bevy_platform::collections::HashMap;
+use bevy_platform::collections::{HashMap, HashSet};
 use bevy_render::{
     render_resource::{
         binding_types::{
@@ -218,7 +218,9 @@ pub(crate) fn run_bake(
         .light_sources()
         .map(|(kind, entity)| (kind, main_entities.get(entity).ok().map(MainEntity::id)))
         .collect();
-    let matches = lights.len() == job.light_keys.len()
+    // An emissive mesh over 65 535 triangles is several light sources (chunks) of one entity
+    let light_entities: HashSet<Option<Entity>> = lights.iter().map(|(_, e)| *e).collect();
+    let matches = light_entities.len() == job.light_keys.len()
         && lights
             .iter()
             .all(|(_, entity)| entity.is_some_and(|e| job.light_keys.contains_key(&e)));

@@ -1,7 +1,7 @@
 import bevy_pbr::render::pbr_lighting::D_GGX;
 import bevy_pbr::render::utils::{rand_vec2f, rand_u, rand_range_u, sample_uniform_sphere};
 import bevy_render::maths::{PI_2, orthonormalize};
-import package::scene::bindings::{trace_shadow_ray, trace_shadow_ray_previous_frame, RAY_T_MIN, RAY_T_MAX, light_sources, directional_lights, point_lights, rect_lights, environment_map, environment_map_sampler, environment_map_light, LightSource, light_source_kind, emissive_mesh_triangle_count, LIGHT_SOURCE_KIND_EMISSIVE_MESH, LIGHT_SOURCE_KIND_DIRECTIONAL, LIGHT_SOURCE_KIND_POINT, LIGHT_SOURCE_KIND_RECT, resolve_triangle_data_full, ResolvedRayHitFull, MIRROR_ROUGHNESS_THRESHOLD};
+import package::scene::bindings::{trace_shadow_ray, trace_shadow_ray_previous_frame, RAY_T_MIN, RAY_T_MAX, light_sources, directional_lights, point_lights, rect_lights, environment_map, environment_map_sampler, environment_map_light, LightSource, light_source_kind, emissive_mesh_triangle_count, emissive_mesh_first_triangle, LIGHT_SOURCE_KIND_EMISSIVE_MESH, LIGHT_SOURCE_KIND_DIRECTIONAL, LIGHT_SOURCE_KIND_POINT, LIGHT_SOURCE_KIND_RECT, resolve_triangle_data_full, ResolvedRayHitFull, MIRROR_ROUGHNESS_THRESHOLD};
 
 enable wgpu_ray_query;
 
@@ -268,7 +268,7 @@ fn resolve_light_sample(light_sample: LightSample, light_source: LightSource) ->
         );
     } else {
         let triangle_count = emissive_mesh_triangle_count(light_source);
-        let triangle_id = light_sample.light_id & 0xFFFFu;
+        let triangle_id = emissive_mesh_first_triangle(light_source) + (light_sample.light_id & 0xFFFFu);
         let barycentrics = triangle_barycentrics(light_sample.seed);
         let triangle_data = resolve_triangle_data_full(light_source.id, triangle_id, barycentrics);
 
