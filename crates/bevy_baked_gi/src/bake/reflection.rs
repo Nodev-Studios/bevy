@@ -15,7 +15,10 @@
 //! `environment_filter.wesl` does on the GPU.
 
 use alloc::vec::Vec;
-use bevy_math::Vec3;
+use bevy_math::{
+    ops::{self, FloatPow},
+    Vec3,
+};
 use core::f32::consts::PI;
 
 /// How each region's reflection probe is captured and filtered.
@@ -185,7 +188,7 @@ pub fn prefilter(size: usize, faces: [Face; 6], levels: u32, samples: u32) -> Ve
     for level in 1..levels {
         let n = (size >> level).max(1);
         let perceptual = level as f32 / (levels - 1) as f32;
-        let alpha = perceptual.clamp(0.089, 1.0).powi(2);
+        let alpha = perceptual.clamp(0.089, 1.0).squared();
         // The lobe's samples in a frame around +Z, shared by every texel of the level.
         let lobe: Vec<(Vec3, f32, f32)> = (0..samples)
             .filter_map(|i| {
@@ -193,7 +196,7 @@ pub fn prefilter(size: usize, faces: [Face; 6], levels: u32, samples: u32) -> Ve
                 let cos_h = ((1.0 - u) / (1.0 + (alpha * alpha - 1.0) * u)).sqrt();
                 let sin_h = (1.0 - cos_h * cos_h).max(0.0).sqrt();
                 let phi = 2.0 * PI * v;
-                let h = Vec3::new(sin_h * phi.cos(), sin_h * phi.sin(), cos_h);
+                let h = Vec3::new(sin_h * ops::cos(phi), sin_h * ops::sin(phi), cos_h);
                 // L = reflect(−V, H) with V = N = +Z.
                 let l = 2.0 * cos_h * h - Vec3::Z;
                 if l.z <= 0.0 {
@@ -201,7 +204,7 @@ pub fn prefilter(size: usize, faces: [Face; 6], levels: u32, samples: u32) -> Ve
                 }
                 // pdf(L) = D · (N·H) / (4 · V·H), and V·H = N·H when V = N.
                 let pdf = ggx_d(cos_h, alpha) / 4.0;
-                let lod = 0.5 * (1.0 / (samples as f32 * pdf * texel_solid_angle)).log2();
+                let lod = 0.5 * ops::log2(1.0 / (samples as f32 * pdf * texel_solid_angle));
                 Some((l, l.z, lod))
             })
             .collect();

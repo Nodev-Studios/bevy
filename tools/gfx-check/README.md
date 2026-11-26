@@ -57,8 +57,9 @@ and `b.png`, which is all the testbed writes.
   section 2 as data (E2). Time on a quiet machine: the gates read wall-clock frames.
 - `golden.ron` and `golden/`: one golden image per preset and scene at 1080p on the RTX 5070, on the path every
   vendor runs (Raster with TAA, the traced rungs with NRD and TSR), with tolerances from seven repeats (E2).
-- `baked.ron` and `golden-baked/`: Raster with each scene's baked indirect light (`bevy_baked_gi`: volumes and reflection probes) against its
-  golden image, and the coverage view of the bake alone; the file's header has the bake commands.
+- `baked.ron` and `golden-baked/`: Raster with each scene's baked indirect light (`bevy_baked_gi`: volumes and
+  reflection probes) against its golden image, and the coverage view of the bake alone; the file's header has the
+  bake commands.
 - `calibration.ron` and `calibration.toml`: the error against the reference and the flicker of six ways of
   showing Solari's frame on `interior` at 2560x1440, with their noise floor. Later gates are relative to it.
 
