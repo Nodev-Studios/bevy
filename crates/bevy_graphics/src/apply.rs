@@ -44,7 +44,7 @@
 pub mod backends;
 
 use crate::{
-    raster::{raster_with, traced_bloom, RasterEffects},
+    raster::{raster_with, traced_bloom, RasterEffects, RasterLevel},
     resolve, GraphicsCamera, GraphicsCapabilities, GraphicsOverrides, GraphicsRung,
     GraphicsSettings, GraphicsSystems, ResolvedDenoiser, ResolvedGraphics, ResolvedQuality,
     ResolvedUpscaler,
@@ -211,6 +211,7 @@ struct Applied {
     upscaler: ResolvedUpscaler,
     denoiser: ResolvedDenoiser,
     quality: ResolvedQuality,
+    raster: RasterLevel,
     overrides: GraphicsOverrides,
 }
 
@@ -300,6 +301,7 @@ fn apply_to_cameras(
         upscaler: resolved.upscaler,
         denoiser: resolved.denoiser,
         quality: resolved.quality,
+        raster: resolved.raster,
         overrides: settings.overrides,
     };
     for (entity, state, shape) in &mut cameras {
@@ -368,10 +370,10 @@ fn shape_camera(
             ambient_occlusion: None,
             reflections: None,
             bloom: traced_bloom(&wanted.overrides),
-            ..raster_with(&wanted.overrides)
+            ..raster_with(wanted.raster, &wanted.overrides)
         }
     } else {
-        raster_with(&wanted.overrides)
+        raster_with(wanted.raster, &wanted.overrides)
     };
     let ambient_occlusion = effects.ambient_occlusion.is_some();
     if ambient_occlusion && shape.ambient_occlusion.is_none() && !shape.normal_prepass {
@@ -603,7 +605,7 @@ fn apply_to_lights<L: ShadowLight>(
 ) {
     let traced = resolved.rung.is_traced();
     let shadow_maps = !traced && settings.overrides.shadows != Some(false);
-    let contact_shadows = !traced && raster_with(&settings.overrides).contact_shadows.is_some();
+    let contact_shadows = !traced && raster_with(resolved.raster, &settings.overrides).contact_shadows.is_some();
 
     for (entity, mut light, state) in &mut lights {
         let current = light.shadows();

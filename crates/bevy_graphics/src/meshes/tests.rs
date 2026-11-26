@@ -269,6 +269,7 @@ mod on_entities {
                 ResolvedDenoiser::None
             },
             quality: ResolvedQuality::NativeAa,
+            raster: crate::raster::RasterLevel::Full,
             render_scale: 1.0,
             fallbacks: Vec::<Fallback>::new(),
             unfitted_meshes: counts.0,

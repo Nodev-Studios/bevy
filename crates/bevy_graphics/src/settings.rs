@@ -32,12 +32,14 @@ pub struct GraphicsSettings {
 #[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[reflect(Default, Clone, PartialEq, Hash, Serialize, Deserialize)]
 pub enum GraphicsPreset {
-    /// The highest rung the static rules of [`resolve`](crate::resolve) allow on this machine.
+    /// The highest rung the static rules of [`resolve`](crate::resolve) allow on this machine. On an integrated
+    /// GPU or a card under 5.5 GiB of video memory, Raster's light table at a lower resolution.
     #[default]
     Auto,
     /// Rasterized lighting: shadow maps, screen-space reflections and ambient occlusion, no ray tracing.
     Raster,
-    /// Ray traced lighting with the cheap parameter set: one bounce that ends in the world cache.
+    /// Ray traced lighting with the cheap parameter set: two bounces that end in the world cache (the full set
+    /// has three), at a lower internal resolution under [`UpscaleQuality::Auto`].
     RtLite,
     /// Ray traced lighting with the full parameter set.
     RtFull,
