@@ -47,6 +47,7 @@ mod medium;
 mod mesh_material;
 mod parallax;
 mod pbr_material;
+pub mod planar_reflection;
 mod prepass;
 mod render;
 mod ssao;
@@ -245,6 +246,7 @@ impl Plugin for PbrPlugin {
                 ScatteringMediumPlugin,
                 AtmospherePlugin,
                 GpuClusteringPlugin,
+                planar_reflection::PlanarReflectionPlugin,
             ));
 
         #[cfg(feature = "bevy_gltf")]

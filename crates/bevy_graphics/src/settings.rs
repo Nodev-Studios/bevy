@@ -132,6 +132,10 @@ pub struct GraphicsOverrides {
     /// before it existed read as `None`.
     #[serde(default)]
     pub baked_gi: Option<bool>,
+    /// Planar reflections on flat mirrors ([`raster`](crate::raster)). [`GraphicsPreset::Raster`] only: the
+    /// traced presets reflect by tracing. Settings saved before it existed read as `None`.
+    #[serde(default)]
+    pub planar_reflections: Option<bool>,
 }
 
 /// Marks a camera the graphics settings are applied to.

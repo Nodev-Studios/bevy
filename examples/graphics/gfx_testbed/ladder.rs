@@ -31,7 +31,8 @@ Ladder flags. Any of them hands the camera to bevy_graphics; none of the raw --m
   --quality auto|native|quality|balanced|performance
                                  the internal resolution asked for (default auto)
   --denoiser auto|dlss-rr|nrd    the denoiser of the traced rungs (default auto)
-  --off EFFECT,...               force effects off: shadows, ssao, ssr, contact-shadows, bloom
+  --off EFFECT,...               force effects off: shadows, ssao, ssr, contact-shadows, bloom,
+                                 planar-reflections
   --cycle                        switch raster, rt-lite, rt-full, raster in one run. Each stage starts when its
                                  pipelines are ready and is captured --stage-frames frames later as
                                  stage-K-<preset>.png, as a single run with warmup + frames = --stage-frames
@@ -112,9 +113,11 @@ impl Ladder {
                 "ssr" => &mut overrides.ssr,
                 "contact-shadows" => &mut overrides.contact_shadows,
                 "bloom" => &mut overrides.bloom,
+                "planar-reflections" => &mut overrides.planar_reflections,
                 _ => {
                     flags.error(format!(
-                        "--off takes shadows, ssao, ssr, contact-shadows and bloom, not {effect}"
+                        "--off takes shadows, ssao, ssr, contact-shadows, bloom and planar-reflections, \
+                         not {effect}"
                     ));
                     continue;
                 }

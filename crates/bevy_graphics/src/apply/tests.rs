@@ -233,6 +233,7 @@ fn every_state() -> Vec<State> {
             restir: None,
             max_bounces: None,
             baked_gi: None,
+            planar_reflections: Some(false),
         },
         GraphicsOverrides {
             restir: Some(true),
@@ -387,6 +388,15 @@ fn assert_invariants(ladder: &Ladder, camera: Entity, state: &State) {
     assert_eq!(
         ladder.has::<Bloom>(camera),
         state.overrides.bloom != Some(false),
+        "{context}"
+    );
+    // Planar reflections on Raster only: the tracer reflects mirrors itself.
+    assert_eq!(
+        ladder.has::<PlanarReflections>(camera),
+        on(
+            state.overrides.planar_reflections,
+            table.planar_reflections.is_some()
+        ),
         "{context}"
     );
     assert_eq!(

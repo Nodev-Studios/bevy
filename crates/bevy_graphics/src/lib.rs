@@ -23,6 +23,7 @@ pub mod baked;
 pub mod denoisers;
 pub mod dlss;
 pub mod meshes;
+pub mod mirrors;
 pub mod raster;
 pub mod traced;
 pub mod upscalers;
