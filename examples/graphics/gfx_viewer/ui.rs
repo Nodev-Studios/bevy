@@ -622,6 +622,7 @@ fn render_panel(ui: &mut egui::Ui, state: &mut UiState, view: &View, edit: &mut 
                     switch(ui, "SSAO (Raster)", &mut o.ssao);
                     switch(ui, "SSR (Raster)", &mut o.ssr);
                     switch(ui, "Contact shadows (Raster)", &mut o.contact_shadows);
+                    switch(ui, "Planar mirrors (Raster)", &mut o.planar_reflections);
                     switch(ui, "Bloom", &mut o.bloom);
                     switch(ui, "ReSTIR (traced)", &mut o.restir);
                     ui.label("Max bounces (traced)");
