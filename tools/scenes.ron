@@ -65,7 +65,9 @@
             // As Bevy's solari example places them.
             scale: 10.0,
             extra: [(path: "pica-pica/robot_01.glb", translation: (-2.0, 0.05, -2.1), rotation_y: 90.0, scale: 2.0)],
-            sun: Sun(direction: (-0.60, -0.70, -0.38), illuminance: 10000.0),
+            // Bevy's solari example's sun (FULL_DAYLIGHT) and its default exposure. to tune.
+            sun: Sun(direction: (0.462, -0.707, 0.535), illuminance: 20000.0),
+            exposure: 9.7,
         ),
         (
             id: "zero-day",

@@ -18,6 +18,8 @@ use std::sync::{atomic::Ordering, Arc, Mutex};
 
 /// Frames the other set renders before its capture: the temporal filters and the denoisers settle. to tune.
 const SETTLE_FRAMES: u32 = 45;
+/// Frames the panels are hidden before the capture (egui's output reaches the frame late).
+const HIDE_FRAMES: u32 = 4;
 /// Frames the camera stays still before a stale left side is taken again. to tune.
 const STILL_FRAMES: u32 = 30;
 
@@ -26,6 +28,10 @@ pub enum Phase {
     Idle,
     /// Showing the other set, waiting for it to settle.
     Settling {
+        left: u32,
+    },
+    /// The panels are hidden; egui's output leaves the frame a few frames later.
+    Hiding {
         left: u32,
     },
     /// The capture is on its way.
@@ -81,7 +87,7 @@ impl Default for Split {
 impl Split {
     pub fn status(&self) -> String {
         match self.phase {
-            Phase::Settling { .. } | Phase::Capturing => "taking the left side…".into(),
+            Phase::Settling { .. } | Phase::Hiding { .. } | Phase::Capturing => "taking the left side…".into(),
             Phase::Idle if self.image.is_none() => "no left side yet".into(),
             Phase::Idle if self.stale() => "the camera moved: the left side is stale".into(),
             Phase::Idle => format!(
@@ -169,9 +175,16 @@ fn step(world: &mut World, split: &mut Split) {
                 };
                 return;
             }
+            split.phase = Phase::Hiding { left: HIDE_FRAMES };
+            world.resource_mut::<UiState>().hidden_for_capture = true;
+        }
+        Phase::Hiding { left } => {
+            if left > 0 {
+                split.phase = Phase::Hiding { left: left - 1 };
+                return;
+            }
             split.phase = Phase::Capturing;
             let slot = split.slot.clone();
-            world.resource_mut::<UiState>().hidden_for_capture = true;
             world.spawn(Screenshot::primary_window()).observe(
                 move |captured: On<ScreenshotCaptured>| {
                     *slot.lock().unwrap() = Some(captured.image.clone());
@@ -215,7 +228,7 @@ pub fn draw_split(ctx: &egui::Context, split: &mut Split, _ab: &AbCompare) {
     let x = screen.left() + split.divider * screen.width();
     let painter = ctx.layer_painter(egui::LayerId::background());
     if let Some(texture) = &split.texture
-        && !matches!(split.phase, Phase::Settling { .. } | Phase::Capturing)
+        && !matches!(split.phase, Phase::Settling { .. } | Phase::Hiding { .. } | Phase::Capturing)
     {
         let left = egui::Rect::from_min_max(screen.min, egui::pos2(x, screen.max.y));
         painter.image(

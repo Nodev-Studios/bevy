@@ -486,10 +486,10 @@ fn scene_sun(world: &mut World) -> Option<(Entity, DirectionalLight, Transform)>
     let mut viewer =
         world.query_filtered::<(Entity, &DirectionalLight, &Transform), With<DefaultSun>>();
     if let Some((e, l, t)) = viewer.iter(world).next() {
-        return Some((e, l.clone(), *t));
+        return Some((e, *l, *t));
     }
     let mut any = world.query::<(Entity, &DirectionalLight, &Transform)>();
-    any.iter(world).next().map(|(e, l, t)| (e, l.clone(), *t))
+    any.iter(world).next().map(|(e, l, t)| (e, *l, *t))
 }
 
 fn set_coverage(world: &mut World, on: bool) {

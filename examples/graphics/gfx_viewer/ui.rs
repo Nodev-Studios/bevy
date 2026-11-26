@@ -30,6 +30,7 @@ use bevy::{
     camera_controller::free_camera::FreeCameraState,
     diagnostic::DiagnosticsStore,
     ecs::system::SystemParam,
+    math::ops,
     graphics::{
         baked::BakedGiStatus, raster::RasterLevel, DenoiserChoice, GraphicsCapabilities,
         GraphicsPreset, GraphicsRung, GraphicsSettings, ResolvedGraphics, UpscaleQuality,
@@ -128,14 +129,18 @@ impl SunControl {
     /// The direction the light travels.
     pub fn direction(&self) -> Vec3 {
         let (az, el) = (self.azimuth.to_radians(), self.elevation.to_radians());
-        -Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos())
+        -Vec3::new(
+            ops::sin(az) * ops::cos(el),
+            ops::sin(el),
+            -ops::cos(az) * ops::cos(el),
+        )
     }
 
     pub fn from_direction(direction: Vec3, lux: f32) -> Self {
         let towards = -direction.normalize_or(Vec3::NEG_Y);
         Self {
-            azimuth: towards.x.atan2(-towards.z).to_degrees().rem_euclid(360.0),
-            elevation: towards.y.clamp(-1.0, 1.0).asin().to_degrees(),
+            azimuth: ops::atan2(towards.x, -towards.z).to_degrees().rem_euclid(360.0),
+            elevation: ops::asin(towards.y.clamp(-1.0, 1.0)).to_degrees(),
             lux,
         }
     }
@@ -324,8 +329,13 @@ pub fn draw(
                 .show(&ctx, |ui| scene_panel(ui, state, &view, &mut edit));
         }
         if w.render {
-            window("Render", egui::pos2(8.0, 330.0), 290.0)
-                .show(&ctx, |ui| render_panel(ui, state, &view, &mut edit));
+            let top = 300.0;
+            window("Render", egui::pos2(8.0, top), 290.0).show(&ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("render scroll")
+                    .max_height((screen.height() - top - 50.0).max(150.0))
+                    .show(ui, |ui| render_panel(ui, state, &view, &mut edit));
+            });
         }
         if w.stats {
             window("Stats", egui::pos2(screen.max.x - 348.0, 34.0), 340.0)
@@ -393,7 +403,7 @@ const NC: egui::Color32 = egui::Color32::from_rgb(240, 160, 70);
 
 fn scene_panel(ui: &mut egui::Ui, state: &mut UiState, view: &View, edit: &mut Edit) {
     egui::ScrollArea::vertical()
-        .max_height(170.0)
+        .max_height(110.0)
         .id_salt("scenes")
         .show(ui, |ui| {
             for (index, entry) in view.catalog.entries.iter().enumerate() {
@@ -515,8 +525,9 @@ fn switch(ui: &mut egui::Ui, label: &str, value: &mut Option<bool>) {
 }
 
 fn render_panel(ui: &mut egui::Ui, state: &mut UiState, view: &View, edit: &mut Edit) {
-    let settings = &mut *edit.settings;
-    let mut s = settings.clone();
+    // Edited on a copy: writing the resource only when something changed keeps the ladder from resolving
+    // again every frame.
+    let mut s = edit.settings.clone();
     ui.horizontal(|ui| {
         ui.label("Preset");
         for (preset, name) in [
@@ -629,8 +640,8 @@ fn render_panel(ui: &mut egui::Ui, state: &mut UiState, view: &View, edit: &mut 
                     ui.end_row();
                 });
         });
-    if s != *settings {
-        *settings = s;
+    if s != *edit.settings {
+        *edit.settings = s;
     }
 
     egui::CollapsingHeader::new("View")

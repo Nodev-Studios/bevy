@@ -29,6 +29,7 @@ use crate::{
 };
 use bevy::{
     app::AppExit,
+    math::ops,
     asset::RecursiveDependencyLoadState,
     camera::Exposure,
     camera_controller::free_camera::FreeCameraState,
@@ -65,6 +66,9 @@ const CALM_FRAMES: u32 = 3;
 /// Frames after a change before the pipeline count is trusted (the new components reach the render world and
 /// queue their pipelines a frame or two later).
 const SWITCH_FRAMES: u32 = 5;
+/// Frames before a capture the panels are hidden (like Tab; the split view's left side stays): egui's output
+/// reaches the frame later than the frame it was drawn in.
+const UI_LAG_FRAMES: u32 = 4;
 /// A step that is not ready after this long fails instead of hanging the run.
 const STEP_LIMIT: Duration = Duration::from_secs(300);
 /// How long a bake may take.
@@ -162,7 +166,8 @@ enum State {
     Start,
     /// Waiting for the scene, then the step's action.
     Opening,
-    /// Clicking a widget: 0 moves the cursor there, 1 presses, 2 releases.
+    /// Clicking a widget: 0 moves the cursor there; 3 (egui has seen the cursor and the camera gate has
+    /// run) checks the pointer and presses; 5 releases. The stages between wait a frame.
     Clicking {
         stage: u32,
         pointer_over: bool,
@@ -579,6 +584,9 @@ fn step(world: &mut World, test: &mut SelfTest) {
                 && (world.resource::<Stage>().index != current.scene || test.index == 0)
             {
                 world.write_message(Action::OpenScene(current.scene));
+            } else {
+                // Every step of a scene sees it from where it starts (a bookmark step moves the camera).
+                world.write_message(Action::ResetCamera);
             }
             *world.resource_mut::<GraphicsSettings>() = current.settings.clone();
             if current.kind == Kind::OpenFile {
@@ -629,6 +637,13 @@ fn step(world: &mut World, test: &mut SelfTest) {
                 .expect("the viewer has a window");
             let position = Vec2::new(rect.center().x, rect.center().y);
             match stage {
+                1 | 2 | 4 => {
+                    test.state = State::Clicking {
+                        stage: stage + 1,
+                        pointer_over,
+                        camera_held,
+                    };
+                }
                 0 => {
                     world.write_message(WindowEvent::CursorMoved(CursorMoved {
                         window,
@@ -641,7 +656,7 @@ fn step(world: &mut World, test: &mut SelfTest) {
                         camera_held,
                     };
                 }
-                1 => {
+                3 => {
                     // The cursor rests over the panel: egui has the pointer and the camera stands still.
                     let over = world.resource::<UiState>().pointer;
                     let held = world
@@ -654,7 +669,7 @@ fn step(world: &mut World, test: &mut SelfTest) {
                         window,
                     }));
                     test.state = State::Clicking {
-                        stage: 2,
+                        stage: 4,
                         pointer_over: over,
                         camera_held: held,
                     };
@@ -734,6 +749,10 @@ fn step(world: &mut World, test: &mut SelfTest) {
                 return;
             }
             if let Some(held) = held {
+                // egui's output reaches the frame a frame or two late: the panels go a few frames early.
+                if held + UI_LAG_FRAMES == HOLD_FRAMES && current.kind != Kind::ShowUi {
+                    world.resource_mut::<UiState>().visible = false;
+                }
                 if held + 1 >= HOLD_FRAMES {
                     request_capture(world, test, &current);
                     test.state = State::Capturing;
@@ -843,7 +862,6 @@ fn act(world: &mut World, test: &mut SelfTest, current: &Step) {
                     sun.lux *= 0.5;
                 }
                 None => {
-                    drop(controls);
                     record_skip(world, test, current, "this scene has no sun");
                 }
             }
@@ -901,11 +919,7 @@ fn scene_failed(world: &World) -> bool {
     })
 }
 
-fn request_capture(world: &mut World, test: &mut SelfTest, current: &Step) {
-    if current.kind != Kind::ShowUi {
-        // Like Tab: the panels go, the split view's left side stays.
-        world.resource_mut::<UiState>().visible = false;
-    }
+fn request_capture(world: &mut World, test: &mut SelfTest, _current: &Step) {
     let slot = test.capture.clone();
     world
         .spawn(Screenshot::primary_window())
@@ -1131,7 +1145,7 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
             let sun = world.resource::<ViewControls>().sun;
             let mut suns = world.query::<(&DirectionalLight, &Transform)>();
             let found = suns.iter(world).any(|(_, transform)| {
-                let height = (-transform.forward().y).asin().to_degrees();
+                let height = ops::asin(-transform.forward().y).to_degrees();
                 (height - elevation).abs() < 0.5
             });
             extra.insert(
