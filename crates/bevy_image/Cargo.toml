@@ -1,6 +1,6 @@
 [package]
 name = "bevy_image"
-version = "0.20.1"
+version = "0.20.0-dev"
 edition = "2024"
 description = "Provides image types for Bevy Engine"
 homepage = "https://bevy.org"
@@ -29,6 +29,7 @@ jpeg = ["image/jpeg"]
 png = ["image/png"]
 pnm = ["image/pnm"]
 qoi = ["image/qoi"]
+svg = ["dep:resvg"]
 tga = ["image/tga"]
 tiff = ["image/tiff"]
 webp = ["image/webp"]
@@ -49,21 +50,24 @@ zstd_c = ["zstd", "dep:zstd"]
 compressed_image_saver_universal = ["basis-universal"]
 
 # Texture compression asset processor (BCn for desktop, ASTC for mobile via env var)
-compressed_image_saver = ["dep:ctt", "ktx2", "zstd"]
+compressed_image_saver = ["ctt/default", "ktx2", "zstd"]
+
+# Equirectangular (lat-long) panorama to cubemap conversion
+equirectangular_cubemap = ["dep:ctt"]
 
 [dependencies]
 # bevy
-bevy_app = { path = "../bevy_app", version = "0.20.1" }
-bevy_asset = { path = "../bevy_asset", version = "0.20.1" }
-bevy_color = { path = "../bevy_color", version = "0.20.1", features = [
+bevy_app = { path = "../bevy_app", version = "0.20.0-dev" }
+bevy_asset = { path = "../bevy_asset", version = "0.20.0-dev" }
+bevy_color = { path = "../bevy_color", version = "0.20.0-dev", features = [
   "serialize",
   "wgpu-types",
 ] }
-bevy_ecs = { path = "../bevy_ecs", version = "0.20.1", default-features = false }
-bevy_math = { path = "../bevy_math", version = "0.20.1" }
-bevy_reflect = { path = "../bevy_reflect", version = "0.20.1" }
-bevy_utils = { path = "../bevy_utils", version = "0.20.1" }
-bevy_platform = { path = "../bevy_platform", version = "0.20.1", default-features = false, features = [
+bevy_ecs = { path = "../bevy_ecs", version = "0.20.0-dev", default-features = false }
+bevy_math = { path = "../bevy_math", version = "0.20.0-dev" }
+bevy_reflect = { path = "../bevy_reflect", version = "0.20.0-dev" }
+bevy_utils = { path = "../bevy_utils", version = "0.20.0-dev" }
+bevy_platform = { path = "../bevy_platform", version = "0.20.0-dev", default-features = false, features = [
   "std",
 ] }
 
@@ -83,16 +87,18 @@ ddsfile = { version = "0.6.0", optional = true }
 ktx2 = { version = "0.5.0", optional = true }
 # For ktx2 supercompression
 flate2 = { version = "1.0.22", optional = true }
-zstd = { version = "0.13.3", optional = true }
+zstd = { version = "0.14.0", optional = true }
 ruzstd = { version = "0.9.0", optional = true }
 # For transcoding of UASTC/ETC1S universal formats, and for .basis file support
 basis-universal = { version = "0.3.0", optional = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 half = { version = "2.4.1" }
-ctt = { version = "0.5", optional = true }
+ctt = { version = "0.6", optional = true, default-features = false }
+# For SVG rasterization.
+resvg = { version = "0.50", optional = true, default-features = false }
 
 [dev-dependencies]
-bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
+bevy_ecs = { path = "../bevy_ecs", version = "0.20.0-dev" }
 serde_json = "1.0.140"
 
 [lints]

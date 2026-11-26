@@ -1,3 +1,8 @@
+//! Macros for [`bevy_scene`], including the `bsn!` scene notation macros and the
+//! `SceneComponent` derive.
+//!
+//! [`bevy_scene`]: https://docs.rs/bevy/latest/bevy/scene/index.html
+
 // work around Rust-Analyzer issue where it prefers the module highlighting and docs over the macro, even for private modules, if both share a name
 // https://github.com/rust-lang/rust-analyzer/issues/19421
 // done this way to avoid the large diff of renaming the folder
@@ -34,7 +39,6 @@ use syn::{parse_macro_input, DeriveInput};
 /// | `CompA { name }`                           | Component with Rust's "field assignment shorthand". Evaluates to `CompA { name: name.into() }`                 |
 /// | `MyEnum::Variant`                          | Enum Component `MyEnum` with the `Variant` variant                                                             |
 /// | `component`                                | Insert the component value from a variable `component`                                                         |
-/// | `template_value(CompA::from_str("foo"))`   | Insert the component value by immediately calling the constructor                                              |
 /// | `template(\|context\| { ... })`            | Register a function/closure returning a Template (eg. Component). Its passed [`context`] allowing World access |
 /// | `~MyType`<br>`~MyType {name: var}`         | Type implementing [`Template`], the prefix is used to distinguish it from Components which use [`FromTemplate`]|
 /// | **Including Scenes**                       |                                                                                                                |
@@ -170,7 +174,7 @@ use syn::{parse_macro_input, DeriveInput};
 ///
 #[proc_macro]
 pub fn bsn(input: TokenStream) -> TokenStream {
-    crate::_bsn::bsn(input)
+    _bsn::bsn(input)
 }
 
 /// Creates a [`SceneList`] using BSN (Bevy Scene Notation) syntax.
@@ -192,9 +196,13 @@ pub fn bsn(input: TokenStream) -> TokenStream {
 /// [`bevy_scene`]: https://docs.rs/bevy/latest/bevy/scene/index.html
 #[proc_macro]
 pub fn bsn_list(input: TokenStream) -> TokenStream {
-    crate::_bsn::bsn_list(input)
+    _bsn::bsn_list(input)
 }
 
+/// Derives [`SceneComponent`], registering which components the annotated type carries and how
+/// they are constructed from BSN.
+///
+/// [`SceneComponent`]: https://docs.rs/bevy/latest/bevy/scene/trait.SceneComponent.html
 #[proc_macro_derive(
     SceneComponent,
     attributes(component, require, relationship, relationship_target, entities, scene)

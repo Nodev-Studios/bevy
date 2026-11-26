@@ -1,6 +1,6 @@
 [package]
 name = "bevy_graphics"
-version = "0.20.1"
+version = "0.20.0-dev"
 edition = "2024"
 description = "Provides tiered graphics settings for Bevy Engine"
 homepage = "https://bevy.org"
@@ -26,32 +26,32 @@ force_disable_nrd = ["bevy_anti_alias/force_disable_nrd"]
 
 [dependencies]
 # bevy
-bevy_anti_alias = { path = "../bevy_anti_alias", version = "0.20.1" }
-bevy_app = { path = "../bevy_app", version = "0.20.1" }
-bevy_asset = { path = "../bevy_asset", version = "0.20.1" }
-bevy_baked_gi = { path = "../bevy_baked_gi", version = "0.20.1" }
-bevy_camera = { path = "../bevy_camera", version = "0.20.1" }
-bevy_color = { path = "../bevy_color", version = "0.20.1" }
-bevy_core_pipeline = { path = "../bevy_core_pipeline", version = "0.20.1" }
-bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
-bevy_light = { path = "../bevy_light", version = "0.20.1" }
-bevy_material = { path = "../bevy_material", version = "0.20.1" }
-bevy_math = { path = "../bevy_math", version = "0.20.1" }
+bevy_anti_alias = { path = "../bevy_anti_alias", version = "0.20.0-dev" }
+bevy_app = { path = "../bevy_app", version = "0.20.0-dev" }
+bevy_asset = { path = "../bevy_asset", version = "0.20.0-dev" }
+bevy_baked_gi = { path = "../bevy_baked_gi", version = "0.20.0-dev" }
+bevy_camera = { path = "../bevy_camera", version = "0.20.0-dev" }
+bevy_color = { path = "../bevy_color", version = "0.20.0-dev" }
+bevy_core_pipeline = { path = "../bevy_core_pipeline", version = "0.20.0-dev" }
+bevy_ecs = { path = "../bevy_ecs", version = "0.20.0-dev" }
+bevy_light = { path = "../bevy_light", version = "0.20.0-dev" }
+bevy_material = { path = "../bevy_material", version = "0.20.0-dev" }
+bevy_math = { path = "../bevy_math", version = "0.20.0-dev" }
 # Mesh fitting generates missing tangents and skips morphed meshes.
-bevy_mesh = { path = "../bevy_mesh", version = "0.20.1", features = [
+bevy_mesh = { path = "../bevy_mesh", version = "0.20.0-dev", features = [
   "bevy_mikktspace",
   "morph",
 ] }
-bevy_pbr = { path = "../bevy_pbr", version = "0.20.1" }
-bevy_platform = { path = "../bevy_platform", version = "0.20.1", default-features = false, features = [
+bevy_pbr = { path = "../bevy_pbr", version = "0.20.0-dev" }
+bevy_platform = { path = "../bevy_platform", version = "0.20.0-dev", default-features = false, features = [
   "std",
 ] }
-bevy_post_process = { path = "../bevy_post_process", version = "0.20.1" }
-bevy_reflect = { path = "../bevy_reflect", version = "0.20.1" }
-bevy_render = { path = "../bevy_render", version = "0.20.1" }
-bevy_solari = { path = "../bevy_solari", version = "0.20.1", optional = true }
-bevy_utils = { path = "../bevy_utils", version = "0.20.1" }
-bevy_window = { path = "../bevy_window", version = "0.20.1" }
+bevy_post_process = { path = "../bevy_post_process", version = "0.20.0-dev" }
+bevy_reflect = { path = "../bevy_reflect", version = "0.20.0-dev" }
+bevy_render = { path = "../bevy_render", version = "0.20.0-dev" }
+bevy_solari = { path = "../bevy_solari", version = "0.20.0-dev", optional = true }
+bevy_utils = { path = "../bevy_utils", version = "0.20.0-dev" }
+bevy_window = { path = "../bevy_window", version = "0.20.0-dev" }
 
 # other
 serde = { version = "1", default-features = false, features = ["derive"] }
@@ -64,7 +64,7 @@ ash = { version = "0.38", default-features = false }
 wgpu = { version = "30", default-features = false, features = ["vulkan"] }
 
 [dev-dependencies]
-bevy_shape = { path = "../bevy_shape", version = "0.20.1" }
+bevy_shape = { path = "../bevy_shape", version = "0.20.0-dev" }
 ron = "0.12"
 
 [lints]

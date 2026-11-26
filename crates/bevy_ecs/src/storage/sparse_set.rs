@@ -2,7 +2,6 @@ use crate::{
     change_detection::{CheckChangeTicks, ComponentTickCells, ComponentTicks, MaybeLocation, Tick},
     component::{ComponentId, ComponentInfo},
     entity::{Entity, EntityIndex},
-    query::DebugCheckedUnwrap,
     storage::{AbortOnPanic, Column, TableRow, VecExtensions},
 };
 use alloc::{boxed::Box, vec::Vec};
@@ -404,7 +403,7 @@ impl ComponentSparseSet {
                 // SAFETY: The swapped entity was just fetched from the entity Vec, it must have already
                 // been inserted and in bounds.
                 unsafe {
-                    *self.sparse.get_mut(index).debug_checked_unwrap() = dense_index;
+                    *self.sparse.get_mut(index).unwrap_unchecked() = dense_index;
                 }
                 // SAFETY: The above check ensures that `dense_index` and the last element are not
                 // overlapping, and thus also within bounds.
@@ -452,7 +451,7 @@ impl ComponentSparseSet {
                     // SAFETY: The swapped entity was just fetched from the entity Vec, it must have already
                     // been inserted and in bounds.
                     unsafe {
-                        *self.sparse.get_mut(index).debug_checked_unwrap() = dense_index;
+                        *self.sparse.get_mut(index).unwrap_unchecked() = dense_index;
                     }
                     // SAFETY: The above check ensures that `dense_index` and the last element are not
                     // overlapping, and thus also within bounds.
@@ -543,12 +542,12 @@ pub(crate) struct ImmutableSparseSet<I, V: 'static> {
     /// The mapping from dense index to value.
     ///
     /// `dense[sparse[k]]` holds the value for `k`.
-    dense: Box<[V]>,
+    pub(crate) dense: Box<[V]>,
 
     /// The reverse mapping from dense index to key.
     ///
     /// `indices[sparse[k]] == k`
-    indices: Box<[I]>,
+    pub(crate) indices: Box<[I]>,
 
     /// The mapping from keys to dense indexes.
     sparse: ImmutableSparseArray<I, NonMaxUsize>,
@@ -556,6 +555,14 @@ pub(crate) struct ImmutableSparseSet<I, V: 'static> {
 
 macro_rules! impl_sparse_set {
     ($ty:ident) => {
+        #[expect(
+            clippy::allow_attributes,
+            reason = "Some instances are `pub` and can't be considered unused."
+        )]
+        #[allow(
+            unused,
+            reason = "This is an implementation macro that exists to avoid code duplication, and some implementors are private and don't use every method."
+        )]
         impl<I: SparseSetIndex, V> $ty<I, V> {
             /// Returns the number of elements in the sparse set.
             #[inline]

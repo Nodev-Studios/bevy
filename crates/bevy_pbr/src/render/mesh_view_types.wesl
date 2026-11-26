@@ -164,10 +164,11 @@ struct LightProbe {
 };
 
 struct LightProbes {
+    /// This must match `MAX_VIEW_LIGHT_PROBES` on the Rust side (the `MAX_VIEW_LIGHT_PROBES` shader def).
     reflection_probes: array<LightProbe, u32(constants::MAX_VIEW_LIGHT_PROBES)>,
     irradiance_volumes: array<LightProbe, u32(constants::MAX_VIEW_LIGHT_PROBES)>,
-    reflection_probe_count: i32,
-    irradiance_volume_count: i32,
+    reflection_probe_count: u32,
+    irradiance_volume_count: u32,
     /// The index of the view environment map cubemap binding, or -1 if there's
     /// no such cubemap.
     view_cubemap_index: i32,

@@ -1,6 +1,6 @@
 [package]
 name = "bevy_baked_gi"
-version = "0.20.1"
+version = "0.20.0-dev"
 edition = "2024"
 description = "Baked irradiance volumes for Bevy Engine: the runtime that loads them, and a baker built on bevy_solari"
 homepage = "https://bevy.org"
@@ -15,25 +15,25 @@ bake = ["dep:bevy_solari", "dep:bevy_shader"]
 
 [dependencies]
 # bevy
-bevy_app = { path = "../bevy_app", version = "0.20.1" }
-bevy_asset = { path = "../bevy_asset", version = "0.20.1" }
-bevy_camera = { path = "../bevy_camera", version = "0.20.1" }
-bevy_color = { path = "../bevy_color", version = "0.20.1" }
-bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
-bevy_image = { path = "../bevy_image", version = "0.20.1", features = ["ktx2"] }
-bevy_light = { path = "../bevy_light", version = "0.20.1" }
-bevy_material = { path = "../bevy_material", version = "0.20.1" }
-bevy_math = { path = "../bevy_math", version = "0.20.1" }
-bevy_mesh = { path = "../bevy_mesh", version = "0.20.1" }
-bevy_pbr = { path = "../bevy_pbr", version = "0.20.1" }
-bevy_platform = { path = "../bevy_platform", version = "0.20.1", default-features = false, features = [
+bevy_app = { path = "../bevy_app", version = "0.20.0-dev" }
+bevy_asset = { path = "../bevy_asset", version = "0.20.0-dev" }
+bevy_camera = { path = "../bevy_camera", version = "0.20.0-dev" }
+bevy_color = { path = "../bevy_color", version = "0.20.0-dev" }
+bevy_ecs = { path = "../bevy_ecs", version = "0.20.0-dev" }
+bevy_image = { path = "../bevy_image", version = "0.20.0-dev", features = ["ktx2"] }
+bevy_light = { path = "../bevy_light", version = "0.20.0-dev" }
+bevy_material = { path = "../bevy_material", version = "0.20.0-dev" }
+bevy_math = { path = "../bevy_math", version = "0.20.0-dev" }
+bevy_mesh = { path = "../bevy_mesh", version = "0.20.0-dev" }
+bevy_pbr = { path = "../bevy_pbr", version = "0.20.0-dev" }
+bevy_platform = { path = "../bevy_platform", version = "0.20.0-dev", default-features = false, features = [
   "std",
 ] }
-bevy_reflect = { path = "../bevy_reflect", version = "0.20.1" }
-bevy_render = { path = "../bevy_render", version = "0.20.1" }
-bevy_transform = { path = "../bevy_transform", version = "0.20.1" }
-bevy_solari = { path = "../bevy_solari", version = "0.20.1", optional = true }
-bevy_shader = { path = "../bevy_shader", version = "0.20.1", optional = true }
+bevy_reflect = { path = "../bevy_reflect", version = "0.20.0-dev" }
+bevy_render = { path = "../bevy_render", version = "0.20.0-dev" }
+bevy_transform = { path = "../bevy_transform", version = "0.20.0-dev" }
+bevy_solari = { path = "../bevy_solari", version = "0.20.0-dev", optional = true }
+bevy_shader = { path = "../bevy_shader", version = "0.20.0-dev", optional = true }
 
 # other
 bytemuck = { version = "1" }
@@ -47,7 +47,7 @@ wgpu-types = { version = "30", default-features = false }
 [dev-dependencies]
 # zstd_rust: with `bake`, bevy_solari turns on bevy_pbr's LUTs, which need a zstd backend that bevy_internal
 # would otherwise choose.
-bevy_image = { path = "../bevy_image", version = "0.20.1", features = [
+bevy_image = { path = "../bevy_image", version = "0.20.0-dev", features = [
   "ktx2",
   "zstd_rust",
 ] }

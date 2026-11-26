@@ -463,35 +463,12 @@ impl Access {
         &self.archetypal
     }
 
-    /// Returns the set of components with read access,
-    /// or an error if the access is unbounded.
-    ///
-    /// This includes components with write access, since write access also allows you to read the
-    /// component.
-    #[deprecated(since = "0.20.0", note = "use `reads_and_writes().as_finite_set()")]
-    pub fn try_reads_and_writes(&self) -> Result<&ComponentIdSet, UnboundedAccessError> {
-        self.reads.as_finite_set().ok_or(UnboundedAccessError {
-            writes_inverted: self.writes.is_unbounded(),
-            reads_inverted: self.reads.is_unbounded(),
-        })
-    }
-
     /// Returns the set of components with read or write access.
     ///
     /// This includes components with write access, since write access also allows you to read the
     /// component.
     pub fn reads(&self) -> &InvertibleComponentIdSet {
         &self.reads
-    }
-
-    /// Returns the set of components with write access,
-    /// or an error if the access is unbounded.
-    #[deprecated(since = "0.20.0", note = "use `writes().as_finite_set()")]
-    pub fn try_writes(&self) -> Result<&ComponentIdSet, UnboundedAccessError> {
-        self.writes.as_finite_set().ok_or(UnboundedAccessError {
-            writes_inverted: self.writes.is_unbounded(),
-            reads_inverted: self.reads.is_unbounded(),
-        })
     }
 
     /// Returns the set of components with write access.
@@ -1029,6 +1006,19 @@ impl FilteredAccessSet {
         true
     }
 
+    /// Returns `true` if this and `other` can be active at the same time.
+    pub fn is_compatible_single(&self, other: &FilteredAccess) -> bool {
+        if self.combined_access.is_compatible(other.access()) {
+            return true;
+        }
+        for filtered in &self.filtered_accesses {
+            if !filtered.is_compatible(other) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Returns a vector of elements that this set and `other` cannot access at the same time.
     pub fn get_conflicts(&self, other: &FilteredAccessSet) -> AccessConflicts {
         // if the unfiltered access is incompatible, must check each pair
@@ -1053,6 +1043,20 @@ impl FilteredAccessSet {
             }
         }
         conflicts
+    }
+
+    /// Adds the filtered access to the set if it does not conflict with any other access.
+    #[expect(
+        clippy::result_large_err,
+        reason = "This returns the input parameter, and we expect it to be inlined."
+    )]
+    pub fn try_add(&mut self, filtered_access: FilteredAccess) -> Result<(), FilteredAccess> {
+        if self.is_compatible_single(&filtered_access) {
+            self.add(filtered_access);
+            Ok(())
+        } else {
+            Err(filtered_access)
+        }
     }
 
     /// Adds the filtered access to the set.

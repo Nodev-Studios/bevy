@@ -1,6 +1,6 @@
 [package]
 name = "bevy_render"
-version = "0.20.1"
+version = "0.20.0-dev"
 edition = "2024"
 description = "Provides rendering functionality for Bevy Engine"
 homepage = "https://bevy.org"
@@ -42,38 +42,39 @@ serialize = ["bevy_mesh/serialize"]
 
 reflect_auto_register = ["bevy_app/reflect_auto_register"]
 reflect_functions = ["bevy_app/reflect_functions"]
+framepace_debug = []
 
 [dependencies]
 # bevy
-bevy_app = { path = "../bevy_app", version = "0.20.1" }
-bevy_asset = { path = "../bevy_asset", version = "0.20.1" }
-bevy_color = { path = "../bevy_color", version = "0.20.1", features = [
+bevy_app = { path = "../bevy_app", version = "0.20.0-dev" }
+bevy_asset = { path = "../bevy_asset", version = "0.20.0-dev" }
+bevy_color = { path = "../bevy_color", version = "0.20.0-dev", features = [
   "serialize",
   "wgpu-types",
 ] }
-bevy_derive = { path = "../bevy_derive", version = "0.20.1" }
-bevy_diagnostic = { path = "../bevy_diagnostic", version = "0.20.1" }
-bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
-bevy_encase_derive = { path = "../bevy_encase_derive", version = "0.20.1" }
-bevy_extract = { path = "../bevy_extract", version = "0.20.1" }
-bevy_extract_macros = { path = "../bevy_extract/macros", version = "0.20.1" }
-bevy_math = { path = "../bevy_math", version = "0.20.1" }
-bevy_material = { path = "../bevy_material", version = "0.20.1" }
-bevy_reflect = { path = "../bevy_reflect", version = "0.20.1" }
-bevy_log = { path = "../bevy_log", version = "0.20.1" }
-bevy_material_macros = { path = "../bevy_material/macros", version = "0.20.1" }
-bevy_render_macros = { path = "../bevy_render/macros", version = "0.20.1" }
-bevy_shape = { path = "../bevy_shape", version = "0.20.1" }
-bevy_time = { path = "../bevy_time", version = "0.20.1" }
-bevy_transform = { path = "../bevy_transform", version = "0.20.1" }
-bevy_window = { path = "../bevy_window", version = "0.20.1" }
-bevy_utils = { path = "../bevy_utils", version = "0.20.1" }
-bevy_tasks = { path = "../bevy_tasks", version = "0.20.1" }
-bevy_image = { path = "../bevy_image", version = "0.20.1" }
-bevy_mesh = { path = "../bevy_mesh", version = "0.20.1" }
-bevy_camera = { path = "../bevy_camera", version = "0.20.1" }
-bevy_shader = { path = "../bevy_shader", version = "0.20.1" }
-bevy_platform = { path = "../bevy_platform", version = "0.20.1", default-features = false, features = [
+bevy_derive = { path = "../bevy_derive", version = "0.20.0-dev" }
+bevy_diagnostic = { path = "../bevy_diagnostic", version = "0.20.0-dev" }
+bevy_ecs = { path = "../bevy_ecs", version = "0.20.0-dev" }
+bevy_encase_derive = { path = "../bevy_encase_derive", version = "0.20.0-dev" }
+bevy_extract = { path = "../bevy_extract", version = "0.20.0-dev" }
+bevy_extract_macros = { path = "../bevy_extract/macros", version = "0.20.0-dev" }
+bevy_math = { path = "../bevy_math", version = "0.20.0-dev" }
+bevy_material = { path = "../bevy_material", version = "0.20.0-dev" }
+bevy_reflect = { path = "../bevy_reflect", version = "0.20.0-dev" }
+bevy_log = { path = "../bevy_log", version = "0.20.0-dev" }
+bevy_material_macros = { path = "../bevy_material/macros", version = "0.20.0-dev" }
+bevy_render_macros = { path = "../bevy_render/macros", version = "0.20.0-dev" }
+bevy_shape = { path = "../bevy_shape", version = "0.20.0-dev" }
+bevy_time = { path = "../bevy_time", version = "0.20.0-dev" }
+bevy_transform = { path = "../bevy_transform", version = "0.20.0-dev" }
+bevy_window = { path = "../bevy_window", version = "0.20.0-dev" }
+bevy_utils = { path = "../bevy_utils", version = "0.20.0-dev" }
+bevy_tasks = { path = "../bevy_tasks", version = "0.20.0-dev" }
+bevy_image = { path = "../bevy_image", version = "0.20.0-dev" }
+bevy_mesh = { path = "../bevy_mesh", version = "0.20.0-dev" }
+bevy_camera = { path = "../bevy_camera", version = "0.20.0-dev" }
+bevy_shader = { path = "../bevy_shader", version = "0.20.0-dev" }
+bevy_platform = { path = "../bevy_platform", version = "0.20.0-dev", default-features = false, features = [
   "std",
   "serialize",
   "bytemuck",
@@ -96,13 +97,12 @@ wgpu = { version = "30", default-features = false, features = [
 ] }
 wgpu-types = { version = "30", default-features = false }
 bytemuck = { version = "1.5", features = ["derive", "must_cast"] }
-downcast-rs = { version = "2", default-features = false, features = ["std"] }
 thiserror = { version = "2", default-features = false }
 derive_more = { version = "2", default-features = false, features = ["from"] }
-encase = "0.12"
-glam = { version = "0.33.2", default-features = false, features = [
+encase = "0.13"
+glam = { version = "0.34.2", default-features = false, features = [
   "std",
-  "encase",
+  "encase-013",
 ] }
 # For wgpu profiling using tracing. Use `RUST_LOG=info` to also capture the wgpu spans.
 profiling = { version = "1", features = [
@@ -116,7 +116,7 @@ variadics_please = "2.0"
 tracy-client = { version = "0.19.0", optional = true }
 indexmap = { version = "2" }
 bitflags = "2"
-itertools = "0.14"
+itertools = "0.15"
 weak-table = "0.4"
 tracing = "0.1"
 static_assertions = "1"
@@ -126,6 +126,9 @@ proptest = "1"
 proptest-derive = "0.8"
 # noop backend used for tests via test_utils.rs
 wgpu = { version = "30", default-features = false, features = ["noop"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+spin_sleep = "1.3"
 
 [target.'cfg(all(target_arch = "wasm32", target_feature = "atomics"))'.dependencies]
 send_wrapper = { version = "0.6.0" }
@@ -143,13 +146,13 @@ web-sys = { version = "0.3.67", features = [
 ] }
 wasm-bindgen = "0.2"
 # TODO: Assuming all wasm builds are for the browser. Require `no_std` support to break assumption.
-bevy_app = { path = "../bevy_app", version = "0.20.1", default-features = false, features = [
+bevy_app = { path = "../bevy_app", version = "0.20.0-dev", default-features = false, features = [
   "web",
 ] }
-bevy_platform = { path = "../bevy_platform", version = "0.20.1", default-features = false, features = [
+bevy_platform = { path = "../bevy_platform", version = "0.20.0-dev", default-features = false, features = [
   "web",
 ] }
-bevy_reflect = { path = "../bevy_reflect", version = "0.20.1", default-features = false, features = [
+bevy_reflect = { path = "../bevy_reflect", version = "0.20.0-dev", default-features = false, features = [
   "web",
 ] }
 

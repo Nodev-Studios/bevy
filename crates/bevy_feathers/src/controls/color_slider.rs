@@ -10,7 +10,6 @@ use bevy_ecs::{
     schedule::IntoScheduleConfigs,
     system::Query,
 };
-use bevy_input_focus::tab_navigation::TabIndex;
 use bevy_log::warn_once;
 use bevy_picking::{cursor::EntityCursor, PickingSystems};
 use bevy_reflect::std_traits::ReflectDefault;
@@ -28,7 +27,7 @@ use bevy_ui_widgets::{
 
 use crate::{
     alpha_pattern::{AlphaPattern, AlphaPatternMaterial},
-    controls::{FeathersSlider, FeathersTextInput, ToggleSwitchSlide},
+    controls::{FeathersDisclosureToggle, FeathersSlider, FeathersTextInput, ToggleSwitchSlide},
     focus::FocusIndicator,
     palette,
     rounded_corners::RoundedCorners,
@@ -246,7 +245,6 @@ impl FeathersColorSlider {
             SliderValue({props.value})
             props.channel.range()
             EntityCursor::System(bevy_window::SystemCursorIcon::Pointer)
-            TabIndex(0)
             FocusIndicator
             Children [
                 // track
@@ -328,7 +326,11 @@ fn update_slider_pos(
     q_children: Query<&Children>,
     mut q_slider_thumb: Query<
         (&ChildOf, &mut UiTransform),
-        (With<ColorSliderThumb>, Without<ToggleSwitchSlide>),
+        (
+            With<ColorSliderThumb>,
+            Without<ToggleSwitchSlide>,
+            Without<FeathersDisclosureToggle>,
+        ),
     >,
     q_computed_node: Query<&ComputedNode>,
 ) {

@@ -36,7 +36,7 @@ collections to build your own "profile" equivalent, without needing to manually 
 
 |Collection|Description|
 |-|-|
-|dev|Enable this feature during development to improve the development experience. This adds features like asset hot-reloading and debugging tools. This should not be enabled for published apps! **Feature set:** `debug`, `bevy_dev_tools`, `render_dev_tools`, `file_watcher`.|
+|dev|Enable this feature during development to improve the development experience. This adds features like asset hot-reloading and debugging tools. This should not be enabled for published apps! **Feature set:** `debug`, `bevy_dev_tools`, `render_dev_tools`, `file_watcher`, `inspector`.|
 |audio|Features used to build audio Bevy apps. **Feature set:** `bevy_audio`, `vorbis`.|
 |audio-all-formats|Enables audio features and all supported formats. **Feature set:** `bevy_audio`, `aac`, `flac`, `mp3`, `mp4`, `vorbis`, `wav`.|
 |scene|Features used to compose Bevy scenes. **Feature set:** `bevy_world_serialization`, `bevy_scene`.|
@@ -71,6 +71,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |bevy_anti_alias|Provides various anti-aliasing solutions|
 |bevy_asset|Provides asset functionality|
 |bevy_audio|Provides audio functionality|
+|bevy_bsn|Provides BSN AST / parsing functionality|
 |bevy_camera|Provides camera and visibility types, as well as culling primitives.|
 |bevy_camera_controller|Provides a collection of prebuilt camera controllers|
 |bevy_ci_testing|Enable systems that allow for automated testing on CI|
@@ -89,6 +90,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |bevy_graphics|Tiered graphics settings: the Raster, RtLite and RtFull presets, and the policy that picks one for the machine|
 |bevy_image|Load and access image data. Usually added by an image format|
 |bevy_input_focus|Enable input focus subsystem|
+|bevy_inspector|Entity inspector built on bevy_ui and bevy_feathers.|
 |bevy_light|Provides light types such as point lights, directional lights, spotlights.|
 |bevy_log|Enable integration with `tracing` and `log`|
 |bevy_material|Provides materials.|
@@ -98,6 +100,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |bevy_picking|Provides picking functionality without any backend|
 |bevy_post_process|Provides post process effects such as depth of field, bloom, chromatic aberration.|
 |bevy_remote|Enable the Bevy Remote Protocol|
+|bevy_remote_client|Enable a native client for calling a running app over the Bevy Remote Protocol, used by in-engine tools like the inspector and by the remote examples|
 |bevy_render|Provides rendering functionality|
 |bevy_scene|Provides scene functionality|
 |bevy_settings|Load and save settings|
@@ -131,6 +134,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |dlss|NVIDIA Deep Learning Super Sampling|
 |dynamic_linking|Force dynamic linking, which improves iterative compile times|
 |embedded_watcher|Enables watching in memory asset providers for Bevy Asset hot-reloading|
+|equirectangular_cubemap|Equirectangular (lat-long) panorama to cubemap conversion|
 |experimental_pbr_pcss|Enable support for PCSS, at the risk of blowing past the global, per-shader sampler limit on older/lower-end GPUs|
 |exr|EXR image format support|
 |ff|Farbfeld image format support|
@@ -138,22 +142,25 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |flac|FLAC audio format support (through `claxon`)|
 |force_disable_dlss|Forcibly disable DLSS so that `cargo build --all-features` works without the DLSS SDK being installed. Not meant for users.|
 |force_disable_nrd|Forcibly disable NRD so that `cargo build --all-features` works without the NRD SDK. Not meant for users.|
+|framepace_debug|Adds frame pacing diagnostics and logs|
 |free_camera|Enables the free cam from bevy_camera_controller|
 |gamepad|Gamepad support. Automatically enabled by `bevy_gilrs`.|
 |gestures|Gestures support. Automatically enabled by `bevy_window`.|
-|ghost_nodes|Experimental support for nodes that are ignored for UI layouting|
 |gif|GIF image format support|
 |glam_assert|Enable assertions to check the validity of parameters passed to glam|
 |gltf_animation|Enable glTF animation loading|
+|gltf_meshopt|Enables loading glTF files that use KHR_meshopt_compression or EXT_meshopt_compression|
 |hdr|HDR image format support|
 |hotpatching|Enable hotpatching of Bevy systems|
 |http|Enables downloading assets from HTTP sources. Warning: there are security implications. Read the docs on WebAssetPlugin.|
 |https|Enables downloading assets from HTTPS sources. Warning: there are security implications. Read the docs on WebAssetPlugin.|
 |ico|ICO image format support|
+|inspector|Adds an entity inspector to `DefaultPlugins`, hidden until F12 is pressed.|
 |jpeg|JPEG image format support|
 |keyboard|Keyboard support. Automatically enabled by `bevy_window`.|
 |ktx2|KTX2 compressed texture support|
 |libm|Uses the `libm` maths library instead of the one provided in `std` and `core`.|
+|linux_game_mode|Enable Feral Interactive's `GameMode` integration on Linux|
 |mesh_picking|Provides an implementation for picking meshes|
 |meshlet|Enables the meshlet renderer for dense high-poly scenes (experimental)|
 |meshlet_processor|Enables processing meshes into meshlet meshes for `bevy_pbr`|
@@ -190,6 +197,7 @@ This is the complete `bevy` cargo feature list, without "profiles" or "collectio
 |sprite_picking|Provides an implementation for picking sprites|
 |statically-linked-dxc|Statically linked DXC shader compiler for DirectX 12|
 |std|Allows access to the `std` crate.|
+|svg|SVG image support, rasterized to an `Image` when loaded. Enabled by `bevy_feathers`.|
 |symphonia-flac|FLAC audio format support (through `symphonia`)|
 |symphonia-vorbis|OGG/VORBIS audio format support (through `symphonia`)|
 |symphonia-wav|WAV audio format support (through `symphonia`)|

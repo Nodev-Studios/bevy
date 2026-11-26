@@ -16,7 +16,6 @@ struct IrradianceVolumeLight {
     coverage: f32,
 }
 
-@if(IRRADIANCE_VOLUMES_ARE_USABLE)
 fn irradiance_volume_light(
     world_position: vec3<f32>,
     N: vec3<f32>,
@@ -24,8 +23,6 @@ fn irradiance_volume_light(
 ) -> vec3<f32> {
     return irradiance_volume_light_and_coverage(world_position, N, clusterable_object_index_ranges).irradiance;
 }
-
-@if(IRRADIANCE_VOLUMES_ARE_USABLE)
 
 /// See:
 /// https://advances.realtimerendering.com/s2006/Mitchell-ShadingInValvesSourceEngine.pdf

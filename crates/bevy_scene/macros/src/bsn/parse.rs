@@ -478,7 +478,7 @@ impl Parse for BsnNamedField {
 /// fully parsing Rust expressions, which makes this less strict and cheaper to parse.
 /// This also allows autocomplete to work, even if the tokens aren't a valid rust expression.
 ///
-/// This will accept anything "tuple-like" in the form (X1, ..., XY), where XY is a TokenStream.
+/// This will accept anything "tuple-like" in the form (X1, ..., XY), where XY is a `TokenStream`.
 fn parse_tuple_loose(input: &ParseBuffer) -> Result<Vec<TokenStream>> {
     let content;
     parenthesized!(content in input);
@@ -494,7 +494,7 @@ fn parse_tuple_loose(input: &ParseBuffer) -> Result<Vec<TokenStream>> {
                     args.push(TokenStream::from_iter(current_tokens.drain(..)));
                 }
                 '|' => {
-                    in_closure_args = !in_closure_args;
+                    in_closure_args.toggle();
                     current_tokens.push(tt);
                 }
                 '<' => {
@@ -567,13 +567,6 @@ fn braced_tokens(input: &ParseBuffer) -> Result<TokenStream> {
     content.parse::<TokenStream>()
 }
 
-// Used to parse parenthesized tokens "loosely" without caring about the content in `(...)`. This ensures autocomplete works.
-fn parenthesized_tokens(input: &ParseBuffer) -> Result<TokenStream> {
-    let content;
-    parenthesized!(content in input);
-    content.parse::<TokenStream>()
-}
-
 fn group_tokens(input: &ParseBuffer, delimiter: Delimiter) -> Result<TokenStream> {
     let tree = input.parse::<TokenTree>()?;
     if let TokenTree::Group(group) = &tree
@@ -583,13 +576,6 @@ fn group_tokens(input: &ParseBuffer, delimiter: Delimiter) -> Result<TokenStream
     } else {
         Err(input.error(format!("Expected {:?}", delimiter)))
     }
-}
-
-// Used to parse bracketed tokens "loosely" without caring about the content in `[...]`. This ensures autocomplete works.
-fn bracketed_tokens(input: &ParseBuffer) -> Result<TokenStream> {
-    let content;
-    bracketed!(content in input);
-    content.parse::<TokenStream>()
 }
 
 fn tokens_between(begin: Cursor, end: Cursor) -> TokenStream {
@@ -631,17 +617,11 @@ impl Parse for BsnValue {
                 PathType::TypeFunction | PathType::Function => {
                     input.parse::<Path>()?;
                     let maybe_macro = input.parse::<Token![!]>().ok();
-                    if input.peek(Paren) {
-                        let token_stream = parenthesized_tokens(input)?;
-                        BsnValue::Expr(quote! { #path #maybe_macro (#token_stream) })
-                    } else if input.peek(Bracket) {
-                        let token_stream = bracketed_tokens(input)?;
-                        BsnValue::Expr(quote! { #path #maybe_macro [#token_stream] })
-                    } else if input.peek(Brace) {
-                        let token_stream = braced_tokens(input)?;
-                        BsnValue::Expr(quote! { #path #maybe_macro { #token_stream } })
-                    } else {
-                        return Err(input.error("Unexpected input after function name"));
+                    match input.parse::<TokenTree>()? {
+                        TokenTree::Group(group) if group.delimiter() != Delimiter::None => {
+                            BsnValue::Expr(quote! { #path #maybe_macro #group })
+                        }
+                        _ => return Err(input.error("Unexpected input after function name")),
                     }
                 }
                 PathType::Const => {
@@ -687,7 +667,7 @@ impl Parse for BsnFnArgs {
     fn parse(input: ParseStream) -> Result<Self> {
         let mut fn_args = Vec::new();
         for tokens in parse_tuple_loose(input)? {
-            fn_args.push(syn::parse2::<BsnFnArg>(tokens)?)
+            fn_args.push(syn::parse2::<BsnFnArg>(tokens)?);
         }
         Ok(BsnFnArgs(fn_args))
     }
@@ -744,7 +724,7 @@ impl Parse for EntityNameIdent {
 }
 
 fn take_last_path_ident(path: &mut Path) -> Option<Ident> {
-    let ident = path.segments.pop().map(|s| s.into_value().ident);
+    let ident = path.segments.pop().map(|s| s.ident);
     path.segments.pop_punct();
     ident
 }

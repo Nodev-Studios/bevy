@@ -8,7 +8,7 @@ use crate::{
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::embedded_asset;
-use bevy_camera::{Camera, Camera3d, MainPassResolutionOverride};
+use bevy_camera::{Camera, Camera3d, MainPassResolutionOverride, TonemappingPass};
 use bevy_core_pipeline::{
     prepass::{MotionVectorPrepass, ViewPrepassTextures},
     schedule::{Core3d, Core3dSystems},
@@ -73,7 +73,7 @@ pub mod pipeline;
 /// ````
 #[derive(Reflect, Component, Clone)]
 #[reflect(Component, Default, Clone)]
-#[require(MotionVectorPrepass)]
+#[require(MotionVectorPrepass, TonemappingPass)]
 pub struct MotionBlur {
     /// The strength of motion blur from `0.0` to `1.0`.
     ///
