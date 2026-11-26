@@ -89,6 +89,8 @@ def opengl_normal(path):
     img.pixels.foreach_set(px.ravel())
     img.file_format = "PNG"
     img.pack()
+    img.buffers_free()
+    del px
     flipped[path] = img
     bpy.data.images.remove(src_img)
     loaded.pop(path, None)
@@ -99,7 +101,10 @@ def has_holes(img):
     if img.channels < 4 or img.depth not in (32, 128):
         return False
     alpha = pixels(img)[:, 3]
-    return bool((alpha < 0.5).mean() > 0.001)
+    holes = bool((alpha < 0.5).mean() > 0.001)
+    del alpha
+    img.buffers_free()  # decoded pixels are float RGBA: keeping every texture's would not fit in memory
+    return holes
 
 
 def texture_names(material):

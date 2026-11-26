@@ -7,12 +7,12 @@
 #   barbershop         Blender demo "Barbershop Interior" (.blend, Cycles)   CC-BY 4.0, Blender Animation Studio
 #   bathroom           Bitterli "Salle de bain" by nacimus (Mitsuba + OBJ)   licence printed from LICENSE.txt
 #   living-room        Bitterli "The Modern Living Room" by Wig42 (Mitsuba)  licence printed from LICENSE.txt
-#   intel-sponza       Intel Sponza: base + curtains, ivy, trees, candles    CC-BY 4.0 (credits_license.txt)
-#                      (glTF already: only the glTF folders are unpacked; the 3ds Max / FBX / USD copies are not)
-#   sun-temple         Epic "Sun Temple" (NVIDIA ORCA, FBX)                  CC-BY-NC-SA 4.0
-#   emerald-square     NVIDIA "Emerald Square" (ORCA, FBX)                   CC-BY-NC-SA 3.0
-#   san-miguel         McGuire Archive "San Miguel" (OBJ)                    CC-BY 3.0, Guillermo M. Leal Llaguno
-#   khronos-extra      Khronos StainedGlassLamp, DragonAttenuation (glTF)    CC-BY 4.0 (their LICENSE.md)
+#   intel-sponza       Intel Sponza: base + curtains, ivy, trees, candles    personal/educational use (credits_license.txt)
+#                      (glTF already, not converted; their 3ds Max / FBX / USD copies are not unpacked)
+#   sun-temple         Epic "Sun Temple" (NVIDIA ORCA, FBX)                  CC-BY-NC-SA 4.0 (LICENSE.txt)
+#   emerald-square     NVIDIA "Emerald Square", day and dusk (ORCA, FBX)     CC-BY-NC-SA 3.0 (LICENSE.txt)
+#   san-miguel         McGuire Archive "San Miguel" (OBJ)                    research/education use with credit
+#   khronos-extra      Khronos StainedGlassLamp (CC-BY 4.0), DragonAttenuation (Stanford, research use) (glTF)
 #   alab               Netflix Animation Studios / Animal Logic "ALab" (USD) ASWF Digital Assets License
 #                      (structure + 1k "techvar" assets, ~10.8 GB download; NOT in the default set, ask for it)
 #   attic              NVIDIA "Attic" (USD + MDL): NOT fetched. Its only download needs a login. Put the zip
@@ -100,14 +100,14 @@ licence() {
 run_blender() {
   local id="$1" script="$2"; shift 2
   [[ $convert == 1 ]] || { echo "  --no-convert: skipping $script"; return; }
-  echo "  converting with $script (log: $dir/$id/convert.log)"
+  echo "  converting with $script (log: $dir/$id/${log_name:-convert.log})"
   local start=$SECONDS
   # A memory cap with no swap (BLENDER_MEMORY, default 12G): a scene too big to convert kills only Blender.
   systemd-run --user --scope --quiet -p MemoryMax="${BLENDER_MEMORY:-12G}" -p MemorySwapMax=0 \
     "$blender" --background --factory-startup --python-exit-code 1 \
-    --python "$convert_dir/$script" -- "$@" >"$dir/$id/convert.log" 2>&1 \
-    || { echo "  conversion FAILED, see $dir/$id/convert.log" >&2; tail -n 20 "$dir/$id/convert.log" >&2; return 1; }
-  grep -E '^(LOST|NOTE|WROTE)' "$dir/$id/convert.log" | sort | uniq -c | sort -rn | head -n 30 | sed -e 's/^/  /'
+    --python "$convert_dir/$script" -- "$@" >"$dir/$id/${log_name:-convert.log}" 2>&1 \
+    || { echo "  conversion FAILED, see $dir/$id/${log_name:-convert.log}" >&2; tail -n 20 "$dir/$id/${log_name:-convert.log}" >&2; return 1; }
+  grep -E '^(LOST|NOTE|WROTE)' "$dir/$id/${log_name:-convert.log}" | sort | uniq -c | sort -rn | head -n 30 | sed -e 's/^/  /'
   echo "  converted in $((SECONDS - start)) s"
 }
 
@@ -131,14 +131,14 @@ scene_barbershop() {
 
 # Bitterli's scenes: the Mitsuba 0.6 XML and its OBJ meshes; the materials are rebuilt from the XML's BSDFs.
 bitterli() {
-  local id="$1" zip="$2" out="$3"
+  local id="$1" zip="$2" out="$3" scale="${4:-1}"
   local d="$dir/$id"
   fetch "https://benedikt-bitterli.me/resources/mitsuba/$zip" "$d/download/$zip"
   unpack "$d/download/$zip" "$d/source"
   licence "$d"/source/*/LICENSE* "$d"/source/LICENSE* "$d"/source/*/*.txt
-  run_blender "$id" mitsuba_to_glb.py --input "$(find "$d/source" -name 'scene_v0.6.xml' | head -n 1)" --output "$d/$out"
+  run_blender "$id" mitsuba_to_glb.py --input "$(find "$d/source" -name 'scene_v0.6.xml' | head -n 1)" --output "$d/$out" --scale "$scale"
 }
-scene_bathroom() { bitterli bathroom bathroom2.zip Bathroom.glb; }
+scene_bathroom() { bitterli bathroom bathroom2.zip Bathroom.glb 0.1; }  # modelled in decimetres
 scene_living-room() { bitterli living-room living-room-3.zip LivingRoom.glb; }
 
 scene_khronos-extra() {
@@ -154,25 +154,36 @@ scene_khronos-extra() {
   licence "$repo/Models/StainedGlassLamp/LICENSE.md" "$repo/Models/DragonAttenuation/LICENSE.md"
 }
 
+# orca ID NAME ZIP [FBX:OUT:EMISSIVE_SCALE ...]: an NVIDIA ORCA scene; each FBX of it becomes one .glb. The emissive
+# scale is the one ORCA's own Falcor scene file (<scene>.pyscene, next to the FBX) applies.
 orca() {
-  local id="$1" name="$2" zip="$3" out="$4"
-  local d="$dir/$id"
+  local id="$1" name="$2" zip="$3"; shift 3
+  local d="$dir/$id" item fbx out scale
   # developer.nvidia.com/<name> answers with a public, signed link to the zip; no login.
   fetch "https://developer.nvidia.com/$name" "$d/download/$zip"
   unpack "$d/download/$zip" "$d/source"
-  licence $(find "$d/source" -maxdepth 3 -iname '*licen*' -o -maxdepth 3 -iname 'readme*' | head -n 4)
-  run_blender "$id" fbx_to_glb.py --input "$(find "$d/source" -iname '*.fbx' -printf '%s %p\n' | sort -rn | head -n 1 | cut -d' ' -f2-)" --output "$d/$out"
+  licence $(find "$d/source" -maxdepth 3 -iname 'LICENSE*' | head -n 1)
+  for item in "$@"; do
+    IFS=: read -r fbx out scale <<<"$item"
+    log_name="convert-${out%.glb}.log" run_blender "$id" fbx_to_glb.py --orca --emissive-scale "$scale" \
+      --input "$(find "$d/source" -name "$fbx" | head -n 1)" --output "$d/$out"
+  done
 }
-scene_sun-temple() { orca sun-temple sun-temple SunTemple_v4.zip SunTemple.glb; }
-scene_emerald-square() { orca emerald-square emerald-square EmeraldSquare_v4_1.zip EmeraldSquare.glb; }
+scene_sun-temple() { orca sun-temple sun-temple SunTemple_v4.zip SunTemple.fbx:SunTemple.glb:1000; }
+scene_emerald-square() {
+  orca emerald-square emerald-square EmeraldSquare_v4_1.zip EmeraldSquare_Day.fbx:EmeraldSquareDay.glb:1 \
+    EmeraldSquare_Dusk.fbx:EmeraldSquareDusk.glb:5
+}
 
 scene_san-miguel() {
   local d="$dir/san-miguel"
-  echo "  licence: CC-BY 3.0, credit Guillermo M. Leal Llaguno (McGuire Computer Graphics Archive)"
+  echo "  licence: free for research and educational use with attribution (Guillermo M. Leal Llaguno; license.txt)"
   fetch https://casual-effects.com/g3d/data10/research/model/San_Miguel/San_Miguel.zip "$d/download/San_Miguel.zip"
   unpack "$d/download/San_Miguel.zip" "$d/source"
   licence $(find "$d/source" -maxdepth 3 \( -iname '*licen*' -o -iname 'readme*' -o -iname '*.txt' \) | head -n 4)
-  run_blender san-miguel obj_to_glb.py --input "$(find "$d/source" -iname 'san-miguel*.obj' -o -iname 'san_miguel*.obj' | head -n 1)" --output "$d/SanMiguel.glb"
+  # The full model (~10 M triangles); if it does not convert within the memory cap, the archive's low-poly one.
+  run_blender san-miguel obj_to_glb.py --input "$d/source/san-miguel.obj" --output "$d/SanMiguel.glb" \
+    || { echo "  trying the low-poly version"; run_blender san-miguel obj_to_glb.py --input "$d/source/san-miguel-low-poly.obj" --output "$d/SanMiguelLow.glb"; }
 }
 
 # Intel's packages ship 3ds Max, FBX, USD and glTF copies of each scene; the 3ds Max, FBX and USD files and the

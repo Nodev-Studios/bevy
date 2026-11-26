@@ -1,7 +1,7 @@
 """A Mitsuba 0.5/0.6 scene (Benedikt Bitterli's rendering resources) to .glb for gfx_viewer.
 
     blender --background --factory-startup --python tools/scene-convert/mitsuba_to_glb.py -- \
-        --input scene_v0.6.xml --output Scene.glb
+        --input scene_v0.6.xml --output Scene.glb [--scale 0.1]
 
 Geometry: every <shape type="obj"> is imported with Blender's OBJ importer (axes untouched) and placed with its
 toWorld matrix; rectangle, cube, sphere and disk shapes are built. The file's own Y-up frame is kept: the glTF has
@@ -20,7 +20,7 @@ Materials: each BSDF becomes one glTF metallic-roughness material (approximate, 
 Textures: "bitmap" textures keep their file and uscale/vscale; other procedural textures are LOST.
 Media inside shapes (<medium>, sigmaA/sigmaS) are LOST.
 
-Lights: an area emitter on a shape keeps its surface emissive (radiance -> emissive colour x strength) AND gets a
+Lights: an area emitter on a shape keeps its surface emissive (single-sided, so it does not shadow its own light) (radiance -> emissive colour x strength) AND gets a
 punctual light for rasterised lighting: a hemisphere spot at a rectangle's / disk's centre facing its normal, a
 point light at a sphere's centre, power = the emitter's flux (pi x area x radiance) x 2 for the spot (its flux
 spread evenly over the hemisphere) and x 1 for the point. On traced rungs, which also light from emissive
@@ -48,6 +48,7 @@ SMOOTH_ROUGHNESS = 0.05  # to tune: what a "smooth" Mitsuba BSDF becomes (0 make
 
 a = common.args()
 src, out = os.path.abspath(a["--input"]), a["--output"]
+SCALE = float(a.get("--scale", 1.0))  # scene units -> metres (Bitterli's bathroom is in decimetres)
 base_dir = os.path.dirname(src)
 tree = ET.parse(src)
 root_xml = tree.getroot()
@@ -108,7 +109,7 @@ def transform(el):
     t = param(el, "toWorld")
     m = Matrix.Identity(4)
     if t is None:
-        return m
+        return Matrix.Scale(SCALE, 4) @ m
     for op in t:
         if op.tag == "matrix":
             v = floats(op.get("value"))
@@ -136,7 +137,7 @@ def transform(el):
             for i in range(3):
                 look[3][i] = 0.0
             m = look @ m
-    return m
+    return Matrix.Scale(SCALE, 4) @ m
 
 
 # --- Materials ---------------------------------------------------------------------------------------------------
@@ -303,6 +304,8 @@ def material_for(bsdf_el, name, emission=None):
     elif spec.alpha < 1.0:
         i["Alpha"].default_value = spec.alpha
     if emission is not None:
+        # Single-sided, so the punctual light placed inside or on it is not shadowed by its own emitter.
+        mat.use_backface_culling = True
         strength = max(emission)
         if strength > 0:
             i["Emission Color"].default_value = (*(c / strength for c in emission), 1.0)
