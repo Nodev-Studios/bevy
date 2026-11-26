@@ -1318,6 +1318,11 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         test.references.insert(current.name.clone(), rgb);
     }
 
+    let camera_ev100 = world
+        .query_filtered::<&Exposure, With<ViewerCamera>>()
+        .iter(world)
+        .next()
+        .map(|exposure| exposure.ev100);
     let frame_ms = world.resource::<FrameTimes>().median_ms();
     let passes: Vec<Value> = gpu_passes(world.resource::<DiagnosticsStore>())
         .into_iter()
@@ -1340,6 +1345,7 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         "lit_share": lit,
         "frame_ms_median": frame_ms,
         "rss_mib": resident_mib(),
+        "camera_ev100": camera_ev100,
         "gpu_ms_top": passes,
         "failures": failures,
     });

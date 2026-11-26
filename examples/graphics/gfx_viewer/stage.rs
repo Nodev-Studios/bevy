@@ -9,7 +9,7 @@ use crate::{
 use bevy::{
     camera::{primitives::Aabb, Exposure},
     camera_controller::free_camera::{FreeCamera, FreeCameraState},
-    graphics::baked::GiBakeRegion,
+    graphics::{apply::CameraCut, baked::GiBakeRegion},
     light::{
         atmosphere::ScatteringMedium, light_consts::lux, Atmosphere, AtmosphereEnvironmentMapLight,
     },
@@ -241,7 +241,9 @@ pub fn open_requested_scene(world: &mut World) {
         .insert(Exposure { ev100: exposure });
 }
 
-/// Puts the camera at `start`, and restarts the free camera there (it keeps its own yaw and pitch).
+/// Puts the camera at `start`, and restarts the free camera there (it keeps its own yaw and pitch). It is a cut:
+/// every temporal history on the camera drops (Solari's world cache would otherwise keep the light of the last
+/// scene when the rung does not change).
 pub fn place_camera(world: &mut World, start: Transform, fov: f32, speed: f32) {
     let Ok(camera) = world
         .query_filtered::<Entity, With<ViewerCamera>>()
@@ -258,6 +260,7 @@ pub fn place_camera(world: &mut World, start: Transform, fov: f32, speed: f32) {
             ..default()
         },
         FreeCameraState::default(),
+        CameraCut,
     ));
 }
 
