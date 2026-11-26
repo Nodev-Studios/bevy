@@ -1,0 +1,47 @@
+#![enable(implicit_some)]
+// Mirrors (E2): the testbed's `mirrors` scene, a wall mirror that shows what stands behind the camera and a side
+// mirror seen at a grazing angle, on every preset, against its golden images. Raster reflects them with planar
+// reflections (`bevy_pbr::planar_reflection`), the traced rungs by tracing. Laid out as `golden.ron`: seven
+// warm-ups spread over the temporal filters' jitter cycles on the RTX 5070; the integrated Radeon runs Raster
+// with the full table three times (`raster`) and as `Auto` gives it three times (`auto`, the light table, whose
+// mirrors render at 0.3 of the output), gated against its own goldens.
+//
+//   target/release/gfx-check run tools/gfx-check/mirrors.ron --out target/gfx-check/mirrors
+//   target/release/gfx-check budget --golden tools/gfx-check/golden-mirrors target/gfx-check/mirrors
+//   target/release/gfx-check budget --golden tools/gfx-check/golden-mirrors-radv target/gfx-check/mirrors
+(
+    adapters: [
+        (name: "NVIDIA", resolutions: ["1920x1080"]),
+        (name: "AMD", resolutions: ["1920x1080"]),
+    ],
+    scenes: ["mirrors"],
+    warmup: 300,
+    frames: 30,
+    seconds: 300,
+    runs: [
+        (name: "raster@1", args: ["--preset", "raster", "--upscaler", "off"], warmup: 300),
+        (name: "rt-lite@1", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 300, adapters: ["NVIDIA"]),
+        (name: "rt-full@1", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 300, adapters: ["NVIDIA"]),
+        (name: "raster@2", args: ["--preset", "raster", "--upscaler", "off"], warmup: 301, adapters: ["NVIDIA", "AMD"]),
+        (name: "rt-lite@2", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "rt-full@2", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 301, adapters: ["NVIDIA"]),
+        (name: "raster@3", args: ["--preset", "raster", "--upscaler", "off"], warmup: 303, adapters: ["NVIDIA", "AMD"]),
+        (name: "rt-lite@3", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 303, adapters: ["NVIDIA"]),
+        (name: "rt-full@3", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 303, adapters: ["NVIDIA"]),
+        (name: "raster@4", args: ["--preset", "raster", "--upscaler", "off"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-lite@4", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "rt-full@4", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 307, adapters: ["NVIDIA"]),
+        (name: "raster@5", args: ["--preset", "raster", "--upscaler", "off"], warmup: 311, adapters: ["NVIDIA"]),
+        (name: "rt-lite@5", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 311, adapters: ["NVIDIA"]),
+        (name: "rt-full@5", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 311, adapters: ["NVIDIA"]),
+        (name: "raster@6", args: ["--preset", "raster", "--upscaler", "off"], warmup: 316, adapters: ["NVIDIA"]),
+        (name: "rt-lite@6", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 316, adapters: ["NVIDIA"]),
+        (name: "rt-full@6", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 316, adapters: ["NVIDIA"]),
+        (name: "raster@7", args: ["--preset", "raster", "--upscaler", "off"], warmup: 322, adapters: ["NVIDIA"]),
+        (name: "rt-lite@7", args: ["--preset", "rt-lite", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 322, adapters: ["NVIDIA"]),
+        (name: "rt-full@7", args: ["--preset", "rt-full", "--denoiser", "nrd", "--upscaler", "tsr"], warmup: 322, adapters: ["NVIDIA"]),
+        (name: "auto@1", args: ["--preset", "auto"], warmup: 300, adapters: ["AMD"]),
+        (name: "auto@2", args: ["--preset", "auto"], warmup: 301, adapters: ["AMD"]),
+        (name: "auto@3", args: ["--preset", "auto"], warmup: 303, adapters: ["AMD"]),
+    ],
+)
