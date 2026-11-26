@@ -3,8 +3,8 @@
 use crate::GraphicsOverrides;
 use bevy_light::ShadowFilteringMethod;
 use bevy_pbr::{
-    ContactShadows, ScreenSpaceAmbientOcclusion, ScreenSpaceAmbientOcclusionQualityLevel,
-    ScreenSpaceReflections,
+    planar_reflection::PlanarReflections, ContactShadows, ScreenSpaceAmbientOcclusion,
+    ScreenSpaceAmbientOcclusionQualityLevel, ScreenSpaceReflections,
 };
 use bevy_post_process::bloom::Bloom;
 use bevy_reflect::{std_traits::ReflectDefault, Reflect, ReflectDeserialize, ReflectSerialize};
@@ -37,6 +37,10 @@ pub struct RasterEffects {
     pub reflections: Option<ScreenSpaceReflections>,
     /// Bloom. The traced rungs use the same value: a rung changes the lighting, not the lens.
     pub bloom: Option<Bloom>,
+    /// Planar reflections on flat mirrors: the scene rendered again, mirrored, for the largest mirrors on
+    /// screen ([`planar_reflection`](bevy_pbr::planar_reflection); the ladder finds the mirrors,
+    /// [`mirrors`](crate::mirrors)). Where it is off, a mirror shows what SSR finds on screen and then a probe.
+    pub planar_reflections: Option<PlanarReflections>,
 }
 
 /// The table of the Raster rung.
@@ -77,6 +81,9 @@ pub fn raster() -> RasterEffects {
         }),
         // 0.10 ms; it is the lens, not the lighting, so every rung keeps it.
         bloom: Some(Bloom::NATURAL),
+        // Two mirrors at half resolution: `PlanarReflections`' defaults. Costs nothing where no mirror is on
+        // screen; see `planar_reflection` for what one costs.
+        planar_reflections: Some(PlanarReflections::default()),
     }
 }
 
@@ -144,6 +151,12 @@ pub fn raster_with(level: RasterLevel, overrides: &GraphicsOverrides) -> RasterE
             overrides.ssr,
         ),
         bloom: switch(table.bloom, overrides.bloom),
+        planar_reflections: switch(
+            table
+                .planar_reflections
+                .or_forced(full.planar_reflections, overrides.planar_reflections),
+            overrides.planar_reflections,
+        ),
     }
 }
 

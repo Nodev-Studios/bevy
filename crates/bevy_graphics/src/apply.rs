@@ -13,7 +13,8 @@
 //!   ([`traced`](crate::traced)) and a storage-bindable main texture; on `Raster` it has the effects of
 //!   [`raster`](crate::raster). The lighting, the anti-aliasing and the denoiser on such a camera are the
 //!   ladder's: it overwrites and removes them.
-//! - **The effects** (ambient occlusion, reflections, contact shadows, bloom, the shadow filter) are inserted
+//! - **The effects** (ambient occlusion, reflections, contact shadows, bloom, the shadow filter, planar
+//!   reflections) are inserted
 //!   with the table's values only where the camera has none. A value the game put there itself is kept, and
 //!   when a rung or an override switches that effect off the game's value is set aside and comes back with
 //!   the effect.
@@ -22,8 +23,8 @@
 //!   shadows are switched on for the lights that cast shadow maps. What the game set is remembered on the
 //!   light ([`LightShadowState`]) and restored. A flag the game changes while the ladder holds another value
 //!   is taken as the game's new wish, unless it is set to the very value the ladder had written.
-//! - **[`GraphicsOverrides`]**: `ssao`, `ssr`, `contact_shadows` and `bloom`
-//!   switch that effect whatever the table says (the first three exist on `Raster` only); `restir` and
+//! - **[`GraphicsOverrides`]**: `ssao`, `ssr`, `contact_shadows`, `planar_reflections` and `bloom`
+//!   switch that effect whatever the table says (all but bloom exist on `Raster` only); `restir` and
 //!   `max_bounces` change the traced parameter set; `shadows: Some(false)` switches every shadow map off on
 //!   `Raster`, while `Some(true)` is the same as `None`: a light the game left without shadows gets none.
 //!
@@ -75,8 +76,8 @@ use bevy_light::{
 };
 use bevy_math::UVec2;
 use bevy_pbr::{
-    ContactShadows, DefaultOpaqueRendererMethod, ScreenSpaceAmbientOcclusion,
-    ScreenSpaceReflections,
+    planar_reflection::PlanarReflections, ContactShadows, DefaultOpaqueRendererMethod,
+    ScreenSpaceAmbientOcclusion, ScreenSpaceReflections,
 };
 use bevy_post_process::bloom::Bloom;
 use bevy_render::{
@@ -143,6 +144,7 @@ pub(crate) fn build(app: &mut App) {
     }
 
     crate::meshes::build(app);
+    crate::mirrors::build(app);
 }
 
 /// Recomputes [`ResolvedGraphics`] when something it depends on changed.
@@ -224,6 +226,7 @@ pub struct AppliedGraphics {
     reflections: Managed<ScreenSpaceReflections>,
     contact_shadows: Managed<ContactShadows>,
     bloom: Managed<Bloom>,
+    planar_reflections: Managed<PlanarReflections>,
     shadow_filter: Managed<ShadowFilteringMethod>,
     /// The normal prepass came with the ladder's ambient occlusion and goes with it.
     normal_prepass_is_ours: bool,
@@ -308,6 +311,7 @@ struct CameraShape {
     reflections: Option<&'static ScreenSpaceReflections>,
     contact_shadows: Option<&'static ContactShadows>,
     bloom: Option<&'static Bloom>,
+    planar_reflections: Option<&'static PlanarReflections>,
     shadow_filter: Option<&'static ShadowFilteringMethod>,
     normal_prepass: Has<NormalPrepass>,
     main_texture_usages: Option<&'static CameraMainTextureUsages>,
@@ -403,6 +407,8 @@ fn shape_camera(
             ambient_occlusion: None,
             reflections: None,
             bloom: traced_bloom(&wanted.overrides),
+            // The tracer reflects mirrors itself.
+            planar_reflections: None,
             ..raster_with(wanted.raster, &wanted.overrides)
         }
     } else {
@@ -426,6 +432,11 @@ fn shape_camera(
         .contact_shadows
         .set(camera, shape.contact_shadows, effects.contact_shadows);
     state.bloom.set(camera, shape.bloom, effects.bloom);
+    state.planar_reflections.set(
+        camera,
+        shape.planar_reflections,
+        effects.planar_reflections,
+    );
     if traced {
         // Nothing reads the filter while no shadow map is drawn.
         state.shadow_filter.release(camera);
