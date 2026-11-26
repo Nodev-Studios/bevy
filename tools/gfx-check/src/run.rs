@@ -1,6 +1,6 @@
 //! `gfx-check run`: the testbed over a matrix of adapters, scenes, flag sets and resolutions.
 
-use crate::{log_gate, metric, report::Report, sheet};
+use crate::{coverage, log_gate, metric, report::Report, sheet};
 use argh::FromArgs;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -84,6 +84,10 @@ struct RunEntry {
     /// Largest median frame time allowed, in milliseconds.
     #[serde(default)]
     max_frame_ms: Option<f64>,
+    /// The run is a baked-light coverage view: it fails when a capture has a black pixel under its masks
+    /// (`gfx-check coverage`).
+    #[serde(default)]
+    coverage: bool,
 }
 
 /// One row of the results.
@@ -238,6 +242,23 @@ fn evaluate(cell: &mut Cell, dir: &Path, entry: &RunEntry, reference: Option<Pat
                         .push(format!("flicker {points:.3} % over {max}"));
                 }
             }
+            Err(error) => cell.failures.push(error),
+        }
+    }
+    if entry.coverage {
+        match coverage::check_run(dir) {
+            Ok(Some(checked)) => {
+                cell.failures
+                    .extend(checked.iter().filter(|check| check.zero > 0).map(|check| {
+                        format!(
+                            "coverage: {} has {} black px of {}",
+                            check.label, check.zero, check.pixels
+                        )
+                    }));
+            }
+            Ok(None) => cell
+                .failures
+                .push("coverage: the run is not a coverage view".to_owned()),
             Err(error) => cell.failures.push(error),
         }
     }

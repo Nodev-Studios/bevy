@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Every field has an `Auto`, and [`resolve`](crate::resolve) turns the settings into what this machine will
 /// actually run.
-#[derive(Resource, Reflect, Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Resource, Reflect, Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[reflect(Resource, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GraphicsSettings {
     /// Which rung of the ladder to render with.
@@ -22,10 +22,25 @@ pub struct GraphicsSettings {
     /// Single effects forced on or off, whatever the preset says.
     pub overrides: GraphicsOverrides,
     /// The brightness of the ambient light every [`GraphicsCamera`] gets while a baked indirect light is loaded
-    /// ([`baked`](crate::baked)), in cd/m². The bake holds the light a game's ambient stood in for, so the
-    /// default is 0: anything more is lit twice. Settings saved before it existed read as 0.
-    #[serde(default)]
+    /// ([`baked`](crate::baked)), in cd/m². It lights only what lies outside every baked box (a door jamb, a
+    /// character in a doorway); inside one the bake replaces it. Default
+    /// [`DEFAULT_AMBIENT_WHILE_BAKED`](crate::baked::DEFAULT_AMBIENT_WHILE_BAKED); settings saved before it
+    /// existed read as that default.
+    #[serde(default = "crate::baked::default_ambient_while_baked")]
     pub ambient_while_baked: f32,
+}
+
+impl Default for GraphicsSettings {
+    fn default() -> Self {
+        Self {
+            preset: Default::default(),
+            upscaler: Default::default(),
+            upscale_quality: Default::default(),
+            denoiser: Default::default(),
+            overrides: Default::default(),
+            ambient_while_baked: crate::baked::DEFAULT_AMBIENT_WHILE_BAKED,
+        }
+    }
 }
 
 /// A rung of the graphics ladder, or `Auto` to pick one from the machine's capabilities.

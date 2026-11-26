@@ -9,12 +9,10 @@
 //   done
 //   target/release/gfx-check run tools/gfx-check/baked.ron --out target/gfx-check/baked
 //   target/release/gfx-check budget --golden tools/gfx-check/golden-baked target/gfx-check/baked
-//   # the coverage gate: no black pixel of a capture inside its mask
-//   for run in target/gfx-check/baked/*/*/*/coverage*; do
-//     for mask in $run/mask-*.png; do
-//       target/release/gfx-check image stats $run/${mask##*/mask-} --region $mask --no-zero --min-luma 0
-//     done
-//   done
+//
+// The coverage gate (gates 8 and 12, and M3-3's "no black outside the boxes") is part of the run: a `coverage: true`
+// run fails when a capture has a black pixel inside a baked box (`mask-*.png`) or anywhere it shows a surface
+// (`surface-*.png`, door jambs included). `gfx-check coverage target/gfx-check/baked` checks the same afterwards.
 //
 // Seven warm-ups spread over TAA's jitter cycle on the RTX 5070, as `golden.ron` does. The integrated Radeon runs
 // at 1920x1080: the full table (`raster-baked`) and what `Auto` gives it (`auto-baked`, the light table) three
@@ -46,6 +44,6 @@
         (name: "auto-baked@2", args: ["--preset", "auto", "--baked-gi", "target/gfx-check/gi"], warmup: 301, frames: 120, adapters: ["AMD"]),
         (name: "auto-baked@3", args: ["--preset", "auto", "--baked-gi", "target/gfx-check/gi"], warmup: 303, frames: 120, adapters: ["AMD"]),
         // The bake alone, along each scene's orbit: eight captures and their masks.
-        (name: "coverage", args: ["--preset", "raster", "--baked-gi", "target/gfx-check/gi", "--gi-coverage", "--camera", "orbit"], warmup: 60, frames: 1440, adapters: ["NVIDIA"]),
+        (name: "coverage", args: ["--preset", "raster", "--baked-gi", "target/gfx-check/gi", "--gi-coverage", "--camera", "orbit"], warmup: 60, frames: 1440, adapters: ["NVIDIA"], coverage: true),
     ],
 )

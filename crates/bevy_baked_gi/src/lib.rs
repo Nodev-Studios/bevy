@@ -8,6 +8,13 @@
 //! also gets a baked reflection probe (a prefiltered cubemap, Bevy's `EnvironmentMapLight`), so rough and glossy
 //! surfaces reflect the room where screen-space reflections cannot see.
 //!
+//! Mark what moves at run time (characters, physics props, doors, a carried lamp) [`GiBakeExclude`]: the bake leaves
+//! it out, so its occlusion and bounce do not stay behind in the static light. Give a lamp that moves, or a sun
+//! turned for the time of day, a [`GiBakeLight`] id so it keeps its bounce light; other lights are matched to the
+//! bake by kind and position within a tolerance ([`match_light`]). What the baker traces follows [`traceable`],
+//! the rule the graphics ladder's traced rungs share: unfit meshes are fitted, glass and other blended materials and
+//! skinned or morphed meshes are not traced.
+//!
 //! The volumes hold what a rasterizer does not draw: light that left a surface (every bounce of every light) and
 //! the light of emissive meshes, but not the direct light of analytic lights. They are stored in Bevy's
 //! convention: each texel is E/π for a surface facing that side (cd/m²), with no exposure applied.
@@ -21,15 +28,16 @@ mod manifest;
 mod reflection;
 mod region;
 mod runtime;
+pub mod traceable;
 mod volume;
 
 pub use hash::{scene_hash, SceneHash};
 pub use manifest::{
-    light_power, BakeProvenance, BakedGiManifest, BakedGiManifestLoader, BakedLight,
-    BakedLightKind, BakedReflection, BakedRegion, LightKey, MANIFEST_FORMAT,
+    light_power, match_light, BakeProvenance, BakedGiManifest, BakedGiManifestLoader, BakedLight,
+    BakedLightKind, BakedReflection, BakedRegion, LightKey, LightMatch, MANIFEST_FORMAT,
 };
 pub use reflection::BakedGiReflection;
-pub use region::{GiBakeRegion, GiBakeSkipEmission};
+pub use region::{overlap_falloffs, GiBakeExclude, GiBakeLight, GiBakeRegion, GiBakeSkipEmission};
 pub use runtime::{
     binding_arrays_are_usable, region_intensity, BakedGi, BakedGiPlugin, BakedGiStatus,
     BakedGiVolume,

@@ -700,16 +700,22 @@ fn apply_pbr_lighting(
     found_diffuse_indirect = true;
 }
 
+    // Fork: whether an irradiance volume covers this fragment. Outside every volume the environment map's
+    // diffuse and the ambient light stand in, so a fragment between baked boxes (a door jamb, a character in a
+    // doorway) is not left with no indirect light at all; inside one, the volume is the ambient's replacement.
+    var irradiance_volume_coverage = 0.0;
+
     @if(IRRADIANCE_VOLUME)
     // Irradiance volume light (indirect)
     if (!found_diffuse_indirect) {
-        let irradiance_volume_light = irradiance_volume::irradiance_volume_light(
+        let irradiance_volume_light = irradiance_volume::irradiance_volume_light_and_coverage(
             in.world_position.xyz,
             in.N,
             &clusterable_object_index_ranges,
         );
-        indirect_light += irradiance_volume_light * diffuse_color * diffuse_occlusion;
-        found_diffuse_indirect = true;
+        indirect_light += irradiance_volume_light.irradiance * diffuse_color * diffuse_occlusion;
+        irradiance_volume_coverage = irradiance_volume_light.coverage;
+        found_diffuse_indirect = irradiance_volume_coverage > 0.0;
     }
 
     // Environment map light (indirect)
@@ -753,7 +759,7 @@ fn apply_pbr_lighting(
     @else   // LIGHTMAP
     let enable_ambient = true;
     if (enable_ambient) {
-        indirect_light += ambient::ambient_light(in.world_position, in.N, in.V, NdotV, diffuse_color, F0, perceptual_roughness, diffuse_occlusion);
+        indirect_light += ambient::ambient_light(in.world_position, in.N, in.V, NdotV, diffuse_color, F0, perceptual_roughness, diffuse_occlusion) * (1.0 - irradiance_volume_coverage);
     }
 
     // we'll use the specular component of the transmitted environment
