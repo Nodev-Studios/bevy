@@ -787,6 +787,12 @@ tracing = { version = "0.1", default-features = false, optional = true }
 bevy_dylib = { path = "crates/bevy_dylib", version = "0.20.1", default-features = false, optional = true }
 
 [dev-dependencies]
+# Only gfx_viewer's panels use it (an example; no engine crate depends on it). Its Bevy crates resolve to this
+# workspace through [patch.crates-io] below. No clipboard, URL opener or picking backend: render + fonts only.
+bevy_egui = { version = "0.43.1", default-features = false, features = [
+  "render",
+  "default_fonts",
+] }
 rand = "0.10.0"
 chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
 ron = "0.12"
@@ -5395,6 +5401,35 @@ required-features = ["meshlet", "meshlet_processor", "free_camera"]
 hidden = true
 # Requires compute shaders and WGPU extensions, not supported by WebGL nor WebGPU.
 wasm = false
+
+# bevy_egui (gfx_viewer's dev-dependency) asks for the Bevy 0.20 crates from crates.io: these are this fork's.
+[patch.crates-io]
+bevy_a11y = { path = "crates/bevy_a11y" }
+bevy_app = { path = "crates/bevy_app" }
+bevy_asset = { path = "crates/bevy_asset" }
+bevy_camera = { path = "crates/bevy_camera" }
+bevy_color = { path = "crates/bevy_color" }
+bevy_core_pipeline = { path = "crates/bevy_core_pipeline" }
+bevy_derive = { path = "crates/bevy_derive" }
+bevy_ecs = { path = "crates/bevy_ecs" }
+bevy_extract = { path = "crates/bevy_extract" }
+bevy_image = { path = "crates/bevy_image" }
+bevy_input = { path = "crates/bevy_input" }
+bevy_log = { path = "crates/bevy_log" }
+bevy_math = { path = "crates/bevy_math" }
+bevy_mesh = { path = "crates/bevy_mesh" }
+bevy_picking = { path = "crates/bevy_picking" }
+bevy_platform = { path = "crates/bevy_platform" }
+bevy_reflect = { path = "crates/bevy_reflect" }
+bevy_render = { path = "crates/bevy_render" }
+bevy_shader = { path = "crates/bevy_shader" }
+bevy_shape = { path = "crates/bevy_shape" }
+bevy_time = { path = "crates/bevy_time" }
+bevy_transform = { path = "crates/bevy_transform" }
+bevy_ui_render = { path = "crates/bevy_ui_render" }
+bevy_utils = { path = "crates/bevy_utils" }
+bevy_window = { path = "crates/bevy_window" }
+bevy_winit = { path = "crates/bevy_winit" }
 
 [profile.wasm-release]
 inherits = "release"

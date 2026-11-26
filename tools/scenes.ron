@@ -1,0 +1,104 @@
+// The downloaded scenes gfx_viewer lists. The testbed's own scenes are built in code and are not listed here.
+//
+// Every entry is one scene of the viewer's list. The viewer shows each entry; one whose file is missing is greyed
+// out with "run tools/fetch-scenes.sh". Nothing a path points to is in this repository: the files live in
+// ~/.local/share/bevy-graficos/scenes/ ($BEVY_GFX_SDK_DIR/scenes), written by tools/fetch-scenes.sh or by the
+// download/convert scripts named in `fetch`, and they keep their own licences.
+//
+// To add a scene, append an entry. Required fields: id, name, path, licence, non_commercial. Every other field is
+// optional and may be left out. Fields:
+//
+//   id:             "bistro-exterior"   unique, lower-case, [a-z0-9-]; used by --scene, --self-test-scenes and as
+//                                       the name of the scene's bake folder.
+//   name:           "Bistro (exterior)" what the list shows.
+//   path:           "bistro/BistroExterior.glb"
+//                                       the .gltf or .glb to load, relative to the scenes folder (`base: Scenes`,
+//                                       the default) or to this repository's assets/ folder (`base: RepoAssets`).
+//   base:           Scenes | RepoAssets (default Scenes)
+//   licence:        "CC-BY 4.0: credit …"  one line, shown next to the scene. Say who to credit.
+//   non_commercial: true | false        true for anything that may not be used in a commercial product (NC
+//                                       licences, the CRYENGINE agreement, "look only"): the list marks it
+//                                       "no comercial".
+//   fetch:          "tools/fetch-scenes.sh bistro"  the command that puts the file there (shown when missing).
+//   exposure:       12.0                the camera's EV100 for this scene. Default: 12.0 when the viewer adds
+//                                       its default sun and sky, else Bevy's default exposure.
+//   camera:         (position: (x, y, z), look_at: (x, y, z))
+//                                       where the camera starts, in metres in the scene's own frame (after
+//                                       `scale`). Default: placed from the meshes' bounds.
+//   sun:            Auto | Off | Sun(direction: (x, y, z), illuminance: 100000.0)
+//                                       Auto (default): the viewer's default sun and sky when the file has no
+//                                       light of its own. Off: never add a sun (a night scene lit by its lamps;
+//                                       no sky either). Sun(...): add this sun and the sky unless the file has a
+//                                       directional light; `direction` is where the light travels (pointing down),
+//                                       `illuminance` in lux.
+//   scale:          10.0                uniform scale of the file's root (default 1.0).
+//   extra:          [(path: "…", translation: (x, y, z), rotation_y: 90.0, scale: 2.0)]
+//                                       more files placed in the same scene (paths as `path`, same `base`;
+//                                       rotation_y in degrees; every field but path optional). Default [].
+//
+// Keep it one entry per scene. The viewer refuses the whole file, naming the line, when it does not parse.
+(
+    scenes: [
+        (
+            id: "bistro-exterior",
+            name: "Bistro (exterior)",
+            path: "bistro/BistroExterior.glb",
+            licence: "CC-BY 4.0: Amazon Lumberyard Bistro, credit Amazon Lumberyard (NVIDIA ORCA)",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes.sh bistro",
+        ),
+        (
+            id: "bistro-interior",
+            name: "Bistro (interior)",
+            path: "bistro/BistroInterior_Wine.glb",
+            licence: "CC-BY 4.0: Amazon Lumberyard Bistro, credit Amazon Lumberyard (NVIDIA ORCA)",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes.sh bistro",
+        ),
+        (
+            id: "pica-pica",
+            name: "PICA PICA (mini diorama + robot)",
+            path: "pica-pica/mini_diorama_01.glb",
+            licence: "CC-BY-NC 4.0: PICA PICA assets, credit SEED - Electronic Arts",
+            non_commercial: true,
+            fetch: "tools/fetch-scenes.sh pica-pica",
+            // As Bevy's solari example places them.
+            scale: 10.0,
+            extra: [(path: "pica-pica/robot_01.glb", translation: (-2.0, 0.05, -2.1), rotation_y: 90.0, scale: 2.0)],
+            sun: Sun(direction: (-0.60, -0.70, -0.38), illuminance: 10000.0),
+        ),
+        (
+            id: "zero-day",
+            name: "Zero Day",
+            path: "zero-day/ZeroDay.glb",
+            licence: "CC-BY 4.0: Zero Day, credit Beeple (NVIDIA ORCA)",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes.sh zero-day",
+            sun: Off,
+        ),
+        (
+            id: "sponza",
+            name: "Sponza (Crytek)",
+            path: "glTF-Sample-Assets/Models/Sponza/glTF/Sponza.gltf",
+            licence: "CRYENGINE Limited License Agreement: look only, never ship or publish",
+            non_commercial: true,
+            fetch: "tools/fetch-scenes.sh sponza",
+        ),
+        (
+            id: "abeautifulgame",
+            name: "A Beautiful Game",
+            path: "glTF-Sample-Assets/Models/ABeautifulGame/glTF/ABeautifulGame.gltf",
+            licence: "CC-BY 4.0: credit ASWF (2020) and Ed Mackey (2022)",
+            non_commercial: false,
+            fetch: "tools/fetch-scenes.sh abeautifulgame",
+        ),
+        (
+            id: "flighthelmet",
+            name: "Flight Helmet",
+            path: "models/FlightHelmet/FlightHelmet.gltf",
+            base: RepoAssets,
+            licence: "CC0: Bevy's assets/ (Khronos sample model)",
+            non_commercial: false,
+        ),
+    ],
+)
