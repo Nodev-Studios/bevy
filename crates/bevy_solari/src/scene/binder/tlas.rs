@@ -217,6 +217,14 @@ impl TlasState {
         }
     }
 
+    /// Drops both structures; the next frame with instances allocates and builds a new one.
+    fn drop_structures(&mut self, bind_groups: &mut BindGroupCacheState) {
+        self.structures = [None, None];
+        self.capacity = [0, 0];
+        self.built = [false, false];
+        bind_groups.invalid = true;
+    }
+
     /// Whether the previous-frame slot's binding will still be correct next frame, and so whether
     /// a bind group using it can be cached.
     pub fn previous_binding_is_stable(&self) -> bool {
@@ -352,6 +360,12 @@ pub fn build_raytracing_tlas(
         // This structure no longer points at whatever was retired before it, which is what lets the
         // oldest retirements go
         blas_manager.note_tlas_build();
+    } else if bindings.bind_group.is_none() && blas_manager.has_retired() {
+        // Nothing traces this frame (no traced view, or an empty scene between two levels), so no build will come
+        // to let the retired BLAS go: on a raster-only camera they piled up for every mesh ever loaded. Drop both
+        // structures, which are the only things pointing at them, and free them all once in-flight work is done.
+        bindings.tlas.drop_structures(&mut bindings.bind_groups);
+        blas_manager.release_all_retired();
     }
 }
 

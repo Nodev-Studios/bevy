@@ -35,6 +35,8 @@ pub struct BlasManager {
     /// retirements since the last build, and every batch ahead of it has one more build to wait
     /// out.
     pending_deletions: VecDeque<Vec<Blas>>,
+    /// Set when no TLAS can point at any retired BLAS any more: every one of them goes at once.
+    release_all_retired: bool,
 }
 
 impl BlasManager {
@@ -86,6 +88,17 @@ impl BlasManager {
                 self.retire(blas);
             }
         }
+    }
+
+    /// Whether any BLAS waits for deletion.
+    pub fn has_retired(&self) -> bool {
+        self.pending_deletions.iter().any(|batch| !batch.is_empty())
+    }
+
+    /// Deletes every retired BLAS once the GPU has finished the work submitted so far, without waiting for TLAS
+    /// builds. Only for when no TLAS that could point at them will be traced again (see `build_raytracing_tlas`).
+    pub fn release_all_retired(&mut self) {
+        self.release_all_retired = true;
     }
 
     fn retire(&mut self, blas: Blas) {
@@ -310,6 +323,12 @@ pub fn delete_raytracing_blas(
     mut blas_manager: ResMut<BlasManager>,
     render_queue: Res<RenderQueue>,
 ) {
+    if core::mem::take(&mut blas_manager.release_all_retired) {
+        let deletable: Vec<Blas> = blas_manager.pending_deletions.drain(..).flatten().collect();
+        render_queue.on_submitted_work_done(move || drop(deletable));
+        return;
+    }
+
     if blas_manager.pending_deletions.len() <= TLAS_BUILDS_BEFORE_DELETION_ALLOWED {
         return;
     }
