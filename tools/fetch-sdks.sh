@@ -13,9 +13,14 @@
 #          A sparse, blobless checkout of only those paths and the documentation, plus the Khronos Vulkan
 #          headers. Building needs none of it (the DLLs are loaded at run time); the layout test and a
 #          Windows bundle do.
-#          Licence: Kits/FidelityFX/docs/license.md in the SDK (headers MIT; the DLLs binary-redistributable).
+#          Licence: Kits/FidelityFX/docs/license.md in the SDK (it lists the headers and both Vulkan DLLs under MIT).
+#   validation  The Khronos Vulkan validation layer (Linux x86-64), for report-only validation runs
+#          (tools/gfx-check/smoke-validation.ron). Taken from LunarG's public Linux SDK tarball, checked against
+#          LunarG's published SHA-256; only the layer and its manifest are kept (the tarball is deleted). Needs no
+#          root. Prints VK_LAYER_PATH and VK_INSTANCE_LAYERS: every Vulkan program started with them loads the layer.
+#          Never needed to build or ship anything. Licence: Apache-2.0 (KhronosGroup/Vulkan-ValidationLayers).
 #
-# Usage: tools/fetch-sdks.sh [dlss|nrd|fsr ...]  (no argument: every SDK listed above)
+# Usage: tools/fetch-sdks.sh [dlss|nrd|fsr|validation ...]  (no argument: dlss, nrd and fsr)
 # Folder: $BEVY_GFX_SDK_DIR, default ~/.local/share/bevy-graficos
 set -euo pipefail
 
@@ -75,11 +80,38 @@ fetch_fsr() {
   echo "export FSR_SDK=$dir/fsr"
 }
 
+# LunarG's Linux SDK the validation layer is taken from (2026-11-02).
+VALIDATION_VERSION=1.4.363.1
+VALIDATION_SHA256=b7867d8ca658563813af666f34b93db87f1b1c7d9d69d97e924c210c7ba33eb8
+
+fetch_validation() {
+  local out="$dir/validation/$VALIDATION_VERSION"
+  if [[ ! -f "$out/explicit_layer.d/VkLayer_khronos_validation.json" ]]; then
+    local name="vulkansdk-linux-x86_64-$VALIDATION_VERSION.tar.xz"
+    local tmp="$dir/validation/.download"
+    mkdir -p "$tmp" "$out/explicit_layer.d" "$out/lib"
+    curl -fsSL --retry 2 -o "$tmp/$name" "https://sdk.lunarg.com/sdk/download/$VALIDATION_VERSION/linux/$name" >&2
+    echo "$VALIDATION_SHA256  $tmp/$name" | sha256sum -c - >&2
+    tar -xJf "$tmp/$name" -C "$tmp" --wildcards \
+      '*/x86_64/lib/libVkLayer_khronos_validation.so' \
+      '*/x86_64/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json'
+    mv "$tmp"/*/x86_64/lib/libVkLayer_khronos_validation.so "$out/lib/"
+    # The manifest names the library relative to itself; point it at our layout.
+    sed 's#"library_path": *"[^"]*"#"library_path": "../lib/libVkLayer_khronos_validation.so"#' \
+      "$tmp"/*/x86_64/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json \
+      > "$out/explicit_layer.d/VkLayer_khronos_validation.json"
+    rm -rf "$tmp"
+  fi
+  echo "export VK_LAYER_PATH=$out/explicit_layer.d"
+  echo "export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation"
+}
+
 for sdk in "$@"; do
   case "$sdk" in
     dlss) fetch_dlss ;;
     nrd) fetch_nrd ;;
     fsr) fetch_fsr ;;
+    validation) fetch_validation ;;
     *) echo "fetch-sdks: unknown SDK '$sdk'" >&2; exit 2 ;;
   esac
 done

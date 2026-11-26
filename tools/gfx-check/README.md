@@ -53,6 +53,10 @@ and `b.png`, which is all the testbed writes.
 
 - `smoke.ron`: every raw mode on both scenes, on both adapters of the project's machine. It must pass.
 - `black.ron`: a frame with no light. It must fail.
+- `smoke-validation.ron`: Raster, RtLite (NRD + TSR), RtFull (DLSS-RR) and a baked Raster under the Khronos
+  validation layer with synchronization validation, small frames, both adapters. Report-only: its runs fail the
+  log gate on any validation message; read the messages (its header has the commands, and
+  `tools/fetch-sdks.sh validation` fetches the layer).
 - `budget.ron` and `budgets.toml`: every preset on both scenes at 1080p and 1440p, and the frame-time gates of plan
   section 2 as data (E2). Time on a quiet machine: the gates read wall-clock frames.
 - `golden.ron` and `golden/`: one golden image per preset and scene at 1080p on the RTX 5070, on the path every
