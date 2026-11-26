@@ -17,8 +17,8 @@
 //   done
 //
 // Seven warm-ups spread over TAA's jitter cycle on the RTX 5070, as `golden.ron` does; the integrated Radeon runs
-// once at 640x360 and records its difference, ungated. A bake is about 8 s (`interior`) and 17 s (`rooms`) on the
-// RTX 5070.
+// once at 640x360 and records its difference, ungated. A bake (volumes and reflection probes) is about 9 s
+// (`interior`) and 44 s (`rooms`) on the RTX 5070 (2026-11-25).
 (
     adapters: [
         (name: "NVIDIA", resolutions: ["1920x1080"]),

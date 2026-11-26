@@ -12,12 +12,12 @@ size = [480, 270]
 run = "raster-baked"
 scene = "interior"
 file = "raster-baked-interior.png"
-tolerance = 0.45
-written_from = [0.222, 0.149, 0.18, 0.173, 0.15, 0.154, 0.216]
+tolerance = 0.39
+written_from = [0.189, 0.193, 0.148, 0.148, 0.175, 0.184, 0.165]
 
 [[image]]
 run = "raster-baked"
 scene = "rooms"
 file = "raster-baked-rooms.png"
 tolerance = 0.17
-written_from = [0.083, 0.084, 0.076, 0.083, 0.077, 0.076, 0.078]
+written_from = [0.083, 0.077, 0.083, 0.078, 0.079, 0.084, 0.08]
