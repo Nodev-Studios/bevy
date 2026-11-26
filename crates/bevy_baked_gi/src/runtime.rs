@@ -1,6 +1,7 @@
 use crate::{
-    light_power, BakedGiManifest, BakedGiManifestLoader, BakedLightKind, BakedRegion, GiBakeRegion,
-    GiBakeSkipEmission, LightKey,
+    light_power, match_light, overlap_falloffs, BakedGiManifest, BakedGiManifestLoader,
+    BakedLightKind, BakedRegion, GiBakeExclude, GiBakeLight, GiBakeRegion, GiBakeSkipEmission,
+    LightKey, LightMatch,
 };
 use alloc::vec::Vec;
 use bevy_app::{App, Plugin, PostUpdate};
@@ -13,7 +14,7 @@ use bevy_ecs::{
     hierarchy::ChildOf,
     lifecycle::RemovedComponents,
     name::Name,
-    query::{AnyOf, Changed, Or, With},
+    query::{AnyOf, Changed, Has, Or, With},
     resource::Resource,
     schedule::IntoScheduleConfigs,
     system::{Commands, Local, Query, Res, ResMut},
@@ -46,6 +47,8 @@ impl Plugin for BakedGiPlugin {
             .init_resource::<BakedGiStatus>()
             .register_type::<GiBakeRegion>()
             .register_type::<GiBakeSkipEmission>()
+            .register_type::<GiBakeExclude>()
+            .register_type::<GiBakeLight>()
             .add_systems(
                 PostUpdate,
                 (
@@ -164,12 +167,21 @@ fn spawn_baked_volumes(
                  light every view with one volume"
             );
         } else {
+            // A region baked with falloff 0 blends into the regions it overlaps (`overlap_falloffs`).
+            let transforms: Vec<Transform> = manifest
+                .regions
+                .iter()
+                .map(BakedRegion::transform)
+                .collect();
+            let automatic = overlap_falloffs(&transforms);
             for (index, region) in manifest.regions.iter().enumerate() {
+                let falloff = match Vec3::from_array(region.falloff) {
+                    Vec3::ZERO => automatic[index],
+                    set => set,
+                };
                 commands.spawn((
                     BakedGiVolume { region: index },
-                    LightProbe {
-                        falloff: Vec3::from_array(region.falloff),
-                    },
+                    LightProbe { falloff },
                     IrradianceVolume {
                         voxels: manifest.volumes.get(index).cloned().unwrap_or_default(),
                         // The component defaults to 0; the light-following system sets the real value.
@@ -253,23 +265,30 @@ type LightChanged = (
     )>,
 );
 
-/// Each live, visible light's key and power. Two lights at one key add up.
-fn live_light_powers<'a>(
-    lights: impl Iterator<
-        Item = (
-            &'a GlobalTransform,
-            Option<&'a InheritedVisibility>,
-            (
-                Option<&'a PointLight>,
-                Option<&'a SpotLight>,
-                Option<&'a RectLight>,
-                Option<&'a DirectionalLight>,
-            ),
-        ),
-    >,
-) -> HashMap<LightKey, f32> {
-    let mut powers = HashMap::default();
-    for (transform, visibility, (point, spot, rect, directional)) in lights {
+/// One live, visible light: its key (with the game's id), its power, and whether the game left it out of bakes.
+struct LiveLight {
+    key: LightKey,
+    power: f32,
+    excluded: bool,
+}
+
+type LightItem<'a> = (
+    &'a GlobalTransform,
+    Option<&'a InheritedVisibility>,
+    Option<&'a GiBakeLight>,
+    bool,
+    (
+        Option<&'a PointLight>,
+        Option<&'a SpotLight>,
+        Option<&'a RectLight>,
+        Option<&'a DirectionalLight>,
+    ),
+);
+
+/// Each live, visible light.
+fn live_lights<'a>(lights: impl Iterator<Item = LightItem<'a>>) -> Vec<LiveLight> {
+    let mut live = Vec::new();
+    for (transform, visibility, id, excluded, (point, spot, rect, directional)) in lights {
         if visibility.is_some_and(|visibility| !visibility.get()) {
             continue;
         }
@@ -296,15 +315,25 @@ fn live_light_powers<'a>(
         } else {
             continue;
         };
-        *powers.entry(LightKey::new(kind, transform)).or_insert(0.0) += power;
+        live.push(LiveLight {
+            key: LightKey::new(kind, transform).with_id(id.map(|id| id.0)),
+            power,
+            excluded,
+        });
     }
-    powers
+    live
 }
 
 fn update_volume_intensities(
     roots: Query<&BakedGi>,
     mut volumes: Query<(&BakedGiVolume, &ChildOf, &mut IrradianceVolume)>,
-    lights: Query<(&GlobalTransform, Option<&InheritedVisibility>, AnyLight)>,
+    lights: Query<(
+        &GlobalTransform,
+        Option<&InheritedVisibility>,
+        Option<&GiBakeLight>,
+        Has<GiBakeExclude>,
+        AnyLight,
+    )>,
     changed_lights: Query<(), LightChanged>,
     added_volumes: Query<(), bevy_ecs::query::Added<BakedGiVolume>>,
     mut removed: (
@@ -314,7 +343,7 @@ fn update_volume_intensities(
         RemovedComponents<DirectionalLight>,
     ),
     manifests: Res<Assets<BakedGiManifest>>,
-    mut warned: Local<HashSet<LightKey>>,
+    mut warned: Local<HashSet<(LightKey, bool)>>,
 ) {
     let removed_count = removed.0.read().count()
         + removed.1.read().count()
@@ -324,8 +353,9 @@ fn update_volume_intensities(
         return;
     }
 
-    let live = live_light_powers(lights.iter());
-    let mut baked_keys: HashSet<LightKey> = HashSet::default();
+    let live = live_lights(lights.iter());
+    let mut any_baked_lights = false;
+    let mut matched = vec![false; live.len()];
     let mut scales_by_manifest: HashMap<AssetId<BakedGiManifest>, Vec<f32>> = HashMap::default();
     for (volume, parent, mut irradiance) in &mut volumes {
         let Ok(baked) = roots.get(parent.parent()) else {
@@ -335,13 +365,36 @@ fn update_volume_intensities(
             continue;
         };
         let scales = scales_by_manifest.entry(baked.0.id()).or_insert_with(|| {
+            // Two live lights matched to one baked light add up.
+            let mut powers = vec![0.0; manifest.lights.len()];
+            for (index, light) in live.iter().enumerate() {
+                let found = match match_light(&manifest.lights, &light.key) {
+                    LightMatch::Baked(chosen) => Some(chosen),
+                    LightMatch::Ambiguous { chosen, other } => {
+                        if warned.insert((light.key, true)) {
+                            warn!(
+                                "{:?} is within the matching tolerance of two baked lights ({:?} and {:?}); it \
+                                 counts as the nearest. Give the lamps a GiBakeLight id to match them exactly",
+                                light.key, manifest.lights[chosen].key, manifest.lights[other].key
+                            );
+                        }
+                        Some(chosen)
+                    }
+                    LightMatch::Unbaked => None,
+                };
+                if let Some(chosen) = found {
+                    powers[chosen] += light.power;
+                    matched[index] = true;
+                }
+            }
             manifest
                 .lights
                 .iter()
-                .map(|light| live.get(&light.key).copied().unwrap_or(0.0) / light.power)
+                .zip(powers)
+                .map(|(light, power)| power / light.power)
                 .collect()
         });
-        baked_keys.extend(manifest.lights.iter().map(|light| light.key));
+        any_baked_lights |= !manifest.lights.is_empty();
         let Some(region) = manifest.regions.get(volume.region) else {
             continue;
         };
@@ -351,12 +404,17 @@ fn update_volume_intensities(
         }
     }
 
-    for (key, power) in live {
-        if power > 0.0 && !baked_keys.is_empty() && !baked_keys.contains(&key) && warned.insert(key)
+    for (light, matched) in live.iter().zip(matched) {
+        if light.power > 0.0
+            && !light.excluded
+            && any_baked_lights
+            && !matched
+            && warned.insert((light.key, false))
         {
             warn!(
-                "{key:?} shines but was not in the bake (absent, hidden or off when baked): its bounce light \
-                 needs a rebake"
+                "{:?} shines but was not in the bake (absent, hidden or off when baked, or moved farther than \
+                 the matching tolerance): its bounce light needs a rebake, or a GiBakeLight id",
+                light.key
             );
         }
     }
@@ -536,6 +594,24 @@ mod tests {
         assert!((b_off[0] - 0.9).abs() < 1e-5, "{b_off:?}");
         assert!((b_off[1] - 0.3).abs() < 1e-5, "{b_off:?}");
         assert_eq!(b_off[2], 1.0);
+    }
+
+    #[test]
+    fn a_nudged_lamp_keeps_its_share_and_a_carried_one_loses_it() {
+        let (mut app, b_lamp) = app_with_bake();
+        app.update();
+        // 2 cm off its baked place, across a rounding boundary: still B's lamp.
+        app.world_mut()
+            .entity_mut(b_lamp)
+            .insert(GlobalTransform::from_xyz(5.0151, 2.9, 0.0049));
+        app.update();
+        assert!((intensities(&mut app)[1] - 1.0).abs() < 1e-5);
+        // Carried 2 m away it is not the baked lamp any more (a GiBakeLight id would keep it).
+        app.world_mut()
+            .entity_mut(b_lamp)
+            .insert(GlobalTransform::from_xyz(7.0, 2.9, 0.0));
+        app.update();
+        assert!((intensities(&mut app)[1] - 0.3).abs() < 1e-5);
     }
 
     #[test]

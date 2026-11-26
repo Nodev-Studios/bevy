@@ -1,7 +1,8 @@
 //! The baker: traces the level with `bevy_solari` and writes one irradiance volume per [`GiBakeRegion`].
 //!
 //! Add [`GiBakePlugin`] to an app that spawns the level (no camera is needed, nor a window). The plugin makes
-//! every mesh traceable, swaps the material of [`GiBakeSkipEmission`] entities for one without emission, waits
+//! every mesh traceable by the shared [`traceable`](crate::traceable) rule (unfit meshes get a fitted copy,
+//! blended and deforming meshes are left out), leaves [`GiBakeExclude`] entities out, swaps the material of [`GiBakeSkipEmission`] entities for one without emission, waits
 //! until the level's assets are loaded and Solari's scene holds every light, bakes in short GPU submits, writes
 //! the volumes and the manifest to [`GiBakeSettings::output`], and exits the app: code 0 when it wrote a bake,
 //! 2 when it refused to.
@@ -9,6 +10,10 @@
 //! After the volumes it captures one reflection probe per region ([`GiBakeReflections`]): a cubemap traced with the
 //! same paths from the box's centre (or its nearest valid voxel when the centre is inside geometry), prefiltered for
 //! GGX roughness on the CPU, written beside the volume as `<region>.refl.ktx2` and listed in the manifest.
+//!
+//! A visible mesh the tracer cannot see (one that cannot be fitted, a deforming one, one without a
+//! `StandardMaterial`) is named in a warning: the bake goes on without it, as a hole in the level. Blended meshes
+//! (glass, particles) are left out on purpose and counted in the log.
 //!
 //! It refuses when nothing is traceable, when the level has no light source at all, and (in full mode) when a
 //! light it would record as on reaches no region: those are mistakes, not bakes. A region with no lamp of its own,
@@ -26,20 +31,25 @@ pub use directions::{
 pub use reflection::GiBakeReflections;
 
 use crate::{
-    encode_ktx2_rgba16f, hash::mesh_entity_hash, light_power, scene_hash, BakeProvenance,
-    BakedGiManifest, BakedLight, BakedLightKind, BakedReflection, BakedRegion, GiBakeRegion,
-    GiBakeSkipEmission, LightKey, SceneHash, MANIFEST_FORMAT,
+    encode_ktx2_rgba16f,
+    hash::{is_excluded, is_excluded_in, mesh_entity_hash},
+    light_power, scene_hash,
+    traceable::{fit, is_deforming, traced_kind, Fitted, NotTraced, Unfit},
+    BakeProvenance, BakedGiManifest, BakedLight, BakedLightKind, BakedReflection, BakedRegion,
+    GiBakeExclude, GiBakeLight, GiBakeRegion, GiBakeSkipEmission, LightKey, SceneHash,
+    MANIFEST_FORMAT,
 };
 use alloc::{format, string::String, sync::Arc, vec::Vec};
 use bevy_app::{App, AppExit, Last, Plugin, Update};
 use bevy_asset::{embedded_asset, AssetId, AssetServer, Assets, Handle};
-use bevy_camera::visibility::InheritedVisibility;
+use bevy_camera::visibility::{InheritedVisibility, Visibility};
 use bevy_color::LinearRgba;
 use bevy_ecs::{
     component::Component,
     entity::Entity,
+    hierarchy::ChildOf,
     name::Name,
-    query::{Has, With, Without},
+    query::{Has, Or, With, Without},
     resource::Resource,
     schedule::IntoScheduleConfigs,
     system::{Commands, Local, Query, ResMut},
@@ -48,7 +58,7 @@ use bevy_ecs::{
 use bevy_image::Image;
 use bevy_light::{DirectionalLight, PointLight, RectLight, SpotLight};
 use bevy_math::Vec3;
-use bevy_mesh::{Mesh, Mesh3d, PrimitiveTopology};
+use bevy_mesh::{morph::MorphWeights, skinning::SkinnedMesh, Mesh, Mesh3d, MeshRaytracingFlags};
 use bevy_pbr::{MeshMaterial3d, StandardMaterial};
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_render::{
@@ -215,7 +225,7 @@ impl Plugin for GiBakePlugin {
         app.insert_resource(self.settings.clone())
             .init_resource::<BakeExchange>()
             .init_resource::<BakeProgress>()
-            .add_systems(Update, (make_traceable, skip_emission))
+            .add_systems(Update, (make_traceable, skip_emission, exclude_lights))
             .add_systems(Last, drive_bake);
     }
 
@@ -288,39 +298,147 @@ struct RegionRecord {
 /// Main frames the level must stay unchanged, fully loaded, before it is baked. to tune.
 const SETTLE_FRAMES: u32 = 30;
 
-/// Solari's test, on the main-world mesh: what it can build an acceleration structure for.
-fn is_traceable(mesh: &Mesh) -> bool {
-    let Ok(attributes) = mesh.try_attributes() else {
-        return false;
-    };
-    let wanted = [
-        Mesh::ATTRIBUTE_POSITION,
-        Mesh::ATTRIBUTE_NORMAL,
-        Mesh::ATTRIBUTE_UV_0,
-        Mesh::ATTRIBUTE_TANGENT,
-    ];
-    mesh.primitive_topology() == PrimitiveTopology::TriangleList
-        && attributes
-            .map(|(attribute, _)| (attribute.id, attribute.format))
-            .eq(wanted.iter().map(|a| (a.id, a.format)))
-        && mesh.try_indices().is_ok()
+/// What the baker made of a mesh entity.
+#[derive(Component, Clone, Copy, Debug)]
+enum BakeTrace {
+    /// Traced: with a `RaytracingMesh3d` the baker gave it, or the game's own.
+    Traced,
+    /// Left out on purpose: its material blends.
+    Blended,
+    /// Left out, a hole in the bake: it deforms, or it cannot be fitted.
+    LeftOut(LeftOut),
 }
 
+#[derive(Clone, Copy, Debug)]
+enum LeftOut {
+    Deforming,
+    Unfit(Unfit),
+}
+
+impl core::fmt::Display for LeftOut {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Deforming => NotTraced::Deforming.fmt(f),
+            Self::Unfit(reason) => write!(f, "it cannot be made traceable: {reason}"),
+        }
+    }
+}
+
+type ExclusionTree<'w, 's> = Query<'w, 's, (Has<GiBakeExclude>, Option<&'static ChildOf>)>;
+
+/// Gives every standard mesh what the tracer sees of it (the shared [`traceable`](crate::traceable) rule) once
+/// its mesh and material have loaded. An entity that already has a `RaytracingMesh3d` is the game's and is traced
+/// as it is, unless it is excluded from the bake.
 fn make_traceable(
     mut commands: Commands,
     meshes: Query<
-        (Entity, &Mesh3d),
         (
-            With<MeshMaterial3d<StandardMaterial>>,
-            Without<RaytracingMesh3d>,
+            Entity,
+            &Mesh3d,
+            &MeshMaterial3d<StandardMaterial>,
+            Has<SkinnedMesh>,
+            Has<MorphWeights>,
+            Has<RaytracingMesh3d>,
         ),
+        Without<BakeTrace>,
+    >,
+    exclusions: ExclusionTree,
+    mut mesh_assets: ResMut<Assets<Mesh>>,
+    materials: bevy_ecs::system::Res<Assets<StandardMaterial>>,
+    mut fitted: Local<
+        HashMap<(AssetId<Mesh>, MeshRaytracingFlags), Result<Option<Handle<Mesh>>, Unfit>>,
     >,
 ) {
-    for (entity, mesh) in &meshes {
-        commands
-            .entity(entity)
-            .insert(RaytracingMesh3d(mesh.0.clone()));
+    for (entity, mesh_3d, material_3d, skinned, morphed, own) in &meshes {
+        if is_excluded(entity, &exclusions) {
+            if own {
+                commands.entity(entity).remove::<RaytracingMesh3d>();
+            }
+            continue;
+        }
+        if own {
+            commands.entity(entity).insert(BakeTrace::Traced);
+            continue;
+        }
+        // An asset that has not loaded yet is looked at again next frame.
+        let (Some(mesh), Some(material)) =
+            (mesh_assets.get(&mesh_3d.0), materials.get(&material_3d.0))
+        else {
+            continue;
+        };
+        if is_deforming(mesh, skinned || morphed) {
+            commands
+                .entity(entity)
+                .insert(BakeTrace::LeftOut(LeftOut::Deforming));
+            continue;
+        }
+        let Ok(needs) = traced_kind(material) else {
+            commands.entity(entity).insert(BakeTrace::Blended);
+            continue;
+        };
+        let key = (mesh_3d.0.id(), needs);
+        let traced = match fitted.get(&key) {
+            Some(traced) => traced.clone(),
+            None => {
+                let traced = match fit(mesh, needs) {
+                    Ok(Fitted::AsIs) => Ok(None),
+                    Ok(Fitted::Copy(copy)) => Ok(Some(mesh_assets.add(*copy))),
+                    Err(reason) => Err(reason),
+                };
+                fitted.insert(key, traced.clone());
+                traced
+            }
+        };
+        match traced {
+            Ok(copy) => {
+                commands.entity(entity).insert((
+                    RaytracingMesh3d(copy.unwrap_or_else(|| mesh_3d.0.clone())),
+                    BakeTrace::Traced,
+                ));
+            }
+            Err(reason) => {
+                commands
+                    .entity(entity)
+                    .insert(BakeTrace::LeftOut(LeftOut::Unfit(reason)));
+            }
+        }
     }
+}
+
+/// The lights of excluded entities are off while the bake runs: hidden, so Solari's light list leaves them out.
+fn exclude_lights(
+    mut lights: Query<
+        (Entity, &mut Visibility),
+        Or<(
+            With<PointLight>,
+            With<SpotLight>,
+            With<RectLight>,
+            With<DirectionalLight>,
+        )>,
+    >,
+    exclusions: ExclusionTree,
+) {
+    for (entity, mut visibility) in &mut lights {
+        if *visibility != Visibility::Hidden && is_excluded(entity, &exclusions) {
+            *visibility = Visibility::Hidden;
+        }
+    }
+}
+
+/// Lists entity names for a log line: at most ten, then how many more.
+fn names(world: &World, entities: &[Entity]) -> String {
+    let mut listed: Vec<String> = entities
+        .iter()
+        .take(10)
+        .map(|entity| match world.get::<Name>(*entity) {
+            Some(name) => format!("{name} ({entity})"),
+            None => format!("{entity}"),
+        })
+        .collect();
+    if entities.len() > 10 {
+        listed.push(format!("and {} more", entities.len() - 10));
+    }
+    listed.join(", ")
 }
 
 fn skip_emission(
@@ -355,22 +473,34 @@ fn skip_emission(
     }
 }
 
-/// Counts the traced meshes once every mesh is traceable-marked and every asset they use has loaded.
+/// Counts the traced meshes once every standard mesh the bake does not exclude has been looked at and every asset
+/// the traced ones use has loaded.
 fn traced_scene_ready(world: &mut World) -> Option<usize> {
     let mut query = world.query::<(
+        Entity,
         &Mesh3d,
         &MeshMaterial3d<StandardMaterial>,
-        Has<RaytracingMesh3d>,
+        Option<&BakeTrace>,
         Has<GiBakeSkipEmission>,
         Has<EmissionSkipped>,
     )>();
+    let mut exclusions = world.query::<(Has<GiBakeExclude>, Option<&ChildOf>)>();
     let meshes = world.resource::<Assets<Mesh>>();
     let materials = world.resource::<Assets<StandardMaterial>>();
     let images = world.resource::<Assets<Image>>();
     let server = world.resource::<AssetServer>();
     let mut count = 0;
-    for (mesh, material, traced, marked, skipped) in query.iter(world) {
-        if !traced || (marked && !skipped) || meshes.get(&mesh.0).is_none() {
+    for (entity, mesh, material, trace, marked, skipped) in query.iter(world) {
+        let Some(trace) = trace else {
+            if is_excluded_in(world, &mut exclusions, entity) {
+                continue;
+            }
+            return None;
+        };
+        if !matches!(trace, BakeTrace::Traced) {
+            continue;
+        }
+        if (marked && !skipped) || meshes.get(&mesh.0).is_none() {
             return None;
         }
         let material = materials.get(&material.0)?;
@@ -567,12 +697,14 @@ fn send_job(world: &mut World) {
         Entity,
         &GlobalTransform,
         Option<&InheritedVisibility>,
+        Option<&GiBakeLight>,
         Option<&PointLight>,
         Option<&SpotLight>,
         Option<&RectLight>,
         Option<&DirectionalLight>,
     )>();
-    for (entity, transform, visibility, point, spot, rect, directional) in lights.iter(world) {
+    let mut exclusions = world.query::<(Has<GiBakeExclude>, Option<&ChildOf>)>();
+    for (entity, transform, visibility, id, point, spot, rect, directional) in lights.iter(world) {
         let (kind, power) = if let Some(light) = spot {
             (
                 BakedLightKind::Spot,
@@ -596,10 +728,10 @@ fn send_job(world: &mut World) {
         } else {
             continue;
         };
-        if !visible(visibility) {
+        if !visible(visibility) || is_excluded_in(world, &mut exclusions, entity) {
             continue;
         }
-        let key = LightKey::new(kind, transform);
+        let key = LightKey::new(kind, transform).with_id(id.map(|id| id.0));
         light_keys.insert(
             entity,
             CanonicalKey {
@@ -619,11 +751,14 @@ fn send_job(world: &mut World) {
     let mut emissive_meshes = 0;
     let mut blas = HashSet::new();
     let mut traced_meshes = 0;
-    let mut untraceable = 0;
+    let mut blended = 0;
+    let mut left_out: Vec<(Entity, String)> = Vec::new();
     let mut meshes = world.query::<(
         Entity,
         &Mesh3d,
         &MeshMaterial3d<StandardMaterial>,
+        Option<&RaytracingMesh3d>,
+        Option<&BakeTrace>,
         &GlobalTransform,
         Option<&InheritedVisibility>,
         Has<GiBakeSkipEmission>,
@@ -631,16 +766,26 @@ fn send_job(world: &mut World) {
     let mesh_assets = world.resource::<Assets<Mesh>>();
     let materials = world.resource::<Assets<StandardMaterial>>();
     let images = world.resource::<Assets<Image>>();
-    for (entity, mesh, material, transform, visibility, skip) in meshes.iter(world) {
+    for (entity, mesh, material, traced, trace, transform, visibility, skip) in meshes.iter(world) {
         if !visible(visibility) {
             continue;
         }
-        if !mesh_assets.get(&mesh.0).is_some_and(is_traceable) {
-            untraceable += 1;
-            continue;
+        match (trace, traced) {
+            (Some(BakeTrace::Traced), Some(traced)) => {
+                traced_meshes += 1;
+                blas.insert(traced.0.id());
+            }
+            (Some(BakeTrace::Blended), _) => {
+                blended += 1;
+                continue;
+            }
+            (Some(BakeTrace::LeftOut(reason)), _) => {
+                left_out.push((entity, format!("{reason}")));
+                continue;
+            }
+            // Excluded by the game ([`GiBakeExclude`]).
+            _ => continue,
         }
-        traced_meshes += 1;
-        blas.insert(mesh.0.id());
         let emissive = materials.get(&material.0).is_some_and(|m| {
             Vec3::new(m.emissive.red, m.emissive.green, m.emissive.blue) != Vec3::ZERO
         });
@@ -665,17 +810,60 @@ fn send_job(world: &mut World) {
             );
         }
     }
+    // A visible mesh with another material is drawn and never traced.
+    let mut other_materials = world.query_filtered::<
+        (Entity, Option<&InheritedVisibility>),
+        (With<Mesh3d>, Without<MeshMaterial3d<StandardMaterial>>),
+    >();
+    let other: Vec<Entity> = other_materials
+        .iter(world)
+        .filter(|(_, visibility)| visible(*visibility))
+        .map(|(entity, _)| entity)
+        .collect();
+    let mut other: Vec<Entity> = other
+        .into_iter()
+        .filter(|entity| !is_excluded_in(world, &mut exclusions, *entity))
+        .collect();
+    other.sort();
+    left_out.sort_by_key(|(entity, _)| *entity);
     info!(
-        "baked GI: {} regions, {} voxels, {} traced meshes, {} BLAS (one per distinct traceable mesh), {} analytic \
-         lights, {} emissive meshes, {} meshes Solari cannot trace (skipped)",
+        "baked GI: {} regions, {} voxels, {} traced meshes, {} BLAS (one per distinct traced mesh), {} analytic \
+         lights, {} emissive meshes, {} blended meshes left out (glass and particles are not traced), {} visible \
+         meshes the tracer cannot see",
         records.len(),
         voxels.len(),
         traced_meshes,
         blas.len(),
         analytic.len(),
         emissive_meshes,
-        untraceable
+        blended,
+        left_out.len() + other.len()
     );
+    // Grouped by reason, each group naming its entities.
+    let mut reasons: Vec<&str> = left_out.iter().map(|(_, reason)| reason.as_str()).collect();
+    reasons.sort_unstable();
+    reasons.dedup();
+    for reason in reasons {
+        let entities: Vec<Entity> = left_out
+            .iter()
+            .filter(|(_, r)| r == reason)
+            .map(|(entity, _)| *entity)
+            .collect();
+        warn!(
+            "baked GI: {} visible meshes are missing from the bake, which will have holes where they stand ({reason}; \
+             mark what moves GiBakeExclude): {}",
+            entities.len(),
+            names(world, &entities)
+        );
+    }
+    if !other.is_empty() {
+        warn!(
+            "baked GI: {} visible meshes have no StandardMaterial, which the tracer reads, and are missing from the \
+             bake: {}",
+            other.len(),
+            names(world, &other)
+        );
+    }
     if blas.is_empty() {
         return refuse(world, "no mesh can be traced (0 BLAS)");
     }
