@@ -1,5 +1,10 @@
 use crate::{
-    irradiance_volume::IRRADIANCE_VOLUMES_ARE_USABLE, MeshPipeline, MeshPipelineKey,
+    irradiance_volume::IRRADIANCE_VOLUMES_ARE_USABLE,
+    planar_reflection::{
+        planar_reflections_layout, ExtractedPlanarMirrors, PlanarReflectionsBindGroup,
+        PLANAR_REFLECTIONS_SHADER_DEF,
+    },
+    MeshPipeline, MeshPipelineKey,
     MeshPipelineSystems, MeshViewBindGroup, ViewKeyCache, TONEMAPPING_LUT_SAMPLER_BINDING_INDEX,
     TONEMAPPING_LUT_TEXTURE_BINDING_INDEX,
 };
@@ -129,6 +134,7 @@ pub fn deferred_lighting(
         &ViewTarget,
         &DeferredLightingIdDepthTexture,
         &DeferredLightingPipeline,
+        Option<&PlanarReflectionsBindGroup>,
     )>,
     pipeline_cache: Res<PipelineCache>,
     deferred_lighting_layout: Res<DeferredLightingLayout>,
@@ -142,12 +148,17 @@ pub fn deferred_lighting(
         target,
         deferred_lighting_id_depth_texture,
         deferred_lighting_pipeline,
+        planar_reflections,
     ) = view.into_inner();
 
     let Some(pipeline) = pipeline_cache.get_render_pipeline(deferred_lighting_pipeline.pipeline_id)
     else {
         return;
     };
+    // Fork: a pipeline specialized for planar reflections binds them at group 3.
+    if deferred_lighting_pipeline.planar_reflections && planar_reflections.is_none() {
+        return;
+    }
 
     let Some(deferred_lighting_pass_id_binding) = deferred_lighting_pass_id.uniforms().binding()
     else {
@@ -195,6 +206,15 @@ pub fn deferred_lighting(
     );
     render_pass.set_bind_group(1, &mesh_view_bind_group.binding_array, &[]);
     render_pass.set_bind_group(2, &bind_group_2, &[]);
+    if let (true, Some(planar_reflections)) =
+        (deferred_lighting_pipeline.planar_reflections, planar_reflections)
+    {
+        render_pass.set_bind_group(
+            3,
+            &planar_reflections.bind_group,
+            &[planar_reflections.offset],
+        );
+    }
     render_pass.draw(0..3, 0..1);
     pass_span.end(&mut render_pass);
 }
@@ -209,12 +229,25 @@ pub struct DeferredLightingLayout {
 #[derive(Component)]
 pub struct DeferredLightingPipeline {
     pub pipeline_id: CachedRenderPipelineId,
+    /// Fork: the pipeline reads planar reflections at group 3.
+    pub planar_reflections: bool,
+}
+
+/// Fork: the view's key, and whether the view reflects planar mirrors this frame.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DeferredLightingPipelineKey {
+    pub mesh_key: MeshPipelineKey,
+    pub planar_reflections: bool,
 }
 
 impl SpecializedRenderPipeline for DeferredLightingLayout {
-    type Key = MeshPipelineKey;
+    type Key = DeferredLightingPipelineKey;
 
     fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
+        let DeferredLightingPipelineKey {
+            mesh_key: key,
+            planar_reflections,
+        } = key;
         let mut shader_defs = Vec::new();
 
         // Let the shader code know that it's running in a deferred pipeline.
@@ -355,13 +388,18 @@ impl SpecializedRenderPipeline for DeferredLightingLayout {
         }
 
         let layout = self.mesh_pipeline.get_view_layout(key.into());
+        let mut layout = vec![
+            layout.main_layout,
+            layout.binding_array_layout,
+            self.bind_group_layout_2.clone(),
+        ];
+        if planar_reflections {
+            shader_defs.push(PLANAR_REFLECTIONS_SHADER_DEF.into());
+            layout.push(planar_reflections_layout());
+        }
         RenderPipelineDescriptor {
             label: Some("deferred_lighting_pipeline".into()),
-            layout: vec![
-                layout.main_layout,
-                layout.binding_array_layout,
-                self.bind_group_layout_2.clone(),
-            ],
+            layout,
             vertex: VertexState {
                 shader: self.deferred_lighting_shader.clone(),
                 shader_defs: shader_defs.clone(),
@@ -443,11 +481,12 @@ pub fn prepare_deferred_lighting_pipelines(
             &ExtractedView,
             Has<DeferredPrepass>,
             Has<SkipDeferredLighting>,
+            Has<ExtractedPlanarMirrors>,
         ),
         With<ExtractedCamera>,
     >,
 ) {
-    for (entity, view, deferred_prepass, skip_deferred_lighting) in &cameras {
+    for (entity, view, deferred_prepass, skip_deferred_lighting, planar_reflections) in &cameras {
         // If there is no deferred prepass or we want to skip the deferred lighting pass,
         // remove the old pipeline if there was one. This handles the case in which a
         // view using deferred stops using it.
@@ -463,12 +502,19 @@ pub fn prepare_deferred_lighting_pipelines(
             continue;
         };
 
-        let pipeline_id =
-            pipelines.specialize(&pipeline_cache, &deferred_lighting_layout, *view_key);
+        let pipeline_id = pipelines.specialize(
+            &pipeline_cache,
+            &deferred_lighting_layout,
+            DeferredLightingPipelineKey {
+                mesh_key: *view_key,
+                planar_reflections,
+            },
+        );
 
-        commands
-            .entity(entity)
-            .insert(DeferredLightingPipeline { pipeline_id });
+        commands.entity(entity).insert(DeferredLightingPipeline {
+            pipeline_id,
+            planar_reflections,
+        });
     }
 }
 

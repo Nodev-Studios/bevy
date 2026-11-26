@@ -935,6 +935,11 @@ pub fn check_prepass_views_need_specialization(
         if motion_vector_prepass.is_some() {
             view_key |= MeshPipelineKey::MOTION_VECTOR_PREPASS;
         }
+        // Fork: a mirrored view (planar reflections) flips every triangle's winding, in the prepass as in the
+        // main pass. Upstream left it out of the prepass key, so a deferred mirror camera culled front faces.
+        if view.invert_culling {
+            view_key |= MeshPipelineKey::INVERT_CULLING;
+        }
 
         if let Some(current_key) = view_key_cache.get_mut(&view.retained_view_entity) {
             if *current_key != view_key {

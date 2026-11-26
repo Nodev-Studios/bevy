@@ -14,7 +14,7 @@ use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{
     component::Component,
     entity::Entity,
-    query::{QueryItem, With},
+    query::{Has, QueryItem, With},
     reflect::ReflectComponent,
     resource::Resource,
     schedule::IntoScheduleConfigs as _,
@@ -45,7 +45,13 @@ use bevy_utils::{once, prelude::default};
 use tracing::info;
 
 use crate::{
-    binding_arrays_are_usable, deferred::deferred_lighting, Bluenoise, MeshPipelineSystems,
+    binding_arrays_are_usable,
+    deferred::deferred_lighting,
+    planar_reflection::{
+        planar_reflections_layout, ExtractedPlanarMirrors, PlanarReflectionsBindGroup,
+        PLANAR_REFLECTIONS_SHADER_DEF,
+    },
+    Bluenoise, MeshPipelineSystems,
     MeshPipelineViewLayoutKey, MeshPipelineViewLayouts, MeshViewBindGroup, ViewKeyCache,
 };
 
@@ -157,8 +163,12 @@ pub struct ScreenSpaceReflectionsUniform {
 }
 
 /// Identifies which screen space reflections render pipeline a view needs.
-#[derive(Component, Deref, DerefMut)]
-pub struct ScreenSpaceReflectionsPipelineId(pub CachedRenderPipelineId);
+#[derive(Component)]
+pub struct ScreenSpaceReflectionsPipelineId {
+    pub id: CachedRenderPipelineId,
+    /// Fork: the pipeline reads planar reflections at group 3.
+    pub planar_reflections: bool,
+}
 
 /// Information relating to the render pipeline for the screen space reflections
 /// shader.
@@ -188,6 +198,8 @@ pub struct ViewScreenSpaceReflectionsUniformOffset(u32);
 pub struct ScreenSpaceReflectionsPipelineKey {
     mesh_pipeline_view_key: MeshPipelineViewLayoutKey,
     target_format: TextureFormat,
+    /// Fork: the view reflects planar mirrors this frame; the pass leaves their pixels alone.
+    planar_reflections: bool,
 }
 
 impl Plugin for ScreenSpaceReflectionsPlugin {
@@ -246,6 +258,7 @@ pub fn screen_space_reflections(
         &ViewTarget,
         &MeshViewBindGroup,
         &ScreenSpaceReflectionsPipelineId,
+        Option<&PlanarReflectionsBindGroup>,
     )>,
     pipeline_cache: Res<PipelineCache>,
     ssr_pipeline: Res<ScreenSpaceReflectionsPipeline>,
@@ -253,12 +266,16 @@ pub fn screen_space_reflections(
     render_images: Res<RenderAssets<GpuImage>>,
     mut ctx: RenderContext,
 ) {
-    let (view_target, view_bind_group, ssr_pipeline_id) = view.into_inner();
+    let (view_target, view_bind_group, ssr_pipeline_id, planar_reflections) = view.into_inner();
 
     // Grab the render pipeline.
-    let Some(render_pipeline) = pipeline_cache.get_render_pipeline(**ssr_pipeline_id) else {
+    let Some(render_pipeline) = pipeline_cache.get_render_pipeline(ssr_pipeline_id.id) else {
         return;
     };
+    // Fork: a pipeline specialized for planar reflections binds them at group 3.
+    if ssr_pipeline_id.planar_reflections && planar_reflections.is_none() {
+        return;
+    }
 
     // Set up a standard pair of postprocessing textures.
     let postprocess = view_target.post_process_write();
@@ -313,6 +330,15 @@ pub fn screen_space_reflections(
 
     // Perform the SSR render pass.
     render_pass.set_bind_group(2, &ssr_bind_group, &[]);
+    if let (true, Some(planar_reflections)) =
+        (ssr_pipeline_id.planar_reflections, planar_reflections)
+    {
+        render_pass.set_bind_group(
+            3,
+            &planar_reflections.bind_group,
+            &[planar_reflections.offset],
+        );
+    }
     render_pass.draw(0..3, 0..1);
 
     pass_span.end(&mut render_pass);
@@ -392,7 +418,7 @@ pub fn prepare_ssr_pipelines(
     mut pipelines: ResMut<SpecializedRenderPipelines<ScreenSpaceReflectionsPipeline>>,
     ssr_pipeline: Res<ScreenSpaceReflectionsPipeline>,
     views: Query<
-        (Entity, &ExtractedView),
+        (Entity, &ExtractedView, Has<ExtractedPlanarMirrors>),
         (
             With<ScreenSpaceReflectionsUniform>,
             With<DepthPrepass>,
@@ -400,7 +426,7 @@ pub fn prepare_ssr_pipelines(
         ),
     >,
 ) {
-    for (entity, extracted_view) in &views {
+    for (entity, extracted_view, planar_reflections) in &views {
         let Some(view_key) = view_key_cache.get(&extracted_view.retained_view_entity) else {
             continue;
         };
@@ -411,13 +437,17 @@ pub fn prepare_ssr_pipelines(
             ScreenSpaceReflectionsPipelineKey {
                 mesh_pipeline_view_key: (*view_key).into(),
                 target_format: extracted_view.target_format,
+                planar_reflections,
             },
         );
 
         // Note which pipeline ID was used.
         commands
             .entity(entity)
-            .insert(ScreenSpaceReflectionsPipelineId(pipeline_id));
+            .insert(ScreenSpaceReflectionsPipelineId {
+                id: pipeline_id,
+                planar_reflections,
+            });
     }
 }
 
@@ -477,7 +507,7 @@ impl SpecializedRenderPipeline for ScreenSpaceReflectionsPipeline {
         let layout = self
             .mesh_view_layouts
             .get_view_layout(key.mesh_pipeline_view_key);
-        let layout = vec![
+        let mut layout = vec![
             layout.main_layout,
             layout.binding_array_layout,
             self.bind_group_layout.clone(),
@@ -488,6 +518,11 @@ impl SpecializedRenderPipeline for ScreenSpaceReflectionsPipeline {
             "DEFERRED_PREPASS".into(),
             "SCREEN_SPACE_REFLECTIONS".into(),
         ];
+
+        if key.planar_reflections {
+            shader_defs.push(PLANAR_REFLECTIONS_SHADER_DEF.into());
+            layout.push(planar_reflections_layout());
+        }
 
         if key
             .mesh_pipeline_view_key

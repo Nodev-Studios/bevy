@@ -13,6 +13,8 @@ import package::{
 };
 
 @if(SCREEN_SPACE_AMBIENT_OCCLUSION) import package::render::mesh_view_bindings::screen_space_ambient_occlusion_texture;
+// Fork: planar reflections (`planar_reflection/mod.rs`).
+@if(PLANAR_REFLECTIONS) import package::planar_reflection::planar_reflection;
 @if(SCREEN_SPACE_AMBIENT_OCCLUSION) import package::ssao::utils::ssao_multibounce;
 
 struct FullscreenVertexOutput {
@@ -77,7 +79,34 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         pbr_input.specular_occlusion =  saturate(pow(NdotV + ssao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ssao);
 }
 
+        // Fork: on a planar mirror the mirror camera's texture is the specular reflection: the environment's
+        // is switched off (specular occlusion only weights it) and the texture's added, weighted the same way.
+        @if(PLANAR_REFLECTIONS)
+        let mirror_view_distance = distance(view.world_position, pbr_input.world_position.xyz);
+        @if(PLANAR_REFLECTIONS)
+        let mirror_index = planar_reflection::planar_mirror_at(
+            pbr_input.world_position.xyz, pbr_input.N, mirror_view_distance);
+        @if(PLANAR_REFLECTIONS)
+        let mirror_specular_occlusion = pbr_input.specular_occlusion;
+        @if(PLANAR_REFLECTIONS) {
+        if (mirror_index >= 0) {
+            pbr_input.specular_occlusion = 0.0;
+        }
+        }
+
         output_color = pbr_functions::apply_pbr_lighting(pbr_input);
+
+        @if(PLANAR_REFLECTIONS) {
+        if (mirror_index >= 0) {
+            let NdotV = max(dot(pbr_input.N, pbr_input.V), 0.0001);
+            let F0 = pbr_functions::calculate_F0(
+                pbr_input.material.base_color.rgb, pbr_input.material.metallic, pbr_input.material.reflectance);
+            let F_ab = lighting::F_AB(pbr_input.material.perceptual_roughness, NdotV);
+            let radiance = planar_reflection::planar_mirror_radiance(
+                mirror_index, pbr_input.world_position.xyz, pbr_input.N, mirror_view_distance);
+            output_color += vec4(radiance * (F0 * F_ab.x + F_ab.y) * mirror_specular_occlusion, 0.0);
+        }
+        }
     } else {
         output_color = pbr_input.material.base_color;
     }

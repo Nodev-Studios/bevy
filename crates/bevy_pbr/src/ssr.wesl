@@ -43,6 +43,8 @@ import bevy_render::{
 };
 
 @if(ENVIRONMENT_MAP) import package::light_probe::environment_map;
+// Fork: planar reflections (`planar_reflection/mod.rs`).
+@if(PLANAR_REFLECTIONS) import package::planar_reflection::planar_reflection;
 
 /// The texture representing the color framebuffer.
 @group(2) @binding(0) var color_texture: texture_2d<f32>;
@@ -139,6 +141,14 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // Load the G-buffer data.
     let gbuffer = textureLoad(deferred_prepass_texture, vec2<i32>(frag_coord.xy), 0);
     let pbr_input = pbr_input_from_deferred_gbuffer(frag_coord, gbuffer);
+
+    // Fork: a planar mirror's pixel has its reflection from its mirror camera already.
+    @if(PLANAR_REFLECTIONS) {
+    let mirror_view_distance = distance(view.world_position, pbr_input.world_position.xyz);
+    if (planar_reflection::planar_mirror_at(pbr_input.world_position.xyz, pbr_input.N, mirror_view_distance) >= 0) {
+        return fragment;
+    }
+    }
 
     // Don't do anything if the surface is too rough or too smooth
     let perceptual_roughness = pbr_input.material.perceptual_roughness;
