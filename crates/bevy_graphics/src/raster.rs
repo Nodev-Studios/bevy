@@ -84,12 +84,29 @@ pub fn raster() -> RasterEffects {
 /// integrated GPUs and cards under 5.5 GiB of video memory, with a lower internal resolution
 /// ([`ResolvedQuality::Balanced`](crate::ResolvedQuality::Balanced) at up to 1080p output, Performance above).
 ///
-/// LIGHT_MEASUREMENT
+/// Measured on the testbed at 1920x1080 on the integrated Radeon of a Ryzen 5 9600X (RADV, 2 CUs, the weakest
+/// GPU sold; 2026-11-25, `--preset auto`, 120 warm-up and 120 measured frames, GPU time as the 10th percentile of
+/// each pass, two interleaved runs each, agreeing within 0.1 ms). The full table at native with TAA, what `Auto`
+/// gave this GPU before, takes 75.1 ms of GPU on `interior` (SSR 44.0, deferred lighting 15.1, SSAO 5.2, TAA
+/// 3.2, bloom 2.0; frame 76.7 ms), 62.3 on `many-lights` (frame 64.1) and 84.5 on `interior` with its bake
+/// (frame 86.1). This table at Balanced with TSR takes 23.6, 26.3 and 26.3 ms (frames 25.0, 27.8 and 27.8 ms:
+/// 40 fps against 13). TSR is 12.9 ms of it, about as much as it saves: the same table at native with TAA takes
+/// 25.2 ms on `interior` and 35.3 on `many-lights`, whose lighting pass is the heaviest, so the upscaler stays.
+/// Performance instead of Balanced saves 2.7 ms on `interior` and 1.9 on `many-lights` and moves the image 0.66
+/// / 0.44 points, four times two runs' difference (0.13-0.20); so Balanced. Against the full table's frame this
+/// one differs by 4.56 points on `interior`, whose glossy floor loses SSR (two full-table runs differ by 0.63),
+/// 0.76 on `many-lights` (0.11) and 3.32 on `interior` with its bake (0.60), whose reflection probe stands in
+/// for SSR.
 pub fn raster_light() -> RasterEffects {
     RasterEffects {
-        // Off: SSR was 41.5 of 74.8 ms at 1080p on the integrated Radeon (review M3-1), more than every other pass
-        // together. A loaded bake's reflection probes, then the environment map, answer reflections instead.
+        // Off: SSR is 44.0 of 75.1 ms on `interior`, more than every other pass together.
+        // A loaded bake's reflection probes, then the environment map, answer reflections instead.
         reflections: None,
+        // Off: Low at Balanced costs 2.0 ms here (1.8 of SSAO, the rest its normal prepass), and switching it
+        // off moves the image 0.155 points on `interior` and 0.118 on `many-lights`, inside two runs' difference
+        // (0.17). The testbed has few creases for occlusion to darken, so a game with them may want it back
+        // (`GraphicsOverrides::ssao`, which gives the full table's Low).
+        ambient_occlusion: None,
         ..raster()
     }
 }
@@ -206,6 +223,7 @@ mod tests {
     fn light_table_drops_reflections_and_forcing_them_gives_the_full_tables() {
         let light = raster_with(RasterLevel::Light, &GraphicsOverrides::default());
         assert!(light.reflections.is_none());
+        assert!(light.ambient_occlusion.is_none());
         assert!(light.bloom.is_some());
         let forced = raster_with(
             RasterLevel::Light,
