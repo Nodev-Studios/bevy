@@ -9,6 +9,10 @@ What it does, in order (each loss is printed as LOST, see common.py):
 3. Turns area lamps into hemisphere spot lights (glTF has no area light).
 4. Prints the world (HDRI / sky / colour) it cannot carry and the scene camera's pose.
 5. Exports GLB: modifiers applied, lights, no cameras, no animation.
+Also: collection instances holding lamps become real and object-linked materials move onto their mesh
+(common.realize_lit_instances, object_materials_to_mesh), daylight portals are deleted (the viewer's sky stands
+for them; common.light_portals), lamp node trees are folded into power and colour (common.fold_light_nodes), and
+a single sun lamp is printed as a SUN line for the manifest instead of exported (common.sun_to_manifest).
 """
 
 import os
@@ -26,10 +30,14 @@ bpy.ops.file.find_missing_files(directory=os.path.dirname(src))
 common.log("NOTE", f"opened {src}, render engine {bpy.context.scene.render.engine}")
 common.camera_pose()
 common.keep_render_visible()
+common.realize_lit_instances()
+common.object_materials_to_mesh()
+common.light_portals()
 common.remove_volume_only()
 common.realize_particles()
 common.simplify_materials()
 common.area_lights_to_spots()
+common.sun_to_manifest()
 common.note_world()
 common.photometric_emission()
 common.export_glb(out)

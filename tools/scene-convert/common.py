@@ -7,6 +7,8 @@ Every converter prints one line per change that loses something, so `convert.log
     WROTE <path> ...           the output
     CAMERA position=(x, y, z) look_at=(x, y, z)
                                the source's own camera, in the glTF's frame (Y up, metres): the manifest's start pose
+    SUN direction=(x, y, z) illuminance=N
+                               the source's sun, not exported: the manifest's `sun: Sun(...)` (see sun_to_manifest)
 
 The glTF material model is one metallic-roughness BSDF per material, plus emission, transmission, IOR, alpha and a
 normal map. `simplify_material` rewrites each Cycles node tree into exactly that: one Principled BSDF whose inputs
@@ -102,6 +104,44 @@ def realize_particles():
             log("LOST", f"volume: {obj.name}")
 
 
+def realize_lit_instances():
+    """Collection instances that hold a lamp, or an object whose material is linked to the object rather than its
+    mesh, become real objects. Otherwise the lamps inside skip every lamp step (their node strength is not folded
+    in: Classroom's ceiling lamps exported at 1 W instead of 20 W) and the exporter takes the mesh's material
+    instead of the object's (Classroom's lamp bulbs exported as clear glass instead of their emission)."""
+    def needs(collection):
+        return any(o.type == "LIGHT" or any(s.link == "OBJECT" for s in o.material_slots)
+                   for o in collection.all_objects)
+
+    for obj in list(bpy.context.scene.objects):
+        if obj.instance_type != "COLLECTION" or obj.instance_collection is None or not needs(obj.instance_collection):
+            continue
+        name = obj.instance_collection.name
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.duplicates_make_real(use_base_parent=True, use_hierarchy=True)
+        log("NOTE", f"instance made real (holds lamps or object materials): {obj.name} ({name})")
+
+
+def object_materials_to_mesh():
+    """A material slot linked to the object (not its mesh) is ignored by Blender's glTF exporter, which writes the
+    mesh's own material instead (Classroom's lamp bulbs: clear glass instead of their emission). Such an object gets
+    its own copy of the mesh with the object's materials in the mesh's slots."""
+    count = 0
+    for obj in bpy.context.scene.objects:
+        if obj.type != "MESH" or not any(slot.link == "OBJECT" for slot in obj.material_slots):
+            continue
+        materials = [slot.material for slot in obj.material_slots]
+        obj.data = obj.data.copy()
+        for index, (slot, material) in enumerate(zip(obj.material_slots, materials)):
+            slot.link = "DATA"
+            obj.data.materials[index] = material
+        count += 1
+    if count:
+        log("NOTE", f"object-linked materials moved onto a copy of the mesh: {count} objects")
+
+
 def remove_volume_only():
     """Objects whose every material is a volume (fog boxes) would export as opaque boxes: they are removed."""
     for obj in list(bpy.context.scene.objects):
@@ -134,6 +174,76 @@ def note_world():
             log("LOST", f"world: background colour {color} x {node.inputs['Strength'].default_value:.3g}")
 
 
+def portal_side(material):
+    """'back' or 'front' when `material` is a daylight portal: an emission that shows on one side of a surface and
+    a Transparent BSDF on the other, switched by Geometry > Backfacing (Classroom's windows). None otherwise."""
+    if material is None or not material.use_nodes or material.node_tree is None:
+        return None
+    output = next((n for n in material.node_tree.nodes if n.type == "OUTPUT_MATERIAL" and n.is_active_output), None)
+    surface = output.inputs["Surface"] if output else None
+    if surface is None or not surface.is_linked or surface.links[0].from_node.type != "MIX_SHADER":
+        return None
+    mix = surface.links[0].from_node
+    fac = mix.inputs[0].links[0] if mix.inputs[0].is_linked else None
+    if fac is None or fac.from_node.type != "NEW_GEOMETRY" or fac.from_socket.name != "Backfacing":
+        return None
+    kinds = [s.links[0].from_node.type if s.is_linked else None for s in mix.inputs[1:3]]
+    if kinds == ["BSDF_TRANSPARENT", "EMISSION"]:
+        return "back"  # Fac 1 (seen from behind) takes the second shader
+    if kinds == ["EMISSION", "BSDF_TRANSPARENT"]:
+        return "front"
+    return None
+
+
+def light_portals():
+    """Cycles daylight portals: a surface over a window that is transparent from outside and emits the sky into the
+    room (often invisible to the camera and to shadows). glTF can carry neither the one-sided emission nor 'casts no
+    shadow', so exported as they are they become opaque sheets that block the sun on every rung and, on the traced
+    rungs, emit out of the room (Solari emits only from a triangle's front face). They are deleted: the sky they
+    stood for is the viewer's (its atmosphere, lit by the scene's sun), seen through the opening they covered.
+    Blender's own portal lamps (area lights flagged as portals; not lights at all) are deleted for the same reason."""
+    for obj in list(bpy.context.scene.objects):
+        if obj.type == "LIGHT" and obj.data.type == "AREA" and getattr(obj.data.cycles, "is_portal", False):
+            log("LOST", f"light portal: {obj.name} (portal lamp; the viewer's sky lights the opening)")
+            bpy.data.objects.remove(obj, do_unlink=True)
+            continue
+        if obj.type != "MESH" or not obj.material_slots:
+            continue
+        sides = {portal_side(slot.material) for slot in obj.material_slots}
+        if None in sides:
+            continue
+        log("LOST", f"light portal: {obj.name} (sky emission on its {'/'.join(sorted(sides))} side; "
+                    f"{len(obj.data.polygons)} faces; deleted, the viewer's sky lights the opening)")
+        mesh = obj.data
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+    for material in list(bpy.data.materials):
+        if material.users == 0 and portal_side(material):
+            bpy.data.materials.remove(material)
+
+
+def sun_to_manifest():
+    """glTF lights reach Bevy without shadow maps (its loader keeps the lights' defaults), so a sun in the file lights
+    a room through its walls on Raster. The viewer's own sun has shadow maps, so a single sun lamp is not exported:
+    its direction and illuminance are printed as a SUN line for the manifest's `sun: Sun(...)`, in the units of the
+    exporter's lamps (683 lm/W: W/m2 -> lux). Its colour is lost (the viewer's sun is white)."""
+    suns = [o for o in bpy.context.scene.objects if o.type == "LIGHT" and o.data.type == "SUN"]
+    if len(suns) != 1:
+        if suns:
+            log("NOTE", f"{len(suns)} sun lamps: exported as they are (no shadow maps on Raster)")
+        return
+    sun = suns[0]
+    d = (sun.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))).normalized()
+    lux = sun.data.energy * 683.0
+    colour = tuple(round(c, 3) for c in sun.data.color)
+    log("SUN", f"direction=({d.x:.3f}, {d.z:.3f}, {-d.y:.3f}) illuminance={lux:.0f}")
+    log("NOTE", f"sun lamp {sun.name}: {sun.data.energy:.4g} W/m2 -> {lux:.0f} lux, not exported (see SUN)")
+    if colour != (1.0, 1.0, 1.0):
+        log("LOST", f"sun colour {colour}: {sun.name} (the viewer's sun is white)")
+    bpy.data.objects.remove(sun, do_unlink=True)
+
+
 def camera_pose(obj=None):
     """Prints the scene camera's pose in the glTF frame (Y up): x, z, -y of Blender's."""
     obj = obj or bpy.context.scene.camera
@@ -156,28 +266,62 @@ def camera_pose(obj=None):
     log("CAMERA", f"position={gl(position)} look_at={gl(target)} fov_deg={math.degrees(lens):.1f} name={obj.name}")
 
 
+def fold_light_nodes():
+    """A lamp's node tree is folded into its power and colour, which is all glTF carries: the Emission strength (a
+    constant, or the Light Falloff node feeding it) multiplies its watts, and the Emission colour (a constant, or a
+    Blackbody node) multiplies its colour (brightest channel 1, the rest into the watts). Then the tree's nodes are
+    deleted, because Blender's glTF exporter reads a lamp's tree even with `use_nodes` off, and through a Light
+    Falloff node it ignores the lamp's watts and divides by 4 pi twice (Classroom's ceiling lamps came out at 1/12.6
+    of their power). Each light datablock is folded once, however many lamps share it. The falloff curve is lost."""
+    done = set()
+    for obj in bpy.context.scene.objects:
+        if obj.type != "LIGHT" or obj.data.node_tree is None or obj.data.name in done:
+            continue
+        light = obj.data
+        done.add(light.name)
+        tree = light.node_tree
+        output = next((n for n in tree.nodes if n.type == "OUTPUT_LIGHT" and n.is_active_output), None)
+        linked = output is not None and output.inputs["Surface"].is_linked
+        emission = output.inputs["Surface"].links[0].from_node if linked else None
+        if emission is not None and emission.type == "EMISSION":
+            sock = emission.inputs["Strength"]
+            strength = sock.default_value
+            if sock.is_linked:
+                src = sock.links[0].from_node
+                if src.type == "LIGHT_FALLOFF":
+                    strength = src.inputs["Strength"].default_value
+                    log("LOST", f"light falloff: {obj.name} ({sock.links[0].from_socket.name}; exported as inverse-square)")
+                else:
+                    log("LOST", f"light strength from {src.bl_idname}: {obj.name} (its default {strength:.4g} kept)")
+            colour_in = emission.inputs["Color"]
+            colour = tuple(colour_in.default_value)[:3]
+            if colour_in.is_linked:
+                src = colour_in.links[0].from_node
+                if src.type == "BLACKBODY" and not src.inputs["Temperature"].is_linked:
+                    colour = blackbody(src.inputs["Temperature"].default_value)[:3]
+                    log("NOTE", f"light colour from Blackbody {src.inputs['Temperature'].default_value:.0f} K: {obj.name}")
+                else:
+                    colour = (1.0, 1.0, 1.0)
+                    log("LOST", f"light colour from {src.bl_idname}: {obj.name} (white kept)")
+            peak = max(colour) if max(colour) > 0 else 1.0
+            light.color = tuple(c * e / peak for c, e in zip(light.color, colour))
+            factor = strength * peak
+            if abs(factor - 1.0) > 1e-6:
+                log("NOTE", f"light node strength folded in: {obj.name} {light.energy:.4g} W x {factor:.4g}")
+                light.energy *= factor
+        elif linked:
+            log("LOST", f"light nodes: {obj.name} (surface from {emission.bl_idname}; only its colour and power are exported)")
+        extra = sorted({n.type for n in tree.nodes} - {"EMISSION", "OUTPUT_LIGHT", "LIGHT_FALLOFF", "BLACKBODY"})
+        if extra:
+            log("LOST", f"light nodes: {obj.name} ({', '.join(extra)}; only its colour and power are exported)")
+        tree.nodes.clear()
+
+
 def area_lights_to_spots():
     """glTF has no area light. Each area lamp becomes a spot light at its centre, aimed where it shines, with a
     180-degree cone and full blend (a hemisphere), power x AREA_TO_SPOT_POWER. Its shape and softness are lost.
-    First, a lamp's node tree's Emission strength (a constant, or the Light Falloff node feeding it) is folded
-    into its power, which is all glTF carries; the falloff curve itself is lost."""
-    for obj in bpy.context.scene.objects:
-        if obj.type != "LIGHT" or not obj.data.use_nodes or obj.data.node_tree is None:
-            continue
-        emission = next((n for n in obj.data.node_tree.nodes if n.type == "EMISSION"), None)
-        if emission is None:
-            continue
-        sock = emission.inputs["Strength"]
-        strength = sock.default_value
-        if sock.is_linked:
-            src = sock.links[0].from_node
-            strength = src.inputs["Strength"].default_value if src.type == "LIGHT_FALLOFF" else strength
-            if src.type == "LIGHT_FALLOFF":
-                log("LOST", f"light falloff: {obj.name} ({sock.links[0].from_socket.name}; exported as inverse-square)")
-        if abs(strength - 1.0) > 1e-6:
-            log("NOTE", f"light node strength folded in: {obj.name} {obj.data.energy:.4g} W x {strength:.4g}")
-            obj.data.energy *= strength
-        obj.data.use_nodes = False
+    First every lamp's node tree is folded into its power and colour (fold_light_nodes)."""
+    fold_light_nodes()
     for obj in list(bpy.context.scene.objects):
         if obj.type != "LIGHT" or obj.data.type != "AREA":
             continue
@@ -191,10 +335,6 @@ def area_lights_to_spots():
         size = f"{area.size:.2f} x {getattr(area, 'size_y', area.size):.2f} m"
         obj.data = spot
         log("NOTE", f"area light -> spot: {obj.name} ({size}, {area.energy:.4g} W -> {spot.energy:.4g} W, hemisphere cone)")
-    for obj in bpy.context.scene.objects:
-        tree = obj.data.node_tree if obj.type == "LIGHT" and obj.data.use_nodes else None
-        if tree is not None and any(n.type not in {"EMISSION", "OUTPUT_LIGHT"} for n in tree.nodes):
-            log("LOST", f"light nodes: {obj.name} (only its colour and power are exported)")
 
 
 # --- Materials ---------------------------------------------------------------------------------------------------
@@ -303,6 +443,25 @@ def find_image(socket, ctx, lost, what, depth=0):
     return None, ctx
 
 
+def blackbody(kelvin):
+    """The colour of Blender's Blackbody node: Planck's law through the CIE 1931 observer (the analytic fit of Wyman,
+    Sloan and Shirley 2013) into linear Rec.709, divided by its luminance as Cycles does (5800 K: 1.11, 0.98, 0.92)."""
+    def g(l, mu, s1, s2):
+        return math.exp(-0.5 * ((l - mu) / (s1 if l < mu else s2)) ** 2)
+
+    x = y = z = 0.0
+    for nm in range(380, 781, 5):
+        m = nm * 1e-9
+        planck = 1.0 / (m ** 5 * (math.exp(1.4387769e-2 / (m * max(kelvin, 800.0))) - 1.0))
+        x += planck * (1.056 * g(nm, 599.8, 37.9, 31.0) + 0.362 * g(nm, 442.0, 16.0, 26.7) - 0.065 * g(nm, 501.1, 20.4, 26.2))
+        y += planck * (0.821 * g(nm, 568.8, 46.9, 40.5) + 0.286 * g(nm, 530.9, 16.3, 31.1))
+        z += planck * (1.217 * g(nm, 437.0, 11.8, 36.0) + 0.681 * g(nm, 459.0, 26.0, 13.8))
+    rgb = (3.2406 * x - 1.5372 * y - 0.4986 * z, -0.9689 * x + 1.8758 * y + 0.0415 * z, 0.0557 * x - 0.2040 * y + 1.0570 * z)
+    rgb = [max(c, 0.0) for c in rgb]
+    lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
+    return tuple(c / lum for c in rgb) + (1.0,)
+
+
 def value_or_image(socket, ctx, lost, what):
     """(constant, image node) for a shader input."""
     node, _, sub = from_socket(socket, ctx)
@@ -310,6 +469,8 @@ def value_or_image(socket, ctx, lost, what):
         return const(node[1]), None
     if node is None:
         return const(socket), None
+    if node.type == "BLACKBODY" and not node.inputs["Temperature"].is_linked:
+        return blackbody(node.inputs["Temperature"].default_value), None
     image, image_ctx = find_image(socket, ctx, lost, what)
     return const(socket), image
 

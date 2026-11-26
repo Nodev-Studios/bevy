@@ -111,7 +111,7 @@ run_blender() {
     "$blender" --background --factory-startup --python-exit-code 1 \
     --python "$convert_dir/$script" -- "$@" >"$dir/$id/${log_name:-convert.log}" 2>&1 \
     || { echo "  conversion FAILED, see $dir/$id/${log_name:-convert.log}" >&2; tail -n 20 "$dir/$id/${log_name:-convert.log}" >&2; return 1; }
-  grep -E '^(LOST|NOTE|WROTE)' "$dir/$id/${log_name:-convert.log}" | sort | uniq -c | sort -rn | head -n 30 | sed -e 's/^/  /' || true
+  grep -E '^(LOST|NOTE|WROTE|CAMERA|SUN)' "$dir/$id/${log_name:-convert.log}" | sort | uniq -c | sort -rn | head -n 30 | sed -e 's/^/  /' || true
   echo "  converted in $((SECONDS - start)) s"
 }
 
