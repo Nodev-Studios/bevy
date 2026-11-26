@@ -198,7 +198,7 @@ scene_sun-temple() { orca sun-temple sun-temple SunTemple_v4.zip SunTemple.fbx:S
 scene_emerald-square() {
   # One Blender process for the whole block was killed by the OOM killer at 6.6 GB: converted in capped chunks.
   orca emerald-square emerald-square EmeraldSquare_v4_1.zip EmeraldSquare_Day.fbx:EmeraldSquareDay.gltf:1 \
-    EmeraldSquare_Dusk.fbx:EmeraldSquareDusk.gltf:5
+    EmeraldSquare_Dusk.fbx:EmeraldSquareDusk.gltf:100  # x5 in Falcor; x100 to light the block in physical units (to tune)
 }
 
 scene_san-miguel() {
