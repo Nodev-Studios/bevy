@@ -10,6 +10,7 @@ extern crate alloc;
 
 mod budgets;
 mod calibration;
+mod coverage;
 mod flicker;
 mod log_gate;
 mod metric;
@@ -40,6 +41,7 @@ enum Command {
     Budget(BudgetCommand),
     LogGate(LogGateCommand),
     Calibration(calibration::CalibrationCommand),
+    Coverage(coverage::CoverageCommand),
 }
 
 /// Measures one image, or two against each other.
@@ -328,6 +330,7 @@ fn main() -> ExitCode {
         Command::Budget(command) => budget(command),
         Command::LogGate(command) => log_gate(command),
         Command::Calibration(command) => calibration::calibration(command),
+        Command::Coverage(command) => coverage::coverage(command),
     };
     match result {
         Ok(true) => ExitCode::SUCCESS,

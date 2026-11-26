@@ -74,19 +74,33 @@ pub enum BakedLightKind {
     Rect,
 }
 
-/// How a live light is matched to a baked one: its kind and where it is, to the centimetre.
+/// What the bake records of a light, and what a live light is matched by: its kind, where it is (to the
+/// centimetre) and the game's stable id ([`GiBakeLight`](crate::GiBakeLight)) when it has one.
 ///
-/// For a directional light the "position" is its direction, scaled by 100, so it too is matched to 1 %.
+/// For a directional light the "position" is its direction, scaled by 100. A live light is matched by
+/// [`match_light`]: by id first, then to the nearest baked light of its kind within
+/// [`LightKey::POSITION_TOLERANCE`] (a directional light within [`LightKey::DIRECTION_TOLERANCE`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LightKey {
     /// The light's kind.
     pub kind: BakedLightKind,
     /// Its position in centimetres, rounded; a directional light's direction × 100.
     pub position_cm: [i32; 3],
+    /// The game's id for the light ([`GiBakeLight`](crate::GiBakeLight)). Manifests written before ids have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<u32>,
 }
 
 impl LightKey {
-    /// The key of a light of `kind` placed by `transform`.
+    /// How far a lamp may be from where it was baked and still be the same lamp, in metres. to tune: a lamp
+    /// nudged by an editor or reached through another parent chain stays matched; two lamps of one fixture closer
+    /// than this are matched to the nearest and warned about.
+    pub const POSITION_TOLERANCE: f32 = 0.05;
+    /// How far a directional light may turn from its baked direction and still be the same light, in radians
+    /// (10°). to tune: a sun turned farther for the time of day needs a [`GiBakeLight`](crate::GiBakeLight) id.
+    pub const DIRECTION_TOLERANCE: f32 = 10.0 * core::f32::consts::PI / 180.0;
+
+    /// The key of a light of `kind` placed by `transform`, without an id.
     pub fn new(kind: BakedLightKind, transform: &GlobalTransform) -> Self {
         let point = match kind {
             BakedLightKind::Directional => transform.forward().as_vec3(),
@@ -96,7 +110,85 @@ impl LightKey {
         Self {
             kind,
             position_cm: [cm.x as i32, cm.y as i32, cm.z as i32],
+            id: None,
         }
+    }
+
+    /// This key with the game's id.
+    pub fn with_id(self, id: Option<u32>) -> Self {
+        Self { id, ..self }
+    }
+
+    fn point(&self) -> Vec3 {
+        Vec3::new(
+            self.position_cm[0] as f32,
+            self.position_cm[1] as f32,
+            self.position_cm[2] as f32,
+        ) / 100.0
+    }
+
+    /// How far apart two keys of one kind are: metres, or radians for directional lights.
+    fn distance(&self, other: &Self) -> f32 {
+        match self.kind {
+            BakedLightKind::Directional => self.point().angle_between(other.point()),
+            _ => self.point().distance(other.point()),
+        }
+    }
+
+    fn tolerance(&self) -> f32 {
+        match self.kind {
+            BakedLightKind::Directional => Self::DIRECTION_TOLERANCE,
+            _ => Self::POSITION_TOLERANCE,
+        }
+    }
+}
+
+/// Which baked light a live one is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LightMatch {
+    /// The baked light at this index of the manifest's `lights`.
+    Baked(usize),
+    /// The nearest of two or more baked lights within the tolerance, at index `chosen`; `other` is the next
+    /// nearest. Worth a warning: the lamps are closer together than the tolerance.
+    Ambiguous {
+        /// The baked light the live one is matched to.
+        chosen: usize,
+        /// The next nearest baked light within the tolerance.
+        other: usize,
+    },
+    /// No baked light: the live light was absent, hidden or off when the bake was made, or moved too far.
+    Unbaked,
+}
+
+/// Matches a live light's key (`live`) to the manifest's `baked` lights.
+///
+/// A live light with an id is the baked light of its kind with that id. Otherwise, and when no baked light has
+/// its id (a bake made before the game gave ids), it is the nearest baked light of its kind without an id within
+/// the tolerance of [`LightKey`].
+pub fn match_light(baked: &[BakedLight], live: &LightKey) -> LightMatch {
+    if live.id.is_some()
+        && let Some(index) = baked
+            .iter()
+            .position(|light| light.key.kind == live.kind && light.key.id == live.id)
+    {
+        return LightMatch::Baked(index);
+    }
+    let tolerance = live.tolerance();
+    let mut near: Vec<(f32, usize)> = baked
+        .iter()
+        .enumerate()
+        .filter(|(_, light)| light.key.kind == live.kind && light.key.id.is_none())
+        .map(|(index, light)| (light.key.distance(live), index))
+        .filter(|(distance, _)| *distance <= tolerance)
+        .collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    match near.as_slice() {
+        [] => LightMatch::Unbaked,
+        [(_, chosen)] => LightMatch::Baked(*chosen),
+        [(_, chosen), (_, other), ..] => LightMatch::Ambiguous {
+            chosen: *chosen,
+            other: *other,
+        },
     }
 }
 
@@ -263,6 +355,100 @@ mod tests {
         assert_ne!(a, point);
     }
 
+    fn baked(kind: BakedLightKind, at: Vec3, id: Option<u32>) -> BakedLight {
+        BakedLight {
+            key: LightKey::new(kind, &GlobalTransform::from_translation(at)).with_id(id),
+            power: 1.0,
+        }
+    }
+
+    fn live(kind: BakedLightKind, at: Vec3) -> LightKey {
+        LightKey::new(kind, &GlobalTransform::from_translation(at))
+    }
+
+    #[test]
+    fn a_light_on_a_rounding_boundary_still_matches() {
+        // Baked at 0.125 m, which rounds to 13 cm; met at run time a hair below, which rounds to 12 cm.
+        let lights = [baked(
+            BakedLightKind::Spot,
+            Vec3::new(0.125, 2.9, 0.0),
+            None,
+        )];
+        let below = live(BakedLightKind::Spot, Vec3::new(0.12499, 2.9, 0.0));
+        assert_ne!(below.position_cm, lights[0].key.position_cm);
+        assert_eq!(match_light(&lights, &below), LightMatch::Baked(0));
+    }
+
+    #[test]
+    fn a_moved_lamp_matches_within_the_tolerance_and_not_beyond() {
+        let lights = [
+            baked(BakedLightKind::Spot, Vec3::new(1.0, 2.9, 0.0), None),
+            baked(BakedLightKind::Point, Vec3::new(1.0, 2.9, 0.0), None),
+        ];
+        // Swayed 3 cm: still the spot (and not the point light at the same place).
+        let swayed = live(BakedLightKind::Spot, Vec3::new(1.03, 2.9, 0.0));
+        assert_eq!(match_light(&lights, &swayed), LightMatch::Baked(0));
+        // Carried 1 m away: not the baked lamp any more.
+        let carried = live(BakedLightKind::Spot, Vec3::new(2.0, 2.9, 0.0));
+        assert_eq!(match_light(&lights, &carried), LightMatch::Unbaked);
+        // With an id it is matched wherever it goes.
+        let tagged = [baked(
+            BakedLightKind::Spot,
+            Vec3::new(1.0, 2.9, 0.0),
+            Some(4),
+        )];
+        assert_eq!(
+            match_light(&tagged, &carried.with_id(Some(4))),
+            LightMatch::Baked(0)
+        );
+        // An id the bake does not know falls back to position among the untagged lights.
+        assert_eq!(
+            match_light(&lights, &swayed.with_id(Some(9))),
+            LightMatch::Baked(0)
+        );
+    }
+
+    #[test]
+    fn two_close_lamps_match_the_nearest_and_say_it_is_ambiguous() {
+        let lights = [
+            baked(BakedLightKind::Point, Vec3::new(0.0, 2.9, 0.0), None),
+            baked(BakedLightKind::Point, Vec3::new(0.04, 2.9, 0.0), None),
+        ];
+        assert_eq!(
+            match_light(
+                &lights,
+                &live(BakedLightKind::Point, Vec3::new(0.035, 2.9, 0.0))
+            ),
+            LightMatch::Ambiguous {
+                chosen: 1,
+                other: 0
+            }
+        );
+        assert_eq!(
+            match_light(
+                &lights,
+                &live(BakedLightKind::Point, Vec3::new(-0.03, 2.9, 0.0))
+            ),
+            LightMatch::Baked(0)
+        );
+    }
+
+    #[test]
+    fn a_sun_matches_by_angle() {
+        let sun = |degrees: f32| {
+            let transform = GlobalTransform::from(
+                Transform::default().with_rotation(Quat::from_rotation_x(-degrees.to_radians())),
+            );
+            LightKey::new(BakedLightKind::Directional, &transform)
+        };
+        let lights = [BakedLight {
+            key: sun(45.0),
+            power: 1.0,
+        }];
+        assert_eq!(match_light(&lights, &sun(50.0)), LightMatch::Baked(0));
+        assert_eq!(match_light(&lights, &sun(70.0)), LightMatch::Unbaked);
+    }
+
     #[test]
     fn manifest_round_trips_through_ron() {
         let manifest = BakedGiManifest {
@@ -284,6 +470,7 @@ mod tests {
                 key: LightKey {
                     kind: BakedLightKind::Spot,
                     position_cm: [0, 290, 0],
+                    id: Some(7),
                 },
                 power: 1.5e6,
             }],

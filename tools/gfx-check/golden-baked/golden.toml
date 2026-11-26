@@ -19,5 +19,5 @@ written_from = [0.189, 0.193, 0.148, 0.148, 0.175, 0.184, 0.165]
 run = "raster-baked"
 scene = "rooms"
 file = "raster-baked-rooms.png"
-tolerance = 0.17
-written_from = [0.083, 0.077, 0.083, 0.078, 0.079, 0.084, 0.08]
+tolerance = 0.18
+written_from = [0.087, 0.076, 0.082, 0.086, 0.085, 0.083, 0.078]

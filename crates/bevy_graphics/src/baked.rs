@@ -4,9 +4,12 @@
 //! adds [`BakedGiPlugin`] if the app has not, and this file does the rest:
 //!
 //! - **Ambient.** While a bake is loaded ([`BakedGiStatus::Loaded`] or [`BakedGiStatus::Stale`]), every
-//!   [`GraphicsCamera`] gets an [`AmbientLight`] at [`GraphicsSettings::ambient_while_baked`] (default 0), on
-//!   every rung: the bake holds the bounce light a game's ambient stood in for, and on a traced rung the forward
-//!   materials still read the volumes. An [`AmbientLight`] the game had put on the camera is set aside and comes
+//!   [`GraphicsCamera`] gets an [`AmbientLight`] at [`GraphicsSettings::ambient_while_baked`] (default
+//!   [`DEFAULT_AMBIENT_WHILE_BAKED`]), on every rung. The fork's PBR shader adds the ambient only where no
+//!   irradiance volume covers a fragment, so inside the baked boxes the bake replaces it (the bake holds the
+//!   bounce light a game's ambient stood in for) and outside them (door jambs between boxes, a character in a
+//!   doorway, an unbaked yard) this small ambient and the environment map's diffuse keep surfaces out of black. On
+//!   a traced rung the forward materials still read the volumes. An [`AmbientLight`] the game had put on the camera is set aside and comes
 //!   back when the bake goes; one the game puts there while the bake is loaded is taken as its new wish, set
 //!   aside too, and overwritten.
 //! - **Off.** [`GraphicsOverrides::baked_gi`](crate::GraphicsOverrides::baked_gi) `Some(false)` hides every
@@ -25,8 +28,18 @@ use bevy_light::AmbientLight;
 
 pub use bevy_baked_gi::{
     binding_arrays_are_usable, BakedGi, BakedGiManifest, BakedGiPlugin, BakedGiStatus,
-    GiBakeRegion, GiBakeSkipEmission,
+    BakedGiVolume, GiBakeExclude, GiBakeLight, GiBakeRegion, GiBakeSkipEmission,
 };
+
+/// The default of [`GraphicsSettings::ambient_while_baked`], in cd/m². to tune: an eighth of Bevy's default
+/// ambient (80 cd/m²), enough that nothing between baked boxes reads black and dim enough not to stand out
+/// against baked rooms in the testbed's `rooms` scene.
+pub const DEFAULT_AMBIENT_WHILE_BAKED: f32 = 10.0;
+
+/// [`DEFAULT_AMBIENT_WHILE_BAKED`], for serde.
+pub(crate) fn default_ambient_while_baked() -> f32 {
+    DEFAULT_AMBIENT_WHILE_BAKED
+}
 
 /// Called by [`GraphicsPlugin`](crate::GraphicsPlugin) when it is built.
 pub(crate) fn build(app: &mut App) {
@@ -206,8 +219,8 @@ mod tests {
         let other = ladder.world.spawn(game_ambient(50.0)).id();
 
         ladder.status(BakedGiStatus::Loaded);
-        assert_eq!(ladder.ambient(with_own), Some(0.0));
-        assert_eq!(ladder.ambient(without), Some(0.0));
+        assert_eq!(ladder.ambient(with_own), Some(DEFAULT_AMBIENT_WHILE_BAKED));
+        assert_eq!(ladder.ambient(without), Some(DEFAULT_AMBIENT_WHILE_BAKED));
         assert_eq!(ladder.ambient(other), Some(50.0), "not a ladder camera");
         // The game's colour and flag are kept; only the brightness is the ladder's.
         let ambient = ladder.world.get::<AmbientLight>(with_own).unwrap();
@@ -245,7 +258,7 @@ mod tests {
             .unwrap()
             .brightness = 40.0;
         ladder.update();
-        assert_eq!(ladder.ambient(camera), Some(0.0));
+        assert_eq!(ladder.ambient(camera), Some(DEFAULT_AMBIENT_WHILE_BAKED));
         ladder.status(BakedGiStatus::Absent);
         assert_eq!(ladder.ambient(camera), Some(40.0));
 
@@ -253,7 +266,7 @@ mod tests {
         ladder.status(BakedGiStatus::Loaded);
         ladder.world.entity_mut(camera).remove::<AmbientLight>();
         ladder.update();
-        assert_eq!(ladder.ambient(camera), Some(0.0));
+        assert_eq!(ladder.ambient(camera), Some(DEFAULT_AMBIENT_WHILE_BAKED));
         ladder.status(BakedGiStatus::Absent);
         assert_eq!(ladder.ambient(camera), None);
     }
@@ -282,7 +295,7 @@ mod tests {
             .spawn((BakedGi(Default::default()), Visibility::Visible))
             .id();
         ladder.status(BakedGiStatus::Loaded);
-        assert_eq!(ladder.ambient(camera), Some(0.0));
+        assert_eq!(ladder.ambient(camera), Some(DEFAULT_AMBIENT_WHILE_BAKED));
 
         ladder.world.resource_mut::<GraphicsSettings>().overrides = GraphicsOverrides {
             baked_gi: Some(false),
@@ -301,7 +314,7 @@ mod tests {
             .overrides
             .baked_gi = Some(true);
         ladder.update();
-        assert_eq!(ladder.ambient(camera), Some(0.0));
+        assert_eq!(ladder.ambient(camera), Some(DEFAULT_AMBIENT_WHILE_BAKED));
         assert_eq!(
             *ladder.world.get::<Visibility>(root).unwrap(),
             Visibility::Visible
@@ -315,7 +328,7 @@ mod tests {
              ssao: None, ssr: None, contact_shadows: None, bloom: None, restir: None, max_bounces: None))",
         )
         .unwrap();
-        assert_eq!(settings.ambient_while_baked, 0.0);
+        assert_eq!(settings.ambient_while_baked, DEFAULT_AMBIENT_WHILE_BAKED);
         assert_eq!(settings.overrides.baked_gi, None);
     }
 }

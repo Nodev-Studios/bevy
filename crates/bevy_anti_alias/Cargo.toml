@@ -5,7 +5,8 @@ edition = "2024"
 description = "Provides various anti-aliasing implementations for Bevy Engine"
 homepage = "https://bevy.org"
 repository = "https://github.com/bevyengine/bevy"
-license = "MIT OR Apache-2.0"
+# The TSR shaders ported from SGSR 2 are BSD-3-Clause (their notice is in each file and in THIRD_PARTY_NOTICES.md).
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
 keywords = ["bevy"]
 
 [features]
