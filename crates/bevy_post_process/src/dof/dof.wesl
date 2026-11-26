@@ -119,8 +119,11 @@ fn calculate_circle_of_confusion(in_frag_coord: vec4<f32>) -> f32 {
     let scale = dof_params.coc_scale_factor;
     let max_coc_diameter = dof_params.max_circle_of_confusion_diameter;
 
-    // Sample the depth.
-    let frag_coord = vec2<i32>(floor(in_frag_coord.xy));
+    // Sample the depth. This pass runs on the output's pixels; under an upscaler the depth was drawn at the
+    // main pass's resolution, in the `main_pass_viewport` rectangle of the depth texture.
+    let viewport_position = (in_frag_coord.xy - view.viewport.xy) / view.viewport.zw;
+    let depth_position = viewport_position * view.main_pass_viewport.zw + view.main_pass_viewport.xy;
+    let frag_coord = vec2<i32>(floor(depth_position));
     let raw_depth = textureLoad(depth_texture, frag_coord, 0);
     let depth = min(-depth_ndc_to_view_z(raw_depth), dof_params.max_depth);
 
