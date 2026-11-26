@@ -7,6 +7,20 @@ use bevy_pbr::{
     ScreenSpaceReflections,
 };
 use bevy_post_process::bloom::Bloom;
+use bevy_reflect::{std_traits::ReflectDefault, Reflect, ReflectDeserialize, ReflectSerialize};
+use serde::{Deserialize, Serialize};
+
+/// Which of Raster's two effect tables a camera gets: [`raster`] or [`raster_light`].
+/// [`resolve`](crate::resolve) picks it.
+#[derive(Reflect, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[reflect(Default, Clone, PartialEq, Hash, Serialize, Deserialize)]
+pub enum RasterLevel {
+    /// [`raster`]: every capable card, and every rung asked for by name.
+    #[default]
+    Full,
+    /// [`raster_light`]: what `Auto` gives integrated GPUs and cards under 5.5 GiB of video memory.
+    Light,
+}
 
 /// The effects of [`GraphicsRung::Raster`](crate::GraphicsRung::Raster). `None` leaves an effect off.
 #[derive(Clone)]
@@ -66,10 +80,50 @@ pub fn raster() -> RasterEffects {
     }
 }
 
-/// The table with the player's overrides applied: an effect forced off is `None`, one forced on keeps the
-/// table's value or, where the table has it off, the effect's own default.
-pub fn raster_with(overrides: &GraphicsOverrides) -> RasterEffects {
-    let table = raster();
+/// The light table of the Raster rung, which [`GraphicsPreset::Auto`](crate::GraphicsPreset::Auto) gives
+/// integrated GPUs and cards under 5.5 GiB of video memory, with a lower internal resolution
+/// ([`ResolvedQuality::Balanced`](crate::ResolvedQuality::Balanced) at up to 1080p output, Performance above).
+///
+/// Measured on the testbed at 1920x1080 on the integrated Radeon of a Ryzen 5 9600X (RADV, 2 CUs, the weakest
+/// GPU sold; 2026-11-25, `--preset auto`, 120 warm-up and 120 measured frames, GPU time as the 10th percentile of
+/// each pass, two interleaved runs each, agreeing within 0.1 ms). The full table at native with TAA, what `Auto`
+/// gave this GPU before, takes 75.1 ms of GPU on `interior` (SSR 44.0, deferred lighting 15.1, SSAO 5.2, TAA
+/// 3.2, bloom 2.0; frame 76.7 ms), 62.3 on `many-lights` (frame 64.1) and 84.5 on `interior` with its bake
+/// (frame 86.1). This table at Balanced with TSR takes 23.6, 26.3 and 26.3 ms (frames 25.0, 27.8 and 27.8 ms:
+/// 40 fps against 13). TSR is 12.9 ms of it, about as much as it saves: the same table at native with TAA takes
+/// 25.2 ms on `interior` and 35.3 on `many-lights`, whose lighting pass is the heaviest, so the upscaler stays.
+/// Performance instead of Balanced saves 2.7 ms on `interior` and 1.9 on `many-lights` and moves the image 0.66
+/// / 0.44 points, four times two runs' difference (0.13-0.20); so Balanced. Against the full table's frame this
+/// one differs by 4.56 points on `interior`, whose glossy floor loses SSR (two full-table runs differ by 0.63),
+/// 0.76 on `many-lights` (0.11) and 3.32 on `interior` with its bake (0.60), whose reflection probe stands in
+/// for SSR.
+pub fn raster_light() -> RasterEffects {
+    RasterEffects {
+        // Off: SSR is 44.0 of 75.1 ms on `interior`, more than every other pass together.
+        // A loaded bake's reflection probes, then the environment map, answer reflections instead.
+        reflections: None,
+        // Off: Low at Balanced costs 2.0 ms here (1.8 of SSAO, the rest its normal prepass), and switching it
+        // off moves the image 0.155 points on `interior` and 0.118 on `many-lights`, inside two runs' difference
+        // (0.17). The testbed has few creases for occlusion to darken, so a game with them may want it back
+        // (`GraphicsOverrides::ssao`, which gives the full table's Low).
+        ambient_occlusion: None,
+        ..raster()
+    }
+}
+
+/// The table of a [`RasterLevel`].
+pub fn raster_table(level: RasterLevel) -> RasterEffects {
+    match level {
+        RasterLevel::Full => raster(),
+        RasterLevel::Light => raster_light(),
+    }
+}
+
+/// The table of `level` with the player's overrides applied: an effect forced off is `None`, one forced on
+/// keeps the table's value or, where the table has it off, the full table's value or the effect's own default.
+pub fn raster_with(level: RasterLevel, overrides: &GraphicsOverrides) -> RasterEffects {
+    let table = raster_table(level);
+    let full = raster();
     RasterEffects {
         shadow_filter: table.shadow_filter,
         // Forced on where the table has them off: E2's 4 steps (0.07 ms on `interior` at 1080p), not Bevy's
@@ -81,9 +135,30 @@ pub fn raster_with(overrides: &GraphicsOverrides) -> RasterEffects {
             })),
             forced => switch(table.contact_shadows, forced),
         },
-        ambient_occlusion: switch(table.ambient_occlusion, overrides.ssao),
-        reflections: switch(table.reflections, overrides.ssr),
+        ambient_occlusion: switch(
+            table.ambient_occlusion.or_forced(full.ambient_occlusion, overrides.ssao),
+            overrides.ssao,
+        ),
+        reflections: switch(
+            table.reflections.or_forced(full.reflections, overrides.ssr),
+            overrides.ssr,
+        ),
         bloom: switch(table.bloom, overrides.bloom),
+    }
+}
+
+/// The table's value, or the full table's where the table has the effect off and the player forces it on.
+trait OrForced: Sized {
+    fn or_forced(self, full: Self, forced: Option<bool>) -> Self;
+}
+
+impl<T> OrForced for Option<T> {
+    fn or_forced(self, full: Self, forced: Option<bool>) -> Self {
+        if forced == Some(true) {
+            self.or(full)
+        } else {
+            self
+        }
     }
 }
 
@@ -107,7 +182,7 @@ mod tests {
     #[test]
     fn overrides_switch_single_effects() {
         // Forced on, an effect is on whether or not the table has it.
-        let all_on = raster_with(&GraphicsOverrides {
+        let all_on = raster_with(RasterLevel::Full, &GraphicsOverrides {
             ssao: Some(true),
             ssr: Some(true),
             contact_shadows: Some(true),
@@ -119,14 +194,14 @@ mod tests {
         assert!(all_on.reflections.is_some());
         assert!(all_on.bloom.is_some());
 
-        let no_ssr = raster_with(&GraphicsOverrides {
+        let no_ssr = raster_with(RasterLevel::Full, &GraphicsOverrides {
             ssr: Some(false),
             ..Default::default()
         });
         assert!(no_ssr.reflections.is_none());
         assert!(no_ssr.ambient_occlusion.is_some());
 
-        let all_off = raster_with(&GraphicsOverrides {
+        let all_off = raster_with(RasterLevel::Light, &GraphicsOverrides {
             ssao: Some(false),
             ssr: Some(false),
             contact_shadows: Some(false),
@@ -142,5 +217,30 @@ mod tests {
             ..Default::default()
         })
         .is_none());
+    }
+
+    #[test]
+    fn light_table_drops_reflections_and_forcing_them_gives_the_full_tables() {
+        let light = raster_with(RasterLevel::Light, &GraphicsOverrides::default());
+        assert!(light.reflections.is_none());
+        assert!(light.ambient_occlusion.is_none());
+        assert!(light.bloom.is_some());
+        let forced = raster_with(
+            RasterLevel::Light,
+            &GraphicsOverrides {
+                ssr: Some(true),
+                ssao: Some(true),
+                ..Default::default()
+            },
+        );
+        let full = raster();
+        assert_eq!(
+            forced.reflections.map(|ssr| (ssr.linear_steps, ssr.bisection_steps)),
+            full.reflections.map(|ssr| (ssr.linear_steps, ssr.bisection_steps))
+        );
+        assert_eq!(
+            forced.ambient_occlusion.map(|ao| ao.quality_level),
+            full.ambient_occlusion.map(|ao| ao.quality_level)
+        );
     }
 }

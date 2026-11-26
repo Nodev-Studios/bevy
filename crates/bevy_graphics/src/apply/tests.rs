@@ -127,6 +127,7 @@ fn resolved(
         upscaler,
         denoiser,
         quality,
+        raster: RasterLevel::Full,
         render_scale: quality.scale(),
         fallbacks: Vec::<Fallback>::new(),
         unfitted_meshes: 0,

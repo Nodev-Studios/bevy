@@ -1,0 +1,26 @@
+# Regression gates for Raster's light table with a bake loaded on the integrated Radeon (RADV, Ryzen 5 9600X,
+# 2 CUs) at 1920x1080, checked against a run of baked.ron:
+#
+#   target/release/gfx-check run tools/gfx-check/baked.ron --out target/gfx-check/baked
+#   target/release/gfx-check budget --table tools/gfx-check/budgets-radv-baked.toml target/gfx-check/baked
+#
+# As budgets-radv.toml: this GPU's own baseline (2026-11-25, Mesa 26.3.1, after P2's merge, the median of three
+# repeats' median frames, which spread 0.06 ms) times 1.15 (to tune). `auto-baked` is what `Auto` runs here: the
+# light table at Balanced with TSR and each scene's bake. The full table (`raster-baked`, 83.3 / 119.3 ms) is
+# recorded.
+
+adapter = "RADV RAPHAEL_MENDOCINO"
+
+# Baseline 27.74 ms.
+[[gate]]
+run = "auto-baked"
+resolution = "1920x1080"
+scene = "interior"
+max_frame_ms = 31.9
+
+# Baseline 43.35 ms.
+[[gate]]
+run = "auto-baked"
+resolution = "1920x1080"
+scene = "rooms"
+max_frame_ms = 49.9

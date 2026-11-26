@@ -1,0 +1,37 @@
+# Written by `gfx-check budget --golden tools/gfx-check/golden --write-golden <results>` from a run of
+# tools/gfx-check/golden.ron; do not edit by hand. Each image is the per-pixel mean of one configuration's
+# repeats, reduced to `size` with the area filter; `tolerance` is twice the largest difference of one
+# repeat from it (at least 0.1 points), and a later run passes when the median of its repeats' differences
+# is under it. Only cells on `adapter` at `resolution` are gated; others are recorded.
+
+adapter = "RADV RAPHAEL_MENDOCINO"
+resolution = "1920x1080"
+size = [480, 270]
+
+[[image]]
+run = "auto"
+scene = "interior"
+file = "auto-interior.png"
+tolerance = 0.12
+written_from = [0.045, 0.035, 0.057]
+
+[[image]]
+run = "auto"
+scene = "many-lights"
+file = "auto-many-lights.png"
+tolerance = 0.13
+written_from = [0.062, 0.049, 0.045]
+
+[[image]]
+run = "raster"
+scene = "interior"
+file = "raster-interior.png"
+tolerance = 0.33
+written_from = [0.125, 0.161, 0.114]
+
+[[image]]
+run = "raster"
+scene = "many-lights"
+file = "raster-many-lights.png"
+tolerance = 0.11
+written_from = [0.05, 0.054, 0.049]

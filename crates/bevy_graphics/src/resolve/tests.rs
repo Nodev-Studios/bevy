@@ -129,6 +129,8 @@ struct Row {
     denoiser: ResolvedDenoiser,
     upscaler: ResolvedUpscaler,
     quality: ResolvedQuality,
+    /// Light exactly when the row's fallbacks say so.
+    raster: RasterLevel,
     fallbacks: &'static [Fallback],
 }
 
@@ -166,6 +168,11 @@ fn rows() -> Vec<Row> {
             denoiser,
             upscaler,
             quality,
+            raster: if fallbacks.contains(&Fallback::LightRaster) {
+                RasterLevel::Light
+            } else {
+                RasterLevel::Full
+            },
             fallbacks,
         }
     }
@@ -188,8 +195,8 @@ fn rows() -> Vec<Row> {
             auto(),
             llvmpipe(),
             P1080,
-            (Raster, D::None, U::Taa, NativeAa),
-            &[F::SoftwareAdapter],
+            (Raster, D::None, U::Tsr, Balanced),
+            &[F::SoftwareAdapter, F::LightRaster],
         ),
         row(
             "rule 2: built without ray traced lighting",
@@ -219,8 +226,8 @@ fn rows() -> Vec<Row> {
             auto(),
             ryzen_integrated(),
             P1080,
-            (Raster, D::None, U::Taa, NativeAa),
-            &[F::IntegratedGpu],
+            (Raster, D::None, U::Tsr, Balanced),
+            &[F::IntegratedGpu, F::LightRaster],
         ),
         row(
             "rule 3: virtual GPU",
@@ -230,8 +237,8 @@ fn rows() -> Vec<Row> {
                 ..rtx_5070()
             },
             P1080,
-            (Raster, D::None, U_SR, NativeAa),
-            &[F::IntegratedGpu],
+            (Raster, D::None, U_SR, Balanced),
+            &[F::IntegratedGpu, F::LightRaster],
         ),
         row(
             "rule 4: no denoiser (a Radeon before NRD is in the app)",
@@ -249,11 +256,11 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("2060", 5.4),
             P1080,
-            (Raster, D::None, U_SR, NativeAa),
-            &[F::LowVideoMemory],
+            (Raster, D::None, U_SR, Balanced),
+            &[F::LowVideoMemory, F::LightRaster],
         ),
         row(
-            "rule 5: video memory unknown",
+            "rule 5: video memory unknown (full table: unknown is not judged weak)",
             auto(),
             GraphicsCapabilities {
                 video_memory_bytes: None,
@@ -268,7 +275,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("2060", 5.9),
             P1080,
-            (RtLite, D_RR, U_RR, Quality),
+            (RtLite, D_RR, U_RR, Balanced),
             &[F::VideoMemoryBelowRtFull],
         ),
         row(
@@ -276,7 +283,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("4060", 7.9),
             P1080,
-            (RtLite, D_RR, U_RR, Quality),
+            (RtLite, D_RR, U_RR, Balanced),
             &[F::VideoMemoryBelowRtFull],
         ),
         row(
@@ -284,7 +291,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("4070", 10.9),
             P1080,
-            (RtLite, D_RR, U_RR, Quality),
+            (RtLite, D_RR, U_RR, Balanced),
             &[F::VideoMemoryBelowRtFull],
         ),
         row(
@@ -308,7 +315,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("3060", 11.9),
             P1080,
-            (RtLite, D_RR, U_RR, Quality),
+            (RtLite, D_RR, U_RR, Balanced),
             &[F::NotOnFastRtList],
         ),
         row(
@@ -316,7 +323,7 @@ fn rows() -> Vec<Row> {
             auto(),
             rtx("5060 Ti", 15.9),
             P1080,
-            (RtLite, D_RR, U_RR, Quality),
+            (RtLite, D_RR, U_RR, Balanced),
             &[F::NotOnFastRtList],
         ),
         row(
@@ -324,7 +331,7 @@ fn rows() -> Vec<Row> {
             auto(),
             radeon("9060 XT", 15.9),
             P1080,
-            (RtLite, D::Nrd, U::Tsr, Quality),
+            (RtLite, D::Nrd, U::Tsr, Balanced),
             &[F::NotOnFastRtList],
         ),
         row(
@@ -371,8 +378,8 @@ fn rows() -> Vec<Row> {
                 ..ryzen_integrated()
             },
             P1080,
-            (Raster, D::None, U::Taa, NativeAa),
-            &[F::NoRayQuery],
+            (Raster, D::None, U::Tsr, Balanced),
+            &[F::NoRayQuery, F::LightRaster],
         ),
         row(
             "order: rule 3 before 4 (integrated GPU without a denoiser)",
@@ -382,8 +389,8 @@ fn rows() -> Vec<Row> {
                 ..ryzen_integrated()
             },
             P1080,
-            (Raster, D::None, U::Taa, NativeAa),
-            &[F::IntegratedGpu],
+            (Raster, D::None, U::Tsr, Balanced),
+            &[F::IntegratedGpu, F::LightRaster],
         ),
         row(
             "order: rule 4 before 5 (small card without a denoiser)",
@@ -393,8 +400,8 @@ fn rows() -> Vec<Row> {
                 ..radeon("6600 XT", 5.4)
             },
             P1080,
-            (Raster, D::None, U::Taa, NativeAa),
-            &[F::NoDenoiser],
+            (Raster, D::None, U::Tsr, Balanced),
+            &[F::NoDenoiser, F::LightRaster],
         ),
         row(
             "no renderer at all",
@@ -418,7 +425,7 @@ fn rows() -> Vec<Row> {
             preset(P::RtLite),
             llvmpipe(),
             P1080,
-            (RtLite, D::Nrd, U::Tsr, Quality),
+            (RtLite, D::Nrd, U::Tsr, Balanced),
             &[],
         ),
         row(
@@ -434,7 +441,7 @@ fn rows() -> Vec<Row> {
             preset(P::RtLite),
             rtx_5070(),
             P1080,
-            (RtLite, D_RR, U_RR, Quality),
+            (RtLite, D_RR, U_RR, Balanced),
             &[],
         ),
         row(
@@ -782,11 +789,11 @@ fn rows() -> Vec<Row> {
             &[],
         ),
         row(
-            "RtLite 1080p: Quality",
+            "RtLite 1080p: Balanced (the plan's value, not the 5070's Quality)",
             preset(P::RtLite),
             radeon("7700 XT", 11.9),
             P1080,
-            (RtLite, D::Nrd, U::Tsr, Quality),
+            (RtLite, D::Nrd, U::Tsr, Balanced),
             &[],
         ),
         row(
@@ -838,11 +845,11 @@ fn rows() -> Vec<Row> {
             &[],
         ),
         row(
-            "ultrawide 1440p counts as 4K",
+            "ultrawide 1440p: Balanced, one step under 2560x1440, not 4K's Performance",
             preset(P::RtFull),
             rtx_5070(),
             UVec2::new(3440, 1440),
-            (RtFull, D_RR, U_RR, Performance),
+            (RtFull, D_RR, U_RR, Balanced),
             &[],
         ),
         // A quality asked for by name.
@@ -891,6 +898,271 @@ fn rows() -> Vec<Row> {
             (Raster, D::None, U::Taa, NativeAa),
             &[],
         ),
+        // Raster's light table: `Auto` on an integrated GPU or a card under 5.5 GiB (M3-1, M2-12).
+        row(
+            "light Raster at 1440p: Performance",
+            auto(),
+            ryzen_integrated(),
+            P1440,
+            (Raster, D::None, U::Tsr, Performance),
+            &[F::IntegratedGpu, F::LightRaster],
+        ),
+        row(
+            "light Raster on a 4 GB RTX laptop: DLSS SR at Balanced, not DLAA",
+            auto(),
+            rtx("3050 Laptop GPU", 3.9),
+            P1080,
+            (Raster, D::None, U_SR, Balanced),
+            &[F::LowVideoMemory, F::LightRaster],
+        ),
+        row(
+            "light Raster on a 4 GB card without ray query",
+            auto(),
+            GraphicsCapabilities {
+                ray_query: false,
+                ..card("NVIDIA GeForce GTX 1050 Ti", GpuVendor::Nvidia, 3.9)
+            },
+            P1080,
+            (Raster, D::None, U::Tsr, Balanced),
+            &[F::NoRayQuery, F::LightRaster],
+        ),
+        row(
+            "light Raster: an app without TSR renders native with TAA",
+            auto(),
+            GraphicsCapabilities {
+                tsr: false,
+                ..ryzen_integrated()
+            },
+            P1080,
+            (Raster, D::None, U::Taa, NativeAa),
+            &[F::IntegratedGpu, F::LightRaster, F::NoUpscaler],
+        ),
+        row(
+            "light Raster: the player's quality by name wins",
+            quality(P::Auto, UpscaleQuality::Quality),
+            ryzen_integrated(),
+            P1080,
+            (Raster, D::None, U::Tsr, Quality),
+            &[F::IntegratedGpu, F::LightRaster],
+        ),
+        row(
+            "light Raster: upscaling off by name renders native",
+            upscaler(P::Auto, UpscalerChoice::Off),
+            ryzen_integrated(),
+            P1080,
+            (Raster, D::None, U::Taa, NativeAa),
+            &[F::IntegratedGpu, F::LightRaster],
+        ),
+        row(
+            "Raster by name on the integrated GPU keeps the full table",
+            preset(P::Raster),
+            ryzen_integrated(),
+            P1080,
+            (Raster, D::None, U::Taa, NativeAa),
+            &[],
+        ),
+        // The slow-RT list: cards with ray tracing that `Auto` sends to Raster's full table (M2-1).
+        row(
+            "slow RT: RTX 3050 8 GB",
+            auto(),
+            rtx("3050", 7.9),
+            P1080,
+            (Raster, D::None, U_SR, NativeAa),
+            &[F::SlowRayTracing],
+        ),
+        row(
+            "slow RT: RTX 4050 Laptop GPU 6 GB",
+            auto(),
+            rtx("4050 Laptop GPU", 5.9),
+            P1080,
+            (Raster, D::None, U_SR, NativeAa),
+            &[F::SlowRayTracing],
+        ),
+        row(
+            "slow RT: RX 6600",
+            auto(),
+            radeon("6600", 7.9),
+            P1080,
+            (Raster, D::None, U::Taa, NativeAa),
+            &[F::SlowRayTracing],
+        ),
+        row(
+            "slow RT: RX 7600 (RADV)",
+            auto(),
+            GraphicsCapabilities {
+                adapter_name: "AMD Radeon RX 7600 (RADV NAVI33)".into(),
+                ..radeon("7600", 7.9)
+            },
+            P1080,
+            (Raster, D::None, U::Taa, NativeAa),
+            &[F::SlowRayTracing],
+        ),
+        row(
+            "slow RT: Arc A580",
+            auto(),
+            GraphicsCapabilities {
+                nrd: true,
+                ..card(
+                    "Intel(R) Arc(tm) A580 Graphics (DG2)",
+                    GpuVendor::Intel,
+                    7.9,
+                )
+            },
+            P1080,
+            (Raster, D::None, U::Taa, NativeAa),
+            &[F::SlowRayTracing],
+        ),
+        row(
+            "not slow: RX 6600 XT reaches RtLite",
+            auto(),
+            radeon("6600 XT", 7.9),
+            P1080,
+            (RtLite, D::Nrd, U::Tsr, Balanced),
+            &[F::VideoMemoryBelowRtFull],
+        ),
+        row(
+            "not slow: Arc A770 16 GB reaches RtLite",
+            auto(),
+            GraphicsCapabilities {
+                nrd: true,
+                ..card(
+                    "Intel(R) Arc(tm) A770 Graphics (DG2)",
+                    GpuVendor::Intel,
+                    15.9,
+                )
+            },
+            P1080,
+            (RtLite, D::Nrd, U::Tsr, Balanced),
+            &[F::NotOnFastRtList],
+        ),
+        row(
+            "slow RT by name: RtLite asked on an RTX 3050 is given",
+            preset(P::RtLite),
+            rtx("3050", 7.9),
+            P1080,
+            (RtLite, D_RR, U_RR, Balanced),
+            &[],
+        ),
+        // `Auto`'s denoiser on RtLite: NRD + DLSS SR on RTX 20/30, Ray Reconstruction on RTX 40/50 (M1-1).
+        row(
+            "RtLite on an RTX 3060 with NRD in the app: NRD and DLSS SR",
+            auto(),
+            GraphicsCapabilities {
+                nrd: true,
+                ..rtx("3060", 11.9)
+            },
+            P1080,
+            (RtLite, D::Nrd, U_SR, Balanced),
+            &[F::NotOnFastRtList, F::NrdOnOlderRtx],
+        ),
+        row(
+            "RtLite on an RTX 2060 6 GB with NRD in the app: NRD and DLSS SR",
+            auto(),
+            GraphicsCapabilities {
+                nrd: true,
+                ..rtx("2060", 5.9)
+            },
+            P1080,
+            (RtLite, D::Nrd, U_SR, Balanced),
+            &[F::VideoMemoryBelowRtFull, F::NrdOnOlderRtx],
+        ),
+        row(
+            "RtLite on an RTX 4060 with NRD in the app keeps Ray Reconstruction",
+            auto(),
+            GraphicsCapabilities {
+                nrd: true,
+                ..rtx("4060", 7.9)
+            },
+            P1080,
+            (RtLite, D_RR, U_RR, Balanced),
+            &[F::VideoMemoryBelowRtFull],
+        ),
+        row(
+            "Ray Reconstruction by name on an RTX 3060 is given",
+            GraphicsSettings {
+                denoiser: DenoiserChoice::DlssRayReconstruction,
+                ..Default::default()
+            },
+            GraphicsCapabilities {
+                nrd: true,
+                ..rtx("3060", 11.9)
+            },
+            P1080,
+            (RtLite, D_RR, U_RR, Balanced),
+            &[F::NotOnFastRtList],
+        ),
+        row(
+            "RtLite on an RTX 3060 without NRD in the app keeps Ray Reconstruction",
+            auto(),
+            rtx("3060", 11.9),
+            P1080,
+            (RtLite, D_RR, U_RR, Balanced),
+            &[F::NotOnFastRtList],
+        ),
+        // The fast-RT list's additions (M1-6, M2-10).
+        row(
+            "fast RT: RTX 3090 24 GB reaches RtFull and keeps Ray Reconstruction",
+            auto(),
+            GraphicsCapabilities {
+                nrd: true,
+                ..rtx("3090", 23.9)
+            },
+            P1080,
+            (RtFull, D_RR, U_RR, NativeAa),
+            &[],
+        ),
+        row(
+            "fast RT: RTX 3080 Ti 12 GB reaches RtFull",
+            auto(),
+            rtx("3080 Ti", 11.9),
+            P1080,
+            (RtFull, D_RR, U_RR, NativeAa),
+            &[],
+        ),
+        row(
+            "fast RT: an RTX 4080 Laptop GPU 12 GB is one rung lower",
+            auto(),
+            rtx("4080 Laptop GPU", 11.9),
+            P1080,
+            (RtLite, D_RR, U_RR, Balanced),
+            &[F::NotOnFastRtList],
+        ),
+        row(
+            "fast RT: an RX 9070 XT that RADV names by its chip",
+            auto(),
+            GraphicsCapabilities {
+                adapter_name: "AMD Radeon Graphics (RADV GFX1201)".into(),
+                ..radeon("9070 XT", 15.9)
+            },
+            P1080,
+            (RtFull, D::Nrd, U::Taa, NativeAa),
+            &[],
+        ),
+        // Ultrawide (M2-11).
+        row(
+            "ultrawide 1440p on Raster: Balanced",
+            preset(P::Raster),
+            rtx_5070(),
+            UVec2::new(3440, 1440),
+            (Raster, D::None, U_SR, Balanced),
+            &[],
+        ),
+        row(
+            "ultrawide 1440p on RtLite: Balanced",
+            preset(P::RtLite),
+            radeon("7700 XT", 11.9),
+            UVec2::new(3440, 1440),
+            (RtLite, D::Nrd, U::Tsr, Balanced),
+            &[],
+        ),
+        row(
+            "ultrawide 1600p is over the bucket: Performance",
+            preset(P::RtFull),
+            rtx_5070(),
+            UVec2::new(3840, 1600),
+            (RtFull, D_RR, U_RR, Performance),
+            &[],
+        ),
     ]
 }
 
@@ -907,6 +1179,7 @@ fn resolve_table() {
             upscaler: row.upscaler,
             denoiser: row.denoiser,
             quality: row.quality,
+            raster: row.raster,
             render_scale: row.quality.scale(),
             fallbacks: row.fallbacks.to_vec(),
             unfitted_meshes: 0,
@@ -1117,14 +1390,22 @@ fn fast_rt_list() {
         "AMD Radeon RX 9070 XT (RADV GFX1201)",
         "AMD Radeon RX 7900 XT",
         "AMD Radeon RX 7900 XTX (RADV NAVI31)",
+        "AMD Radeon Graphics (RADV GFX1201)",
+        "NVIDIA GeForce RTX 3080 Ti",
+        "NVIDIA GeForce RTX 3090",
+        "NVIDIA GeForce RTX 3090 Ti",
     ] {
         assert!(on_fast_rt_list(name), "{name}");
     }
     for name in [
         "NVIDIA GeForce RTX 2080 Ti",
         "NVIDIA GeForce RTX 3060",
-        "NVIDIA GeForce RTX 3090",
+        "NVIDIA GeForce RTX 3080",
+        "NVIDIA GeForce RTX 3080 Ti Laptop GPU",
+        "NVIDIA GeForce RTX 4080 Laptop GPU",
+        "NVIDIA GeForce RTX 5070 Ti Laptop GPU",
         "NVIDIA GeForce RTX 4060 Ti",
+        "AMD Radeon Graphics (RADV GFX1200)",
         "NVIDIA GeForce RTX 5060 Ti",
         "NVIDIA RTX A4000",
         "NVIDIA RTX 4000 Ada Generation",
@@ -1139,6 +1420,50 @@ fn fast_rt_list() {
         "",
     ] {
         assert!(!on_fast_rt_list(name), "{name}");
+    }
+}
+
+#[test]
+fn slow_rt_list() {
+    for name in [
+        "Intel(R) Arc(tm) A310 Graphics (DG2)",
+        "Intel(R) Arc(tm) A380 Graphics (DG2)",
+        "Intel(R) Arc(tm) A580 Graphics (DG2)",
+        "Intel(R) Arc(tm) A570M Graphics (DG2)",
+        "NVIDIA GeForce RTX 2050",
+        "NVIDIA GeForce RTX 3050",
+        "NVIDIA GeForce RTX 3050 Ti Laptop GPU",
+        "NVIDIA GeForce RTX 4050 Laptop GPU",
+        "NVIDIA GeForce RTX 5050 Laptop GPU",
+        "AMD Radeon RX 6400",
+        "AMD Radeon RX 6500 XT",
+        "AMD Radeon RX 6600",
+        "AMD Radeon RX 6600M",
+        "AMD Radeon RX 7600",
+        "AMD Radeon RX 7600 (RADV NAVI33)",
+    ] {
+        assert!(on_slow_rt_list(name), "{name}");
+        assert!(!on_fast_rt_list(name), "{name}");
+    }
+    for name in [
+        "Intel(R) Arc(tm) A750 Graphics (DG2)",
+        "Intel(R) Arc(tm) A770 Graphics (DG2)",
+        "Intel(R) Arc(tm) B580 Graphics (BMG G21)",
+        "NVIDIA GeForce RTX 2060",
+        "NVIDIA GeForce RTX 3060",
+        "NVIDIA GeForce RTX 4060 Laptop GPU",
+        "NVIDIA GeForce RTX 5050",
+        "NVIDIA RTX A2000",
+        "AMD Radeon RX 6600 XT",
+        "AMD Radeon RX 6650 XT",
+        "AMD Radeon RX 6700 XT",
+        "AMD Radeon RX 7600 XT",
+        "AMD Radeon RX 580 Series (RADV POLARIS10)",
+        "AMD Ryzen 5 9600X 6-Core Processor (RADV RAPHAEL_MENDOCINO)",
+        "llvmpipe (LLVM 23.1.5, 256 bits)",
+        "",
+    ] {
+        assert!(!on_slow_rt_list(name), "{name}");
     }
 }
 
