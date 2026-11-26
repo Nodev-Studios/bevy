@@ -1155,7 +1155,8 @@ impl Denoiser {
 
     /// Changes the size or the precision of the denoiser's textures. Only the textures are made again: the NRD
     /// instance, its settings and the pipelines stay. The history is dropped, so the next frame starts a new one.
-    /// On an error the denoiser keeps its old textures and size.
+    /// The old textures are destroyed before the new ones are made, so the two sets never take memory together;
+    /// after an error the denoiser cannot run until a `resize` succeeds.
     pub fn resize(
         &mut self,
         device: &Device,
@@ -1163,7 +1164,12 @@ impl Denoiser {
         precision: TexturePrecision,
     ) -> Result<(), NrdError> {
         check_size_and_features(device, size, precision)?;
-        // The old textures go first, so the two sets are never in memory together.
+        // wgpu frees them once the frames already submitted are done with them.
+        for view in self.textures.iter() {
+            view.texture().destroy();
+        }
+        // Until the new textures exist, `denoise` refuses every frame (no texture is 0x0).
+        self.size = [0, 0];
         let textures = SizedTextures::new(
             device,
             self.instance,
