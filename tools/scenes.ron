@@ -46,6 +46,8 @@
             licence: "CC-BY 4.0: Amazon Lumberyard Bistro, credit Amazon Lumberyard (NVIDIA ORCA)",
             non_commercial: false,
             fetch: "tools/fetch-scenes.sh bistro",
+            // The first frame of the FBX's own camera (Blender, converted to glTF axes).
+            camera: (position: (24.82, 3.16, -61.65), look_at: (23.21, 2.85, -56.93)),
         ),
         (
             id: "bistro-interior",
@@ -54,6 +56,7 @@
             licence: "CC-BY 4.0: Amazon Lumberyard Bistro, credit Amazon Lumberyard (NVIDIA ORCA)",
             non_commercial: false,
             fetch: "tools/fetch-scenes.sh bistro",
+            camera: (position: (3.45, 2.26, -2.25), look_at: (8.41, 2.09, -2.81)),
         ),
         (
             id: "pica-pica",
@@ -76,7 +79,10 @@
             licence: "CC-BY 4.0: Zero Day, credit Beeple (NVIDIA ORCA)",
             non_commercial: false,
             fetch: "tools/fetch-scenes.sh zero-day",
+            camera: (position: (13.35, -0.36, -0.01), look_at: (8.35, -0.26, -0.11)),
             sun: Off,
+            // Lit by its emissive surfaces alone (strength 100, see tools/fetch-scenes.sh). to tune.
+            exposure: 2.0,
         ),
         (
             id: "sponza",

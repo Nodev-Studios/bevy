@@ -113,7 +113,8 @@ impl Split {
 
 fn same_view(a: &GlobalTransform, b: &GlobalTransform) -> bool {
     a.translation().distance(b.translation()) < 1e-4
-        && a.rotation().angle_between(b.rotation()) < 1e-4
+        // Not `angle_between`: for equal rotations its f32 acos returns about 1e-3.
+        && a.rotation().dot(b.rotation()).abs() > 1.0 - 1e-7
 }
 
 /// Drives the left side's capture.
@@ -126,6 +127,14 @@ pub fn run_split(world: &mut World) {
 }
 
 fn step(world: &mut World, split: &mut Split) {
+    let before = split.phase;
+    step_inner(world, split);
+    if split.phase != before {
+        debug!("split view: {before:?} -> {:?}", split.phase);
+    }
+}
+
+fn step_inner(world: &mut World, split: &mut Split) {
     let camera = world
         .query_filtered::<&GlobalTransform, With<ViewerCamera>>()
         .iter(world)

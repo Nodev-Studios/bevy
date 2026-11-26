@@ -12,7 +12,7 @@ use crate::{
 };
 use bevy::{
     app::AppExit,
-    camera::Exposure,
+    camera::{visibility::RenderLayers, Exposure},
     graphics::{baked::BakedGi, GraphicsSettings, ResolvedGraphics},
     prelude::*,
     render::view::screenshot::{save_to_disk, Screenshot},
@@ -372,7 +372,8 @@ pub struct BaseIntensity(pub f32);
 #[derive(Resource, Default)]
 pub struct CoverageSaved {
     materials: Vec<(AssetId<StandardMaterial>, StandardMaterial)>,
-    lights: Vec<(Entity, Visibility)>,
+    /// Each light and the render layers it had (the coverage view moves it to a layer no camera sees).
+    lights: Vec<(Entity, Option<RenderLayers>)>,
 }
 
 /// Reads the open scene's exposure and sun into [`ViewControls`] once it is placed, and applies the controls
@@ -492,6 +493,9 @@ fn scene_sun(world: &mut World) -> Option<(Entity, DirectionalLight, Transform)>
     any.iter(world).next().map(|(e, l, t)| (e, *l, *t))
 }
 
+/// The render layer the coverage view puts the lights on: no camera renders it.
+const COVERAGE_LAYER: usize = 31;
+
 fn set_coverage(world: &mut World, on: bool) {
     let active = !world.resource::<CoverageSaved>().materials.is_empty()
         || !world.resource::<CoverageSaved>().lights.is_empty();
@@ -499,18 +503,22 @@ fn set_coverage(world: &mut World, on: bool) {
         return;
     }
     if on {
-        let lights: Vec<(Entity, Visibility)> = world
-            .query_filtered::<(Entity, &Visibility), Or<(
+        // Not hidden: the baked light follows the lamps that are visible (a hidden one counts as off). On a
+        // layer no camera renders, a light lights nothing directly and the bake keeps its weight.
+        let lights: Vec<(Entity, Option<RenderLayers>)> = world
+            .query_filtered::<(Entity, Option<&RenderLayers>), Or<(
                 With<PointLight>,
                 With<SpotLight>,
                 With<RectLight>,
                 With<DirectionalLight>,
             )>>()
             .iter(world)
-            .map(|(e, v)| (e, *v))
+            .map(|(e, layers)| (e, layers.cloned()))
             .collect();
         for (light, _) in &lights {
-            world.entity_mut(*light).insert(Visibility::Hidden);
+            world
+                .entity_mut(*light)
+                .insert(RenderLayers::layer(COVERAGE_LAYER));
         }
         let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
         let mut saved = Vec::new();
@@ -535,9 +543,12 @@ fn set_coverage(world: &mut World, on: bool) {
                 *slot = material;
             }
         }
-        for (light, visibility) in saved.lights {
+        for (light, layers) in saved.lights {
             if let Ok(mut entity) = world.get_entity_mut(light) {
-                entity.insert(visibility);
+                match layers {
+                    Some(layers) => entity.insert(layers),
+                    None => entity.remove::<RenderLayers>(),
+                };
             }
         }
     }

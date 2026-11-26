@@ -967,6 +967,31 @@ fn luma_stats(rgb: &[u8]) -> (f64, f64) {
     (sum / pixels, lit / pixels)
 }
 
+/// The frame is Raster's, no light of the scene is visible, and no bake is loaded: nothing can light it but its
+/// emissive surfaces.
+fn unlit_raster(world: &mut World) -> bool {
+    let raster = world
+        .get_resource::<ResolvedGraphics>()
+        .is_some_and(|resolved| resolved.rung == GraphicsRung::Raster);
+    let baked = world.get_resource::<BakedGiStatus>().copied() == Some(BakedGiStatus::Loaded);
+    let mut lights = world.query_filtered::<&InheritedVisibility, Or<(
+        With<PointLight>,
+        With<SpotLight>,
+        With<RectLight>,
+        With<DirectionalLight>,
+    )>>();
+    let lit = lights.iter(world).any(|visibility| visibility.get());
+    raster && !baked && !lit
+}
+
+/// This process's resident memory in MiB (Linux), to see it grow over scenes.
+fn resident_mib() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kib / 1024)
+}
+
 /// The width of the captures (the window's).
 fn image_width(world: &mut World) -> Option<usize> {
     world
@@ -1032,11 +1057,21 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         }
     };
     let (mean, lit) = luma_stats(&rgb);
+    let mut dark_reason = None;
     if current.kind != Kind::ShowUi && (mean < MIN_MEAN_LUMA || lit < MIN_LIT_SHARE) {
-        failures.push(format!(
-            "the frame is black: mean luma {mean:.2}, {:.3} % of pixels lit",
-            lit * 100.0
-        ));
+        if unlit_raster(world) {
+            // Raster takes no light from emissive surfaces: a scene lit by them alone (Zero Day) is dark there
+            // until it is baked. Recorded, not failed.
+            dark_reason = Some(format!(
+                "dark by nature: no analytic light, Raster, no bake (mean luma {mean:.2}, {:.3} % lit)",
+                lit * 100.0
+            ));
+        } else {
+            failures.push(format!(
+                "the frame is black: mean luma {mean:.2}, {:.3} % of pixels lit",
+                lit * 100.0
+            ));
+        }
     }
 
     if scene_failed(world) {
@@ -1051,6 +1086,9 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
             failures.extend(check_camera(world, &settings, resolved));
         }
         None => failures.push("nothing resolved".into()),
+    }
+    if let Some(reason) = dark_reason {
+        extra.insert("dark".into(), json!(reason));
     }
     for (key, value) in std::mem::take(&mut test.noted) {
         extra.insert(key, value);
@@ -1205,7 +1243,7 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
             let close = match (camera, wanted) {
                 (Some(c), Some(w)) => {
                     c.translation.distance(w.translation) < 1e-3
-                        && c.rotation.angle_between(w.rotation) < 1e-3
+                        && c.rotation.dot(w.rotation).abs() > 1.0 - 1e-6
                 }
                 _ => false,
             };
@@ -1299,6 +1337,7 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         "mean_luma": mean,
         "lit_share": lit,
         "frame_ms_median": frame_ms,
+        "rss_mib": resident_mib(),
         "gpu_ms_top": passes,
         "failures": failures,
     });

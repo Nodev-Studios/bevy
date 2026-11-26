@@ -3,7 +3,9 @@
 # features the ladder ships with and runs it, passing every argument through.
 #
 #   tools/gfx-viewer.sh                                  the testbed's interior, preset Auto
-#   tools/gfx-viewer.sh --scene sponza --preset rt-full  a scene of tools/fetch-scenes.sh, a preset
+#   tools/gfx-viewer.sh --scene sponza --preset rt-full  a scene of tools/scenes.ron (tools/fetch-scenes.sh
+#                                                        downloads them), a preset
+#   tools/gfx-viewer.sh --list-scenes                    every scene, its licence, downloaded or not
 #   tools/gfx-viewer.sh --scene path/to/file.glb         any glTF file
 #   tools/gfx-viewer.sh --help                           every flag
 #
