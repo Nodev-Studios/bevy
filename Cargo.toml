@@ -50,6 +50,8 @@ exclude = [
   # (tools/fetch-sdks.sh). Cargo makes every path dependency under the root a workspace member unless it is
   # excluded, and `cargo check --workspace` must pass without any SDK.
   "vendor",
+  # Blender scripts that convert the viewer's test scenes, not a crate.
+  "tools/scene-convert",
 ]
 
 [workspace.lints.clippy]
