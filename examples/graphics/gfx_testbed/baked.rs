@@ -7,8 +7,12 @@
 //!   for exact bakes; they act the same in a bake and in a run.
 //! - `--gi-coverage` is a debug view of the bake alone: every material white and matte, no analytic light,
 //!   every volume at intensity 1, no tonemapping. Beside each capture it writes `mask-<capture>.png`: the pixels
-//!   whose surface lies inside a baked box, found by tracing the scene's triangles on the CPU. A black pixel of
-//!   the capture inside the mask is a surface the bake does not reach.
+//!   whose surface lies inside a baked box, found by tracing the scene's triangles on the CPU, and
+//!   `surface-<capture>.png`: every pixel that shows a surface (not the sky). A black pixel of the capture inside
+//!   the first is a surface the bake does not reach; inside the second, one left with no indirect light at all
+//!   (outside every box the ambient and the environment stand in). `gfx-check coverage` gates both.
+//! - `--gi-no-falloff` sets every baked volume's falloff to 0, as before overlapping regions blended (the seam
+//!   control of `l-corridor`).
 //! - `--gi-no-reflections` hides the bake's reflection probes, leaving its volumes (gate 15's "volumes alone").
 //! - `--gi-reflection-only` keeps only the light the reflection probes reflect: no analytic light, every dielectric's
 //!   base colour black (its specular stays), no emission, volumes and probes at intensity 1, no screen-space
@@ -32,7 +36,10 @@ use bevy::{
         Exposure,
     },
     graphics::{
-        baked::{BakedGi, BakedGiManifest, BakedGiPlugin, BakedGiStatus, GiBakeRegion},
+        baked::{
+            BakedGi, BakedGiManifest, BakedGiPlugin, BakedGiStatus, BakedGiVolume, GiBakeExclude,
+            GiBakeRegion,
+        },
         GraphicsSettings,
     },
     image::{CompressedImageFormats, ImageSampler, ImageType},
@@ -78,9 +85,16 @@ Baked indirect light (bevy_baked_gi):
                                  colour black, no emission, intensity 1, no SSR; exposure and tonemapping kept
   --gi-reflection-coverage       the reflection probes alone: white metal of roughness 0.5, no analytic light,
                                  intensity 1, exposure 0 EV, no tonemapping; writes mask-<capture>.png
-  Scenes: two-rooms (0.45 m wall), two-rooms-thin (0.10 m), two-rooms-door (0.45 m, 1 m door), rooms (12 rooms
-  off a corridor), gi-furnace (gate 2's asymmetric furnace with a white sphere left out of the bake),
-  diffuser (a bake-only room with a spot and an emissive diffuser)
+  --gi-no-falloff                every baked volume at falloff 0 (l-corridor's seam control)
+  --gi-ambient B                 GraphicsSettings::ambient_while_baked, cd/m² (0: no light outside the boxes,
+                                 the coverage gate's control)
+  --gi-opaque-glass              two-rooms-glass: the pane opaque (the glass gate's control)
+  --gi-exclude-wall              two-rooms-raw: the shared wall GiBakeExclude (the leak gate's control)
+  Scenes: two-rooms (0.45 m wall), two-rooms-thin (0.10 m), two-rooms-door (0.45 m, 1 m door), two-rooms-raw
+  (two-rooms with a shared wall mesh as glTF brings it: no tangents, vertex colours, a second UV set),
+  two-rooms-glass (two-rooms-door with a Blend pane in the door), rooms (12 rooms off a corridor), l-corridor
+  (two corridors meeting at a corner, their boxes overlapping), gi-furnace (gate 2's asymmetric furnace with a
+  white sphere left out of the bake), diffuser (a bake-only room with a spot and an emissive diffuser)
 ";
 
 /// The asset source a loaded bake is read from.
@@ -106,9 +120,13 @@ const PREDICTED_EV100: f32 = 0.0;
 const FLOOR_X: (f32, f32) = (-0.3, 1.0);
 const FLOOR_Z: (f32, f32) = (-0.2, 1.0);
 
-/// A thing the bake leaves out: it moves at run time (gate 6's sphere).
+/// The pane of `two-rooms-glass`.
 #[derive(Component)]
-pub struct GiDynamic;
+pub struct GlassPane;
+
+/// The shared wall of `two-rooms-raw`.
+#[derive(Component)]
+pub struct RawWall;
 
 /// The diffuser of the `diffuser` scene.
 #[derive(Component)]
@@ -130,6 +148,10 @@ pub struct Baked {
     no_reflections: bool,
     reflection_only: bool,
     reflection_coverage: bool,
+    no_falloff: bool,
+    ambient: Option<f32>,
+    opaque_glass: bool,
+    exclude_wall: bool,
 }
 
 impl Baked {
@@ -158,6 +180,10 @@ impl Baked {
             no_reflections: flags.switch("--gi-no-reflections"),
             reflection_only: flags.switch("--gi-reflection-only"),
             reflection_coverage: flags.switch("--gi-reflection-coverage"),
+            no_falloff: flags.switch("--gi-no-falloff"),
+            ambient: flags.parsed("--gi-ambient"),
+            opaque_glass: flags.switch("--gi-opaque-glass"),
+            exclude_wall: flags.switch("--gi-exclude-wall"),
         };
         if baked.load.is_some() && baked.bake.is_some() {
             flags.error("--bake-gi bakes and exits: no --baked-gi with it");
@@ -232,11 +258,19 @@ impl Baked {
             overrides.contact_shadows = Some(false);
             overrides.bloom = Some(false);
         }
+        if let Some(ambient) = self.ambient
+            && let Some(mut settings) = app.world_mut().get_resource_mut::<GraphicsSettings>()
+        {
+            settings.ambient_while_baked = ambient;
+        }
         if self.pin_intensity || self.isolating_view() {
             app.add_systems(Last, pin_intensity);
         }
         if self.no_reflections {
             app.add_systems(PostUpdate, hide_reflection_probes);
+        }
+        if self.no_falloff {
+            app.add_systems(Last, zero_falloff);
         }
         let bound = BoundProbes::default();
         app.insert_resource(bound.clone());
@@ -252,6 +286,9 @@ impl Baked {
             "two-rooms" => two_rooms(world, 0.45, false),
             "two-rooms-thin" => two_rooms(world, 0.10, false),
             "two-rooms-door" => two_rooms(world, 0.45, true),
+            "two-rooms-raw" => two_rooms_raw(world),
+            "two-rooms-glass" => two_rooms_glass(world),
+            "l-corridor" => l_corridor(world),
             "rooms" => rooms(world),
             "gi-furnace" => furnace(world),
             "diffuser" => diffuser(world),
@@ -368,13 +405,32 @@ impl Baked {
         for (region_name, transform, region) in regions(name, self.one_box) {
             world.spawn((Name::new(region_name), region, transform));
         }
-        if baking {
-            let dynamic: Vec<Entity> = world
-                .query_filtered::<Entity, With<GiDynamic>>()
+        let _ = baking;
+        if self.opaque_glass {
+            let panes: Vec<Entity> = world
+                .query_filtered::<Entity, With<GlassPane>>()
                 .iter(world)
                 .collect();
-            for entity in dynamic {
-                world.despawn(entity);
+            if panes.is_empty() {
+                return Err("--gi-opaque-glass: the scene has no glass pane".into());
+            }
+            let opaque = matte(world, 0.6);
+            for pane in panes {
+                world
+                    .entity_mut(pane)
+                    .insert(MeshMaterial3d(opaque.clone()));
+            }
+        }
+        if self.exclude_wall {
+            let walls: Vec<Entity> = world
+                .query_filtered::<Entity, With<RawWall>>()
+                .iter(world)
+                .collect();
+            if walls.is_empty() {
+                return Err("--gi-exclude-wall: the scene has no raw wall".into());
+            }
+            for wall in walls {
+                world.entity_mut(wall).insert(GiBakeExclude);
             }
         }
         if self.skip_diffuser {
@@ -417,7 +473,7 @@ fn regions(scene: &str, one_box: bool) -> Vec<(String, Transform, GiBakeRegion)>
             Vec3::new(-7.0, 0.0, -4.0),
             Vec3::new(7.0, 3.0, 4.0),
         )],
-        "two-rooms" | "two-rooms-thin" | "two-rooms-door" => {
+        "two-rooms" | "two-rooms-thin" | "two-rooms-door" | "two-rooms-raw" | "two-rooms-glass" => {
             let half = two_rooms_wall(scene) / 2.0;
             if one_box {
                 vec![padded(
@@ -460,6 +516,18 @@ fn regions(scene: &str, one_box: bool) -> Vec<(String, Transform, GiBakeRegion)>
             ));
             out
         }
+        "l-corridor" => vec![
+            padded(
+                "corridor-a",
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(L_LENGTH, ROOM_HEIGHT, L_WIDTH),
+            ),
+            padded(
+                "corridor-b",
+                Vec3::new(L_LENGTH - L_WIDTH, 0.0, 0.0),
+                Vec3::new(L_LENGTH, ROOM_HEIGHT, L_LENGTH),
+            ),
+        ],
         "gi-furnace" => vec![(
             "furnace".into(),
             Transform::from_scale(Vec3::splat(2.0 * FURNACE_HALF)),
@@ -521,15 +589,44 @@ fn matte(world: &mut World, linear: f32) -> Handle<StandardMaterial> {
 }
 
 /// A wall, floor or ceiling slab from `min` to `max`.
-fn slab(world: &mut World, min: Vec3, max: Vec3, material: &Handle<StandardMaterial>) {
+fn slab(world: &mut World, min: Vec3, max: Vec3, material: &Handle<StandardMaterial>) -> Entity {
     let mesh = world
         .resource_mut::<Assets<Mesh>>()
         .add(traceable(Cuboid::from_corners(Vec3::ZERO, max - min)));
-    world.spawn((
-        Mesh3d(mesh),
-        MeshMaterial3d(material.clone()),
-        Transform::from_translation((min + max) / 2.0),
-    ));
+    world
+        .spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation((min + max) / 2.0),
+        ))
+        .id()
+}
+
+/// A slab whose mesh is what a glTF exporter often writes and Solari cannot trace as it is: no tangents (no normal
+/// map), vertex colours and a second UV set.
+fn raw_slab(
+    world: &mut World,
+    min: Vec3,
+    max: Vec3,
+    material: &Handle<StandardMaterial>,
+) -> Entity {
+    let mut mesh = Mesh::from(Cuboid::from_corners(Vec3::ZERO, max - min));
+    let count = mesh.count_vertices();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1.0f32, 1.0, 1.0, 1.0]; count]);
+    let uvs = mesh
+        .attribute(Mesh::ATTRIBUTE_UV_0)
+        .cloned()
+        .expect("a cuboid has UVs");
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uvs);
+    debug_assert!(!mesh.contains_attribute(Mesh::ATTRIBUTE_TANGENT));
+    let mesh = world.resource_mut::<Assets<Mesh>>().add(mesh);
+    world
+        .spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material.clone()),
+            Transform::from_translation((min + max) / 2.0),
+        ))
+        .id()
 }
 
 fn spot(world: &mut World, name: &str, at: Vec3, lumens: f32) -> Entity {
@@ -556,6 +653,39 @@ fn spot(world: &mut World, name: &str, at: Vec3, lumens: f32) -> Entity {
 /// The still camera stands in B and looks at the shared wall; poses 1 to 480 walk from B through the door into
 /// A; pose 1000 stands in A and looks at the shared wall.
 fn two_rooms(world: &mut World, wall: f32, door: bool) -> Scene {
+    two_rooms_with(world, wall, door, false)
+}
+
+/// `two-rooms`, its shared wall a [`raw_slab`] marked [`RawWall`]: the leak gate of a mesh that must be fitted.
+fn two_rooms_raw(world: &mut World) -> Scene {
+    two_rooms_with(world, WALL, false, true)
+}
+
+/// `two-rooms-door` with a pane of glass (`AlphaMode::Blend`, 20 % opaque, 2 cm thick) filling the door: the
+/// glass gate. B is lit from A through it.
+fn two_rooms_glass(world: &mut World) -> Scene {
+    let scene = two_rooms_with(world, WALL, true, false);
+    let glass = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial {
+            base_color: Color::linear_rgba(0.9, 0.95, 1.0, 0.2),
+            alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 0.1,
+            ..default()
+        });
+    let pane = slab(
+        world,
+        Vec3::new(-0.01, 0.0, DOOR_Z.0),
+        Vec3::new(0.01, DOOR_HEIGHT, DOOR_Z.1),
+        &glass,
+    );
+    world
+        .entity_mut(pane)
+        .insert((GlassPane, Name::new("glass")));
+    scene
+}
+
+fn two_rooms_with(world: &mut World, wall: f32, door: bool, raw: bool) -> Scene {
     let walls = matte(world, 0.6);
     let floor = matte(world, 0.3);
     let (half, outer) = (wall / 2.0, ROOM_LENGTH + wall / 2.0);
@@ -608,6 +738,16 @@ fn two_rooms(world: &mut World, wall: f32, door: bool) -> Scene {
             Vec3::new(half, h, DOOR_Z.1),
             &walls,
         );
+    } else if raw {
+        let shared = raw_slab(
+            world,
+            Vec3::new(-half, 0.0, -w),
+            Vec3::new(half, h, w),
+            &walls,
+        );
+        world
+            .entity_mut(shared)
+            .insert((RawWall, Name::new("shared wall")));
     } else {
         slab(
             world,
@@ -812,6 +952,96 @@ fn rooms_orbit(frame: u32) -> Transform {
 /// Gate 2's asymmetric furnace (walls glowing at gate 2's frozen proportions of 1 cd/m², black otherwise),
 /// with a white diffuse sphere at its centre that the bake leaves out. Pose 0 looks at the sphere from the
 /// (+, +, +) corner, any other pose from the (−, −, −) corner, so every side of the sphere faces one of them.
+/// The inner length of each arm of `l-corridor`, and its inner width.
+const L_LENGTH: f32 = 10.0;
+const L_WIDTH: f32 = 2.0;
+/// The walls of `l-corridor`: thinner than the rooms', as in many corridors.
+const L_WALL: f32 = 0.3;
+
+/// Two corridors 2 m wide meeting at a right angle: A along +x (z 0..2), B along +z (x 8..10), sharing the 2 × 2 m
+/// corner square, which both boxes cover. A warm lamp at A's far end and a cool one at B's, so the two volumes
+/// differ in the corner. The still camera stands in A and looks at the floor of the corner, where a seam between
+/// the boxes would show; `report.json` gets `seam_line`, the pixels of the floor along z = 1 from x = 6 to 9.8.
+fn l_corridor(world: &mut World) -> Scene {
+    let walls = matte(world, 0.6);
+    let floor = matte(world, 0.3);
+    let (l, w, t, h) = (L_LENGTH, L_WIDTH, L_WALL, ROOM_HEIGHT);
+    slab(
+        world,
+        Vec3::new(-t, -0.2, -t),
+        Vec3::new(l + t, 0.0, l + t),
+        &floor,
+    );
+    slab(
+        world,
+        Vec3::new(-t, h, -t),
+        Vec3::new(l + t, h + 0.2, l + t),
+        &walls,
+    );
+    // A's walls: south (the outer one, all along), north (up to B), west end.
+    slab(
+        world,
+        Vec3::new(-t, 0.0, -t),
+        Vec3::new(l + t, h, 0.0),
+        &walls,
+    );
+    slab(
+        world,
+        Vec3::new(-t, 0.0, w),
+        Vec3::new(l - w, h, w + t),
+        &walls,
+    );
+    slab(world, Vec3::new(-t, 0.0, 0.0), Vec3::new(0.0, h, w), &walls);
+    // B's walls: east (the outer one), west (from A on), north end.
+    slab(
+        world,
+        Vec3::new(l, 0.0, 0.0),
+        Vec3::new(l + t, h, l + t),
+        &walls,
+    );
+    slab(
+        world,
+        Vec3::new(l - w - t, 0.0, w),
+        Vec3::new(l - w, h, l),
+        &walls,
+    );
+    slab(
+        world,
+        Vec3::new(l - w - t, 0.0, l),
+        Vec3::new(l, h, l + t),
+        &walls,
+    );
+    let warm = spot(world, "lamp-a", Vec3::new(1.5, 2.9, w / 2.0), A_LAMP / 4.0);
+    world
+        .entity_mut(warm)
+        .get_mut::<SpotLight>()
+        .expect("spot")
+        .color = Color::srgb(1.0, 0.75, 0.5);
+    let cool = spot(
+        world,
+        "lamp-b",
+        Vec3::new(l - w / 2.0, 2.9, l - 1.5),
+        A_LAMP / 4.0,
+    );
+    world
+        .entity_mut(cool)
+        .get_mut::<SpotLight>()
+        .expect("spot")
+        .color = Color::srgb(0.5, 0.7, 1.0);
+    Scene {
+        orbit: l_corridor_orbit,
+        fov: 1.0,
+        assets: Vec::new(),
+    }
+}
+
+fn l_corridor_orbit(frame: u32) -> Transform {
+    // Orbit frames walk A towards the corner; frame 0 is the still camera.
+    let t = (frame as f32 / 480.0).min(1.0);
+    Transform::from_xyz(4.0 + 3.0 * t, 1.6, L_WIDTH / 2.0)
+        .looking_at(Vec3::new(8.5 + t, 0.0, L_WIDTH / 2.0), Vec3::Y)
+}
+
 fn furnace(world: &mut World) -> Scene {
     let axes = [
         Vec3::X,
@@ -840,7 +1070,8 @@ fn furnace(world: &mut World) -> Scene {
     let material = world
         .resource_mut::<Assets<StandardMaterial>>()
         .add(test_material(1.0, 0.0));
-    world.spawn((Mesh3d(mesh), MeshMaterial3d(material), GiDynamic));
+    // Gate 6's sphere: lit by the bake, left out of it.
+    world.spawn((Mesh3d(mesh), MeshMaterial3d(material), GiBakeExclude));
     Scene {
         orbit: furnace_orbit,
         fov: 0.7,
@@ -941,6 +1172,14 @@ fn pin_intensity(mut volumes: Query<&mut IrradianceVolume>) {
     for mut volume in &mut volumes {
         if volume.intensity != 1.0 {
             volume.intensity = 1.0;
+        }
+    }
+}
+
+fn zero_falloff(mut volumes: Query<&mut LightProbe, With<BakedGiVolume>>) {
+    for mut probe in &mut volumes {
+        if probe.falloff != Vec3::ZERO {
+            probe.falloff = Vec3::ZERO;
         }
     }
 }
@@ -1071,6 +1310,20 @@ fn record(
         failures.extend(save_mask(&args.out.join(&file), args.res, &mask).err());
         entry["mask"] = json!(file);
         entry["mask_pixels"] = json!(inside);
+        let (surface, count) = surface_mask(&camera, &hits);
+        let file = format!("surface-{name}.png");
+        failures.extend(save_mask(&args.out.join(&file), args.res, &surface).err());
+        entry["surface"] = json!(file);
+        entry["surface_pixels"] = json!(count);
+    }
+    if args.scene == "l-corridor" {
+        let line: Vec<[u32; 2]> = (0..=380)
+            .filter_map(|i| {
+                let point = Vec3::new(6.0 + i as f32 * 0.01, 0.0, L_WIDTH / 2.0);
+                camera.project_rect(&[point]).map(|rect| [rect[2], rect[3]])
+            })
+            .collect();
+        entry["seam_line"] = json!(line);
     }
     if args.scene.starts_with("two-rooms") {
         let half = two_rooms_wall(&args.scene) / 2.0;
@@ -1392,6 +1645,32 @@ fn coverage_mask(
                     let n = (ny * width + nx) as usize;
                     inside[n] && hits[n].map(|(_, m)| m) == mesh
                 });
+            mask[i] = keep;
+            count += usize::from(keep);
+        }
+    }
+    (mask, count)
+}
+
+/// Every pixel that shows a surface (a hit of the CPU trace), eroded by one pixel against neighbours on another
+/// mesh or on the sky, as [`coverage_mask`]. Also returns their count.
+fn surface_mask(camera: &PinholeCamera, hits: &[Hit]) -> (Vec<bool>, usize) {
+    let (width, height) = (camera.size.x as i32, camera.size.y as i32);
+    let mut mask = vec![false; hits.len()];
+    let mut count = 0;
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) as usize;
+            let Some((_, mesh)) = hits[i] else {
+                continue;
+            };
+            let keep = [(-1, 0), (1, 0), (0, -1), (0, 1)].iter().all(|(dx, dy)| {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx < 0 || ny < 0 || nx >= width || ny >= height {
+                    return true;
+                }
+                hits[(ny * width + nx) as usize].map(|(_, m)| m) == Some(mesh)
+            });
             mask[i] = keep;
             count += usize::from(keep);
         }
