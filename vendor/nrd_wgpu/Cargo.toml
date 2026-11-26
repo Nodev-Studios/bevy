@@ -12,7 +12,9 @@ publish = false
 mock = []
 
 [dependencies]
-wgpu = { version = "30", default-features = false, features = ["vulkan"] }
+# `std`: one error scope stack per thread (see `capture_device_errors`); without it the stack is shared by every
+# thread and an app that creates resources on several threads gets its scopes mixed up.
+wgpu = { version = "30", default-features = false, features = ["vulkan", "std"] }
 
 [build-dependencies]
 cc = "1"

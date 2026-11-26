@@ -152,9 +152,11 @@ pub fn prepare_tsr(
                 }
                 continue;
             }
-            bevy_utils::once!(info!(
-                "TSR runs SGSR 2: its FSR 3.1 needs Vulkan, with wgpu's SPIR-V passthrough"
-            ));
+            if !fsr_failure.0.has_failed() {
+                bevy_utils::once!(info!(
+                    "TSR runs SGSR 2: its FSR 3.1 needs Vulkan, with wgpu's SPIR-V passthrough"
+                ));
+            }
         }
         entity_commands.remove::<TsrFsrView>();
         pipelines.queue(&pipeline_cache);
