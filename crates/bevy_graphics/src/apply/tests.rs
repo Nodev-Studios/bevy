@@ -42,6 +42,7 @@ impl Default for TestNrd {
 struct Ladder {
     world: World,
     cameras: SystemId,
+    cuts: SystemId,
     lights: [SystemId; 3],
 }
 
@@ -61,6 +62,7 @@ impl Ladder {
             ResolvedQuality::NativeAa,
         ));
         let cameras = world.register_system(apply_to_cameras);
+        let cuts = world.register_system(apply_camera_cuts);
         let lights = [
             world.register_system(apply_to_lights::<PointLight>),
             world.register_system(apply_to_lights::<SpotLight>),
@@ -69,6 +71,7 @@ impl Ladder {
         Self {
             world,
             cameras,
+            cuts,
             lights,
         }
     }
@@ -81,6 +84,7 @@ impl Ladder {
         self.world.insert_resource(state.resolved.clone());
         self.world.resource_mut::<GraphicsSettings>().overrides = state.overrides;
         self.world.run_system(self.cameras).unwrap();
+        self.world.run_system(self.cuts).unwrap();
         for lights in self.lights {
             self.world.run_system(lights).unwrap();
         }
@@ -682,4 +686,151 @@ fn lights_are_not_marked_changed_when_nothing_changes() {
         before.map(|ticks| ticks.changed),
         after.map(|ticks| ticks.changed)
     );
+}
+
+#[test]
+fn a_camera_cut_resets_every_temporal_history_once() {
+    let mut ladder = Ladder::new();
+    let camera = ladder.camera();
+    ladder.apply(&State::raster());
+    ladder
+        .world
+        .get_mut::<TemporalAntiAliasing>(camera)
+        .unwrap()
+        .reset = false;
+    ladder
+        .world
+        .entity_mut(camera)
+        .insert((CameraCut, bevy_anti_alias::tsr::Tsr::default()));
+    ladder.world.run_system(ladder.cuts).unwrap();
+    assert!(
+        ladder
+            .world
+            .get::<TemporalAntiAliasing>(camera)
+            .unwrap()
+            .reset
+    );
+    assert!(
+        ladder
+            .world
+            .get::<bevy_anti_alias::tsr::Tsr>(camera)
+            .unwrap()
+            .reset
+    );
+    assert!(!ladder.has::<CameraCut>(camera));
+}
+
+#[test]
+fn a_rung_change_is_a_camera_cut() {
+    let mut ladder = Ladder::new();
+    let camera = ladder.camera();
+    ladder.apply(&State::raster());
+    ladder
+        .world
+        .get_mut::<TemporalAntiAliasing>(camera)
+        .unwrap()
+        .reset = false;
+    // Same rung, other overrides: the history stays.
+    ladder.apply(&State::raster().with(GraphicsOverrides {
+        bloom: Some(false),
+        ..Default::default()
+    }));
+    assert!(
+        !ladder
+            .world
+            .get::<TemporalAntiAliasing>(camera)
+            .unwrap()
+            .reset
+    );
+    // TAA stays on the camera from Raster to RtFull, so only the cut drops its history.
+    ladder.apply(&State::traced(GraphicsRung::RtFull));
+    assert!(
+        ladder
+            .world
+            .get::<TemporalAntiAliasing>(camera)
+            .unwrap()
+            .reset
+    );
+    assert!(!ladder.has::<CameraCut>(camera));
+}
+
+/// The resolve system on a bare app: the window's size, the capabilities and the recorded failures.
+struct Resolver {
+    app: App,
+    window: Entity,
+}
+
+impl Resolver {
+    fn new(capabilities: GraphicsCapabilities, settings: GraphicsSettings) -> Self {
+        let mut app = App::new();
+        app.insert_resource(settings)
+            .insert_resource(capabilities)
+            .init_resource::<GraphicsBackendFailures>()
+            .add_systems(bevy_app::Update, resolve_graphics);
+        let window = app
+            .world_mut()
+            .spawn((
+                Window {
+                    resolution: bevy_window::WindowResolution::new(2560, 1440),
+                    ..Default::default()
+                },
+                PrimaryWindow,
+            ))
+            .id();
+        app.update();
+        Self { app, window }
+    }
+
+    fn resolved(&self) -> ResolvedGraphics {
+        self.app.world().resource::<ResolvedGraphics>().clone()
+    }
+
+    fn set_window_size(&mut self, width: u32, height: u32) {
+        self.app
+            .world_mut()
+            .get_mut::<Window>(self.window)
+            .unwrap()
+            .resolution
+            .set_physical_resolution(width, height);
+        self.app.update();
+    }
+}
+
+#[test]
+fn a_minimised_window_keeps_what_was_resolved() {
+    let mut resolver = Resolver::new(GraphicsCapabilities::default(), GraphicsSettings::default());
+    let at_1440p = resolver.resolved();
+    resolver.set_window_size(0, 0);
+    assert_eq!(resolver.resolved(), at_1440p);
+    let changed = resolver
+        .app
+        .world()
+        .get_resource_ref::<ResolvedGraphics>()
+        .unwrap()
+        .last_changed();
+    resolver.set_window_size(2560, 1440);
+    assert_eq!(resolver.resolved(), at_1440p);
+    assert_eq!(
+        resolver
+            .app
+            .world()
+            .get_resource_ref::<ResolvedGraphics>()
+            .unwrap()
+            .last_changed(),
+        changed,
+        "minimising and restoring must not touch the resolved graphics"
+    );
+}
+
+#[test]
+fn a_recorded_backend_failure_resolves_again_with_its_reason() {
+    let mut resolver = Resolver::new(GraphicsCapabilities::default(), GraphicsSettings::default());
+    assert!(!resolver.resolved().fallbacks.contains(&Fallback::NrdFailed));
+    resolver
+        .app
+        .world_mut()
+        .resource_mut::<GraphicsBackendFailures>()
+        .record(Fallback::NrdFailed);
+    resolver.app.update();
+    assert!(resolver.resolved().fallbacks.contains(&Fallback::NrdFailed));
 }

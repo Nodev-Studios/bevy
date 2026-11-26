@@ -29,6 +29,19 @@
 //!
 //! Removing [`GraphicsCamera`] from a camera leaves it as the ladder last shaped it.
 //!
+//! # Camera cuts
+//!
+//! The temporal backends on a ladder's camera (TAA, TSR, FSR, DLSS, NRD and the traced lighting's own
+//! history) blend each frame with the last ones. After a cut, a teleport or a respawn, insert [`CameraCut`] on
+//! the camera: every one of them drops its history that frame, whichever the ladder put there. The apply
+//! layer does the same itself when the camera changes rung.
+//!
+//! # Backends that fail
+//!
+//! A backend that fails on the device while the app runs (NRD, FSR, TSR's FSR 3.1; see
+//! `bevy_anti_alias::backend_failure`) loses its capability; the ladder resolves again and steps down, and
+//! [`ResolvedGraphics::fallbacks`] says why ([`GraphicsBackendFailures`]).
+//!
 //! # What an app must know
 //!
 //! - **Every opaque material in the app is deferred.** `bevy_solari` sets this for the whole app, and the
@@ -49,7 +62,7 @@ use crate::{
     GraphicsSettings, GraphicsSystems, ResolvedDenoiser, ResolvedGraphics, ResolvedQuality,
     ResolvedUpscaler,
 };
-use backends::{CameraBackend, GraphicsBackends};
+use backends::{CameraBackend, GraphicsBackendFailures, GraphicsBackends};
 use bevy_anti_alias::taa::TemporalAntiAliasing;
 use bevy_app::{App, PostUpdate, PreStartup};
 use bevy_camera::{Camera, Camera3d, CameraMainTextureUsages, CameraUpdateSystems, Hdr};
@@ -89,6 +102,7 @@ pub enum GraphicsApplySystems {
 /// Called by [`GraphicsPlugin`](crate::GraphicsPlugin) when it is built.
 pub(crate) fn build(app: &mut App) {
     app.init_resource::<GraphicsBackends>()
+        .init_resource::<GraphicsBackendFailures>()
         // `Raster` is deferred, as the traced rungs are: screen-space reflections need it, and
         // `bevy_solari` sets the same for the whole app, so a build without it would look different.
         .insert_resource(DefaultOpaqueRendererMethod::deferred())
@@ -116,6 +130,7 @@ pub(crate) fn build(app: &mut App) {
                     apply_to_lights::<DirectionalLight>,
                 )
                     .in_set(GraphicsApplySystems::Apply),
+                apply_camera_cuts.after(GraphicsApplySystems::Apply),
             ),
         );
 
@@ -131,27 +146,40 @@ pub(crate) fn build(app: &mut App) {
 }
 
 /// Recomputes [`ResolvedGraphics`] when something it depends on changed.
-fn resolve_graphics(
+pub(crate) fn resolve_graphics(
     settings: Res<GraphicsSettings>,
     capabilities: Res<GraphicsCapabilities>,
     cameras: Query<&Camera, (With<GraphicsCamera>, With<Camera3d>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    failures: Res<GraphicsBackendFailures>,
     resolved: Option<ResMut<ResolvedGraphics>>,
     mut last_output: Local<Option<UVec2>>,
     mut commands: Commands,
 ) {
     let pixels = |size: &UVec2| u64::from(size.x) * u64::from(size.y);
+    // A minimised window reports a zero-sized output; it keeps what was resolved for its last real size, so
+    // minimising and restoring changes neither the quality nor the temporal history.
+    let has_area = |size: &UVec2| pixels(size) > 0;
     let output = cameras
         .iter()
         .filter(|camera| camera.is_active)
         .filter_map(Camera::physical_viewport_size)
+        .filter(has_area)
         .max_by_key(pixels)
-        .or_else(|| windows.iter().next().map(Window::physical_size))
+        .or_else(|| {
+            windows
+                .iter()
+                .next()
+                .map(Window::physical_size)
+                .filter(has_area)
+        })
+        .or(*last_output)
         .unwrap_or(UVec2::ZERO);
 
     let stale = resolved.is_none()
         || settings.is_changed()
         || capabilities.is_changed()
+        || failures.is_changed()
         || *last_output != Some(output);
     if !stale {
         return;
@@ -159,6 +187,7 @@ fn resolve_graphics(
     *last_output = Some(output);
 
     let mut next = resolve(&settings, &capabilities, output);
+    next.fallbacks.extend_from_slice(failures.failures());
     match resolved {
         Some(mut resolved) => {
             // The mesh counts are the apply layer's, not the policy's.
@@ -347,6 +376,10 @@ fn shape_camera(
 ) {
     let before = state.applied;
     let traced = wanted.rung.is_traced();
+    // The whole lighting changes: what any temporal backend kept belongs to the other rung.
+    if before.is_some_and(|before| before.rung != wanted.rung) {
+        camera.insert(CameraCut);
+    }
 
     // Every rung is deferred and temporally anti-aliased. `Hdr` also has to be there before the main texture
     // can be storage-bindable: the 8-bit format it has otherwise cannot be, and creating it fails.
@@ -539,6 +572,53 @@ fn call_backend(
             "graphics: {name} was resolved but has no backend in `GraphicsBackends`; nothing is applied for it"
         ),
         _ => {}
+    }
+}
+
+/// Insert on a [`GraphicsCamera`] after a camera cut, a teleport or a respawn: that frame, every temporal
+/// backend on the camera (TAA, TSR, FSR, DLSS, NRD, the traced lighting) drops the history it blends with, so
+/// nothing of the old view ghosts into the new one. The apply layer removes it once it is applied, in
+/// `PostUpdate` after [`GraphicsApplySystems::Apply`], and inserts it itself when the camera changes rung.
+///
+/// It works on any 3D camera, not only the ladder's.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct CameraCut;
+
+/// Applies and removes every [`CameraCut`].
+fn apply_camera_cuts(cameras: Query<Entity, With<CameraCut>>, mut commands: Commands) {
+    for entity in &cameras {
+        commands
+            .entity(entity)
+            .remove::<CameraCut>()
+            .queue(reset_temporal_history);
+    }
+}
+
+/// Sets `reset` on every temporal backend the camera has.
+fn reset_temporal_history(mut camera: EntityWorldMut) {
+    fn reset<C: Component<Mutability = Mutable>>(
+        camera: &mut EntityWorldMut,
+        flag: impl FnOnce(&mut C) -> &mut bool,
+    ) {
+        if let Some(mut component) = camera.get_mut::<C>() {
+            *flag(&mut component) = true;
+        }
+    }
+    reset::<TemporalAntiAliasing>(&mut camera, |c| &mut c.reset);
+    reset::<bevy_anti_alias::tsr::Tsr>(&mut camera, |c| &mut c.reset);
+    #[cfg(feature = "fsr")]
+    reset::<bevy_anti_alias::fsr::Fsr>(&mut camera, |c| &mut c.reset);
+    #[cfg(feature = "nrd")]
+    reset::<bevy_anti_alias::nrd::Nrd>(&mut camera, |c| &mut c.reset);
+    #[cfg(feature = "solari")]
+    reset::<bevy_solari::realtime::SolariLighting>(&mut camera, |c| &mut c.reset);
+    #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
+    {
+        use bevy_anti_alias::dlss::{
+            Dlss, DlssRayReconstructionFeature, DlssSuperResolutionFeature,
+        };
+        reset::<Dlss<DlssSuperResolutionFeature>>(&mut camera, |c| &mut c.reset);
+        reset::<Dlss<DlssRayReconstructionFeature>>(&mut camera, |c| &mut c.reset);
     }
 }
 

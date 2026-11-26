@@ -167,6 +167,14 @@ pub enum Fallback {
     RayReconstructionUpscales,
     /// The frame renders at the output's resolution although a lower one was wanted: no upscaler can run.
     NoUpscaler,
+    /// NRD failed on this device while the app ran (the driver refused its shaders, pipelines or textures, or
+    /// a frame failed): DLSS Ray Reconstruction denoises, or `Raster` runs. Added by the apply layer, not by
+    /// [`resolve`].
+    NrdFailed,
+    /// FSR failed on this device while the app ran: TSR upscales. Added by the apply layer.
+    FsrFailed,
+    /// TSR's FSR 3.1 failed on this device while the app ran: TSR runs SGSR 2. Added by the apply layer.
+    TsrFsr3Failed,
 }
 
 impl fmt::Display for Fallback {
@@ -203,6 +211,11 @@ impl fmt::Display for Fallback {
                 "DLSS Ray Reconstruction upscales as it denoises, so no other upscaler runs"
             }
             Self::NoUpscaler => "rendering at the output's resolution: no upscaler can run",
+            Self::NrdFailed => {
+                "NRD failed on this driver: DLSS Ray Reconstruction denoises, or Raster runs"
+            }
+            Self::FsrFailed => "FSR failed on this driver: TSR upscales",
+            Self::TsrFsr3Failed => "TSR's FSR 3.1 failed on this driver: TSR runs SGSR 2",
         })
     }
 }
