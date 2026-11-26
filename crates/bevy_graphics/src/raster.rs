@@ -81,8 +81,11 @@ pub fn raster() -> RasterEffects {
         }),
         // 0.10 ms; it is the lens, not the lighting, so every rung keeps it.
         bloom: Some(Bloom::NATURAL),
-        // Two mirrors at half resolution: `PlanarReflections`' defaults. Costs nothing where no mirror is on
-        // screen; see `planar_reflection` for what one costs.
+        // Two mirrors at half resolution: `PlanarReflections`' defaults. Nothing changes where no mirror is on
+        // screen. On the RTX 5070 (testbed `mirrors`, 1920x1080, TAA, GPU time of every view as the 10th
+        // percentile of 120 frames, 2026-11-26) the two mirrors of the scene cost 0.21 ms over 1.85 ms: 0.13 ms
+        // of it is light clustering, a fixed cost per mirror view, and 0.03 ms the mirror test of every pixel
+        // in the camera's lighting pass.
         planar_reflections: Some(PlanarReflections::default()),
     }
 }
@@ -114,6 +117,16 @@ pub fn raster_light() -> RasterEffects {
         // (0.17). The testbed has few creases for occlusion to darken, so a game with them may want it back
         // (`GraphicsOverrides::ssao`, which gives the full table's Low).
         ambient_occlusion: None,
+        // Kept, at 0.3 of the output on each axis instead of 0.5: the frame is rendered at Balanced (58 %), and
+        // 0.3 keeps the mirror at about half the frame's own resolution, the full table's ratio. On the
+        // integrated Radeon (testbed `mirrors`, 1920x1080, `--preset auto`, GPU time of every view as the
+        // 10th percentile of 120 frames, 2026-11-26) two mirrors cost 0.61 ms of a 21.7 ms frame (2.8 %), one
+        // 0.29 ms; at 0.5 two cost 1.13 ms. A mirror is what a player looks at, and the fallback on this
+        // table is the environment map (no SSR), so the mirrors stay and only their resolution drops.
+        planar_reflections: Some(PlanarReflections {
+            resolution_scale: 0.3,
+            ..PlanarReflections::default()
+        }),
         ..raster()
     }
 }
@@ -230,6 +243,25 @@ mod tests {
             ..Default::default()
         })
         .is_none());
+    }
+
+    #[test]
+    fn planar_reflections_on_both_tables_at_a_lower_resolution_on_the_light_one() {
+        let full = raster_with(RasterLevel::Full, &GraphicsOverrides::default())
+            .planar_reflections
+            .expect("the full table reflects mirrors");
+        let light = raster_with(RasterLevel::Light, &GraphicsOverrides::default())
+            .planar_reflections
+            .expect("the light table reflects mirrors");
+        assert_eq!(full, PlanarReflections::default());
+        assert_eq!(light.max_mirrors, full.max_mirrors);
+        assert!(light.resolution_scale < full.resolution_scale);
+        let off = GraphicsOverrides {
+            planar_reflections: Some(false),
+            ..Default::default()
+        };
+        assert!(raster_with(RasterLevel::Full, &off).planar_reflections.is_none());
+        assert!(raster_with(RasterLevel::Light, &off).planar_reflections.is_none());
     }
 
     #[test]

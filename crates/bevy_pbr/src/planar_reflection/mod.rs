@@ -52,7 +52,7 @@ use bevy_camera::{
     primitives::Aabb,
     visibility::{InheritedVisibility, RenderLayers, VisibilitySystems},
     Camera, Camera3d, CameraProjection, CameraUpdateSystems, Exposure, Hdr, PerspectiveProjection,
-    Projection, RenderTarget,
+    Projection, RenderTarget, SubCameraView, Viewport,
 };
 use bevy_core_pipeline::prepass::{DeferredPrepass, DepthPrepass};
 use bevy_ecs::prelude::*;
@@ -60,7 +60,7 @@ use bevy_image::Image;
 use bevy_light::{
     AmbientLight, EnvironmentMapLight, ShadowFilteringMethod, SimulationLightSystems, Skybox,
 };
-use bevy_math::{Affine3A, Mat4, UVec2, Vec3, Vec4, Vec4Swizzles};
+use bevy_math::{Affine3A, Mat4, URect, UVec2, Vec3, Vec3A, Vec4, Vec4Swizzles};
 use bevy_mesh::{Mesh, Mesh3d, VertexAttributeValues};
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
 use bevy_render::{
@@ -214,6 +214,9 @@ pub struct ViewPlanarMirror {
     pub image: Handle<Image>,
     /// The mirror camera's projection times its view: where a point on the mirror lands in the texture.
     pub clip_from_world: Mat4,
+    /// The part of the texture the mirror camera rendered, as `(min u, min v, max u, max v)`: the mirror's
+    /// rectangle on screen and a margin ([`texture_rect`]).
+    pub uv_rect: Vec4,
     /// The mirror in the world.
     pub rect: WorldMirror,
 }
@@ -312,7 +315,7 @@ impl MirrorRect {
         let half_v = world_from_local.transform_vector3(self.half_v);
         // Normals transform by the inverse transpose; its direction only decides which side reflects.
         let normal_hint: Vec3 =
-            (world_from_local.matrix3.inverse().transpose() * bevy_math::Vec3A::from(self.normal)).into();
+            (world_from_local.matrix3.inverse().transpose() * Vec3A::from(self.normal)).into();
         let mut normal = half_u.cross(half_v).normalize_or_zero();
         if normal == Vec3::ZERO || !normal.is_finite() {
             return None;
@@ -400,6 +403,35 @@ pub fn mirror_camera(
     )
 }
 
+/// A mirror camera's projection: the [`PerspectiveProjection`] of [`mirror_camera`], whose aspect ratio is
+/// the whole mirror view's. A mirror camera renders a crop of that view (its viewport and
+/// [`SubCameraView`]), and a plain perspective projection would take the crop's aspect ratio when the
+/// viewport changes, and with it a wrong frustum for culling. Being a custom projection also makes the
+/// shaders convert depth through the matrix, which holds for an oblique near plane, rather than through the
+/// near distance of a plain perspective.
+#[derive(Debug, Clone)]
+pub struct MirrorProjection(pub PerspectiveProjection);
+
+impl CameraProjection for MirrorProjection {
+    fn get_clip_from_view(&self) -> Mat4 {
+        self.0.get_clip_from_view()
+    }
+
+    fn get_clip_from_view_for_sub(&self, sub_view: &SubCameraView) -> Mat4 {
+        self.0.get_clip_from_view_for_sub(sub_view)
+    }
+
+    fn update(&mut self, _width: f32, _height: f32) {}
+
+    fn far(&self) -> f32 {
+        self.0.far
+    }
+
+    fn get_frustum_corners(&self, z_near: f32, z_far: f32) -> [Vec3A; 8] {
+        self.0.get_frustum_corners(z_near, z_far)
+    }
+}
+
 /// The share of the screen, 0 to 1, of the box around a mirror's corners projected by `clip_from_world`.
 /// A mirror the camera stands beside, with a corner behind the camera, counts as the whole screen.
 pub fn screen_coverage(clip_from_world: Mat4, corners: &[Vec3; 4]) -> f32 {
@@ -417,6 +449,35 @@ pub fn screen_coverage(clip_from_world: Mat4, corners: &[Vec3; 4]) -> f32 {
     let max = max.clamp(bevy_math::Vec2::NEG_ONE, bevy_math::Vec2::ONE);
     let size = (max - min).max(bevy_math::Vec2::ZERO);
     size.x * size.y * 0.25
+}
+
+/// The pixels of a `size` mirror texture a mirror camera renders: the box around the mirror's corners
+/// projected by the mirror camera's `clip_from_world`, grown by `margin` pixels, within the texture. The whole
+/// texture if a corner is behind the mirror camera.
+pub fn texture_rect(clip_from_world: Mat4, corners: &[Vec3; 4], size: UVec2, margin: u32) -> URect {
+    let full = URect::from_corners(UVec2::ZERO, size);
+    let (mut min, mut max) = (
+        bevy_math::Vec2::splat(f32::INFINITY),
+        bevy_math::Vec2::splat(f32::NEG_INFINITY),
+    );
+    for corner in corners {
+        let clip = clip_from_world * corner.extend(1.0);
+        if clip.w <= 1e-5 {
+            return full;
+        }
+        // Texture pixels: y down.
+        let uv = clip.xy() / clip.w * bevy_math::Vec2::new(0.5, -0.5) + 0.5;
+        let pixel = uv * size.as_vec2();
+        min = min.min(pixel);
+        max = max.max(pixel);
+    }
+    let margin = margin as f32;
+    let min = (min - margin).floor().max(bevy_math::Vec2::ZERO);
+    let max = (max + margin).ceil().min(size.as_vec2());
+    if min.x >= max.x || min.y >= max.y {
+        return full;
+    }
+    URect::from_corners(min.as_uvec2(), max.as_uvec2())
 }
 
 /// Picks the mirrors to render: the `max_mirrors` with the largest coverage, at least `min_coverage` each,
@@ -464,6 +525,10 @@ fn measure_mirror_meshes(
 /// mirror's own surface (and a frame flush with it) out of its reflection, and is too thin to cut anything
 /// placed against the mirror off visibly.
 const CLIP_OFFSET: f32 = 0.002;
+
+/// The pixels around a mirror's rectangle its mirror camera renders too, so that bilinear filtering and a
+/// normal map's bend read rendered pixels. // to tune
+const RECT_MARGIN: u32 = 8;
 
 /// The order of the first mirror camera below its main camera's: mirror cameras render first.
 const MIRROR_CAMERA_ORDER_OFFSET: isize = 64;
@@ -572,7 +637,17 @@ fn update_mirror_cameras(
                     CLIP_OFFSET,
                     size.x as f32 / size.y as f32,
                 );
-                chosen.push((entity, world, mirror_world_from_view, mirror_projection));
+                let clip_from_world =
+                    mirror_projection.get_clip_from_view() * mirror_world_from_view.inverse();
+                let rect = texture_rect(clip_from_world, &world.corners(), size, RECT_MARGIN);
+                chosen.push((
+                    entity,
+                    world,
+                    mirror_world_from_view,
+                    mirror_projection,
+                    clip_from_world,
+                    rect,
+                ));
             }
             // The pool grows to the most mirrors seen and keeps its cameras, switched off, after that.
             let mut pool_slots = pool.as_ref().map(|pool| pool.0.clone()).unwrap_or_default();
@@ -580,19 +655,40 @@ fn update_mirror_cameras(
                 mirrors: Vec::with_capacity(chosen.len()),
                 normal_distortion: settings.normal_distortion,
             };
-            for (slot, (entity, world, mirror_world_from_view, mirror_projection)) in
-                chosen.iter().enumerate()
+            for (
+                slot,
+                (entity, world, mirror_world_from_view, mirror_projection, clip_from_world, rect),
+            ) in chosen.iter().enumerate()
             {
+                // Only the mirror's part of the texture is rendered: a crop of the full mirror view.
+                let viewport = Viewport {
+                    physical_position: rect.min,
+                    physical_size: rect.size(),
+                    ..Default::default()
+                };
+                let sub_view = SubCameraView {
+                    full_size: size,
+                    offset: rect.min.as_vec2(),
+                    size: rect.size(),
+                };
                 let transform = Transform::from_matrix(*mirror_world_from_view);
                 let order = camera.order - MIRROR_CAMERA_ORDER_OFFSET + slot as isize;
                 if slot >= pool_slots.len() {
                     let image = images.add(mirror_image(size));
                     let camera_entity = commands
                         .spawn((
-                            spawn_mirror_camera(main, slot, order, image.clone(), camera),
+                            spawn_mirror_camera(
+                                main,
+                                slot,
+                                order,
+                                image.clone(),
+                                camera,
+                                viewport,
+                                sub_view,
+                            ),
                             transform,
                             GlobalTransform::from(transform),
-                            Projection::Perspective(mirror_projection.clone()),
+                            Projection::custom(MirrorProjection(mirror_projection.clone())),
                         ))
                         .id();
                     pool_slots.push(MirrorCameraSlot {
@@ -614,17 +710,32 @@ fn update_mirror_cameras(
                     {
                         mirror_camera.is_active = true;
                         mirror_camera.order = order;
-                        mirror_camera.clear_color = camera.clear_color.clone();
+                        mirror_camera.clear_color = camera.clear_color;
+                        if !mirror_camera.viewport.as_ref().is_some_and(|current| {
+                            current.physical_position == viewport.physical_position
+                                && current.physical_size == viewport.physical_size
+                        }) {
+                            mirror_camera.viewport = Some(viewport);
+                        }
+                        if mirror_camera.sub_camera_view != Some(sub_view) {
+                            mirror_camera.sub_camera_view = Some(sub_view);
+                        }
                         *local = transform;
                         *global = GlobalTransform::from(transform);
-                        *mirror_proj = Projection::Perspective(mirror_projection.clone());
+                        *mirror_proj =
+                            Projection::custom(MirrorProjection(mirror_projection.clone()));
                     }
                 }
                 view_mirrors.mirrors.push(ViewPlanarMirror {
                     mirror: *entity,
                     image: pool_slots[slot].image.clone(),
-                    clip_from_world: mirror_projection.get_clip_from_view()
-                        * mirror_world_from_view.inverse(),
+                    clip_from_world: *clip_from_world,
+                    uv_rect: Vec4::new(
+                        rect.min.x as f32,
+                        rect.min.y as f32,
+                        rect.max.x as f32,
+                        rect.max.y as f32,
+                    ) / Vec4::new(size.x as f32, size.y as f32, size.x as f32, size.y as f32),
                     rect: *world,
                 });
             }
@@ -668,6 +779,8 @@ fn spawn_mirror_camera(
     order: isize,
     image: Handle<Image>,
     main_camera: &Camera,
+    viewport: Viewport,
+    sub_view: SubCameraView,
 ) -> impl Bundle {
     (
         Camera3d::default(),
@@ -675,7 +788,9 @@ fn spawn_mirror_camera(
             order,
             // The reflection flips the view's handedness, and with it every triangle's winding.
             invert_culling: true,
-            clear_color: main_camera.clear_color.clone(),
+            clear_color: main_camera.clear_color,
+            viewport: Some(viewport),
+            sub_camera_view: Some(sub_view),
             ..Default::default()
         },
         RenderTarget::Image(image.into()),

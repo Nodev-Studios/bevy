@@ -1478,10 +1478,39 @@ fn settings_round_trip_through_serde() {
             ssr: Some(false),
             max_bounces: Some(2),
             baked_gi: Some(false),
+            planar_reflections: Some(false),
             ..Default::default()
         },
         ambient_while_baked: 2.5,
     };
     let text = ron::to_string(&settings).unwrap();
     assert_eq!(ron::from_str::<GraphicsSettings>(&text).unwrap(), settings);
+    // Settings saved before planar reflections existed still read.
+    let old = text.replace(",planar_reflections:Some(false)", "");
+    assert_ne!(old, text);
+    assert_eq!(
+        ron::from_str::<GraphicsSettings>(&old).unwrap().overrides.planar_reflections,
+        None
+    );
+}
+
+/// The iGPU rule for mirrors: `Auto` on an integrated GPU gives the light table, whose planar reflections
+/// render at a lower resolution; a capable card gets the full table's; asking for `Raster` by name on the
+/// integrated GPU gives the full table's too.
+#[test]
+fn planar_reflections_follow_the_raster_level() {
+    use crate::raster::raster_with;
+    let mirrors = |settings: &GraphicsSettings, capabilities: &GraphicsCapabilities| {
+        let resolved = resolve(settings, capabilities, P1080);
+        assert_eq!(resolved.rung, GraphicsRung::Raster);
+        raster_with(resolved.raster, &settings.overrides)
+            .planar_reflections
+            .expect("Raster reflects mirrors")
+    };
+    let integrated = mirrors(&auto(), &ryzen_integrated());
+    let by_name = mirrors(&preset(GraphicsPreset::Raster), &ryzen_integrated());
+    let capable = mirrors(&preset(GraphicsPreset::Raster), &rtx_5070());
+    assert!(integrated.resolution_scale < capable.resolution_scale);
+    assert_eq!(by_name, capable);
+    assert_eq!(integrated.max_mirrors, capable.max_mirrors);
 }

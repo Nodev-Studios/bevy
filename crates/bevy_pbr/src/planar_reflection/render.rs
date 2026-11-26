@@ -56,6 +56,7 @@ pub struct GpuPlanarMirror {
     center: Vec4,
     dual_u: Vec4,
     dual_v: Vec4,
+    uv_rect: Vec4,
 }
 
 /// The mirrors of one view.
@@ -105,6 +106,7 @@ impl ExtractComponent<RenderApp> for ViewPlanarMirrors {
                 center: mirror.rect.center.extend(1.0),
                 dual_u: dual_u.extend(0.0),
                 dual_v: dual_v.extend(0.0),
+                uv_rect: mirror.uv_rect,
             };
         }
         Some(ExtractedPlanarMirrors {

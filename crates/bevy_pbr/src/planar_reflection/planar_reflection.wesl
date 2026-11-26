@@ -14,6 +14,8 @@ struct PlanarMirror {
     // `(p - center) · dual_u` runs from -1 to 1 across the rectangle; the same for `dual_v`.
     dual_u: vec4<f32>,
     dual_v: vec4<f32>,
+    // The part of the texture the mirror camera rendered: (min u, min v, max u, max v).
+    uv_rect: vec4<f32>,
 }
 
 struct PlanarMirrors {
@@ -62,7 +64,13 @@ fn planar_mirror_radiance(index: i32, P: vec3<f32>, N: vec3<f32>, view_distance:
     let bend = N - n * dot(N, n);
     let P_bent = P + bend * (planar_mirrors.normal_distortion * view_distance);
     let clip = mirror.clip_from_world * vec4(P_bent, 1.0);
-    let uv = clip.xy / clip.w * vec2(0.5, -0.5) + vec2(0.5);
+    // Inside the part of the texture that was rendered, half a texel in.
+    let half_texel = 0.5 / vec2<f32>(textureDimensions(planar_mirror_texture_0));
+    let uv = clamp(
+        clip.xy / clip.w * vec2(0.5, -0.5) + vec2(0.5),
+        mirror.uv_rect.xy + half_texel,
+        mirror.uv_rect.zw - half_texel,
+    );
     switch (index) {
         case 0: {
             return textureSampleLevel(planar_mirror_texture_0, planar_mirror_sampler, uv, 0.0).rgb;

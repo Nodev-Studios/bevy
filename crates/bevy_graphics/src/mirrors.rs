@@ -118,6 +118,60 @@ fn detect_mirrors(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{resolve, GraphicsCapabilities, GraphicsPreset, GraphicsSettings};
+    use bevy_ecs::system::RunSystemOnce;
+    use bevy_math::{UVec2, Vec2, Vec3};
+    use bevy_mesh::{MeshBuilder, Meshable};
+    use bevy_shape::{Plane3d, Sphere};
+
+    fn world(preset: GraphicsPreset) -> World {
+        let mut world = World::new();
+        let settings = GraphicsSettings {
+            preset,
+            ..Default::default()
+        };
+        world.insert_resource(resolve(
+            &settings,
+            &GraphicsCapabilities::default(),
+            UVec2::new(1920, 1080),
+        ));
+        world.init_resource::<Assets<Mesh>>();
+        world.init_resource::<Assets<StandardMaterial>>();
+        world
+    }
+
+    fn spawn(world: &mut World, mesh: Mesh, material: StandardMaterial) -> Entity {
+        let mesh = world.resource_mut::<Assets<Mesh>>().add(mesh);
+        let material = world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(material);
+        world.spawn((Mesh3d(mesh), MeshMaterial3d(material))).id()
+    }
+
+    #[test]
+    fn flat_smooth_metal_is_a_mirror_on_raster_and_opting_out_takes_it_back() {
+        let mut world = world(GraphicsPreset::Raster);
+        let metal = StandardMaterial {
+            metallic: 1.0,
+            perceptual_roughness: 0.02,
+            ..Default::default()
+        };
+        let plane = || Plane3d::new(Vec3::Z, Vec2::ONE).mesh().build();
+        let mirror = spawn(&mut world, plane(), metal.clone());
+        let ball = spawn(&mut world, Sphere::new(1.0).mesh().build(), metal.clone());
+        let wall = spawn(&mut world, plane(), StandardMaterial::default());
+        let opted_out = spawn(&mut world, plane(), metal);
+        world.entity_mut(opted_out).insert(NoPlanarMirror);
+        world.run_system_once(detect_mirrors).unwrap();
+        assert!(world.entity(mirror).contains::<PlanarMirror>());
+        assert!(!world.entity(ball).contains::<PlanarMirror>());
+        assert!(!world.entity(wall).contains::<PlanarMirror>());
+        assert!(!world.entity(opted_out).contains::<PlanarMirror>());
+
+        world.entity_mut(mirror).insert(NoPlanarMirror);
+        world.run_system_once(detect_mirrors).unwrap();
+        assert!(!world.entity(mirror).contains::<PlanarMirror>());
+    }
 
     #[test]
     fn mirror_materials_are_smooth_opaque_metals() {

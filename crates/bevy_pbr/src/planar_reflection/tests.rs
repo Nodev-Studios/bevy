@@ -162,3 +162,30 @@ fn the_budget_keeps_the_largest_mirrors() {
     assert_eq!(chosen, ['b', 'd', 'e', 'a']);
     assert!(choose_mirrors(candidates, 0, 0.0).is_empty());
 }
+
+#[test]
+fn the_mirror_camera_renders_only_the_mirrors_part_of_the_texture() {
+    let mirror = wall_mirror();
+    let (world_from_view, projection) = main_camera();
+    let (mirror_world_from_view, mirror_projection) =
+        mirror_camera(world_from_view, &projection, &mirror, 0.002, 16.0 / 9.0);
+    let clip_from_world = mirror_projection.get_clip_from_view() * mirror_world_from_view.inverse();
+    let size = UVec2::new(960, 540);
+    let rect = texture_rect(clip_from_world, &mirror.corners(), size, 8);
+    // Smaller than the texture, inside it, and holding every corner's pixel with the margin.
+    assert!(rect.width() < size.x && rect.height() < size.y, "{rect:?}");
+    assert!(rect.max.x <= size.x && rect.max.y <= size.y);
+    for corner in mirror.corners() {
+        let clip = clip_from_world * corner.extend(1.0);
+        let pixel = (clip.xy() / clip.w * Vec2::new(0.5, -0.5) + 0.5) * size.as_vec2();
+        assert!(pixel.x >= rect.min.x as f32 + 7.0 && pixel.x <= rect.max.x as f32 - 7.0);
+        assert!(pixel.y >= rect.min.y as f32 + 7.0 && pixel.y <= rect.max.y as f32 - 7.0);
+    }
+    // A corner behind the mirror camera: the whole texture.
+    let behind = [Vec3::new(0.0, 1.0, -20.0); 4];
+    assert_eq!(
+        texture_rect(clip_from_world, &behind, size, 8),
+        URect::from_corners(UVec2::ZERO, size)
+    );
+}
+
