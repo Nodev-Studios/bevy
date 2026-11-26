@@ -90,6 +90,8 @@ pub struct UiState {
     pub rects: HashMap<&'static str, egui::Rect>,
     /// The right button went down over the scene, not over a panel: looking around goes on over panels.
     looking: bool,
+    /// The scene the list last scrolled to.
+    listed: Option<u32>,
 }
 
 impl Default for UiState {
@@ -110,6 +112,7 @@ impl Default for UiState {
             keyboard: false,
             rects: HashMap::new(),
             looking: false,
+            listed: None,
         }
     }
 }
@@ -344,7 +347,7 @@ pub fn draw(
         if w.baked {
             window(
                 "Baked light",
-                egui::pos2(screen.max.x - 348.0, screen.max.y - 190.0),
+                egui::pos2(screen.max.x - 348.0, (screen.max.y - 190.0).max(470.0)),
                 340.0,
             )
             .show(&ctx, |ui| baked_panel(ui, state, &view, &mut edit));
@@ -428,6 +431,11 @@ fn scene_panel(ui: &mut egui::Ui, state: &mut UiState, view: &View, edit: &mut E
                     };
                     if response.clicked() {
                         edit.actions.write(Action::OpenScene(index));
+                    }
+                    // Once per scene: the open scene comes into view in the list.
+                    if current && state.listed != Some(view.stage.generation) {
+                        response.scroll_to_me(Some(egui::Align::Center));
+                        state.listed = Some(view.stage.generation);
                     }
                     if !entry.available {
                         ui.label(
