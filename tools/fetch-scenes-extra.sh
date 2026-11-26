@@ -18,6 +18,10 @@
 #   attic              NVIDIA "Attic" (USD + MDL): NOT fetched. Its only download needs a login. Put the zip
 #                      Attic_NVIDIA*.zip into <scenes>/attic/download/ by hand and run this script with `attic`.
 #
+# Memory: every Blender conversion runs in its own systemd scope, capped at BLENDER_MEMORY without swap, so a scene
+# too big kills only its own Blender. Emerald Square is converted in capped, resumable steps (scene-convert/bounded.py):
+# if a step is killed, the script says which and what to change, and rerunning it resumes.
+#
 # Usage: tools/fetch-scenes-extra.sh [--no-convert] [--keep-archives] [ID ...]   (no ID: every default scene)
 # Folder: $BEVY_GFX_SDK_DIR/scenes, default ~/.local/share/bevy-graficos/scenes (gfx_viewer's --scenes-dir).
 # Each scene goes to <scenes>/<id>/: download/ (archives, deleted after a successful unpack unless
@@ -111,6 +115,21 @@ run_blender() {
   echo "  converted in $((SECONDS - start)) s"
 }
 
+# run_bounded ID SCRIPT OUT.gltf [BOUNDED OPTIONS] -- SCRIPT ARGS...: a conversion split into memory-capped Blender
+# steps (scene-convert/bounded.py): each step is capped at BLENDER_MEMORY (default 8G) without swap, a killed step
+# says so and keeps what finished, and rerunning resumes. Log: <id>/convert-<OUT stem>.log.
+run_bounded() {
+  local id="$1" script="$2" out="$3"; shift 3
+  [[ $convert == 1 ]] || { echo "  --no-convert: skipping $script"; return; }
+  echo "  converting with $script in capped steps (log: $dir/$id/convert-$(basename "${out%.gltf}").log)"
+  local start=$SECONDS
+  python3 -I "$convert_dir/bounded.py" --script "$script" --output "$out" --memory "${BLENDER_MEMORY:-8G}" \
+    --blender "$blender" "$@" || return
+  grep -E '^(LOST|NOTE)' "$dir/$id/convert-$(basename "${out%.gltf}").log" | sort | uniq -c | sort -rn | head -n 30 \
+    | sed -e 's/^/  /' || true
+  echo "  converted in $((SECONDS - start)) s"
+}
+
 scene_classroom() {
   local d="$dir/classroom"
   echo "  licence: CC0 (Christophe Seux, Blender demo files)"
@@ -154,25 +173,32 @@ scene_khronos-extra() {
   licence "$repo/Models/StainedGlassLamp/LICENSE.md" "$repo/Models/DragonAttenuation/LICENSE.md"
 }
 
-# orca ID NAME ZIP [FBX:OUT:EMISSIVE_SCALE ...]: an NVIDIA ORCA scene; each FBX of it becomes one .glb. The emissive
-# scale is the one ORCA's own Falcor scene file (<scene>.pyscene, next to the FBX) applies.
+# orca ID NAME ZIP [FBX:OUT:EMISSIVE_SCALE ...]: an NVIDIA ORCA scene; each FBX of it becomes one glTF. The emissive
+# scale is the one ORCA's own Falcor scene file (<scene>.pyscene, next to the FBX) applies. OUT.glb is converted in
+# one Blender process; OUT.gltf goes through scene-convert/bounded.py (memory-capped steps, resumable: see there).
 orca() {
   local id="$1" name="$2" zip="$3"; shift 3
-  local d="$dir/$id" item fbx out scale
+  local d="$dir/$id" item fbx out scale input
   # developer.nvidia.com/<name> answers with a public, signed link to the zip; no login.
   fetch "https://developer.nvidia.com/$name" "$d/download/$zip"
   unpack "$d/download/$zip" "$d/source"
   licence $(find "$d/source" -maxdepth 3 -iname 'LICENSE*' | head -n 1)
   for item in "$@"; do
     IFS=: read -r fbx out scale <<<"$item"
-    log_name="convert-${out%.glb}.log" run_blender "$id" fbx_to_glb.py --orca --emissive-scale "$scale" \
-      --input "$(find "$d/source" -name "$fbx" | head -n 1)" --output "$d/$out"
+    input="$(find "$d/source" -name "$fbx" | head -n 1)"
+    if [[ $out == *.gltf ]]; then
+      run_bounded "$id" fbx_to_glb.py "$d/$out" --orm-occlusion -- --orca --emissive-scale "$scale" --input "$input"
+    else
+      log_name="convert-${out%.glb}.log" run_blender "$id" fbx_to_glb.py --orca --emissive-scale "$scale" \
+        --input "$input" --output "$d/$out"
+    fi
   done
 }
 scene_sun-temple() { orca sun-temple sun-temple SunTemple_v4.zip SunTemple.fbx:SunTemple.glb:1000; }
 scene_emerald-square() {
-  orca emerald-square emerald-square EmeraldSquare_v4_1.zip EmeraldSquare_Day.fbx:EmeraldSquareDay.glb:1 \
-    EmeraldSquare_Dusk.fbx:EmeraldSquareDusk.glb:5
+  # One Blender process for the whole block was killed by the OOM killer at 6.6 GB: converted in capped chunks.
+  orca emerald-square emerald-square EmeraldSquare_v4_1.zip EmeraldSquare_Day.fbx:EmeraldSquareDay.gltf:1 \
+    EmeraldSquare_Dusk.fbx:EmeraldSquareDusk.gltf:5
 }
 
 scene_san-miguel() {

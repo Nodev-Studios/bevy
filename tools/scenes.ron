@@ -176,7 +176,7 @@
         (
             id: "emerald-square-day",
             name: "Emerald Square, day (NVIDIA ORCA)",
-            path: "emerald-square/EmeraldSquareDay.glb",
+            path: "emerald-square/EmeraldSquareDay.gltf",
             licence: "CC-BY-NC-SA 3.0: Emerald Square, credit NVIDIA (ORCA)",
             non_commercial: true,
             fetch: "tools/fetch-scenes-extra.sh emerald-square",
@@ -185,7 +185,7 @@
         (
             id: "emerald-square-dusk",
             name: "Emerald Square, dusk (NVIDIA ORCA)",
-            path: "emerald-square/EmeraldSquareDusk.glb",
+            path: "emerald-square/EmeraldSquareDusk.gltf",
             licence: "CC-BY-NC-SA 3.0: Emerald Square, credit NVIDIA (ORCA)",
             non_commercial: true,
             fetch: "tools/fetch-scenes-extra.sh emerald-square",

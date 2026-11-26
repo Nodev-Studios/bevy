@@ -15,6 +15,7 @@ Every DDS is converted once to a PNG in png-cache/ next to the FBX, so the expor
     emission = the _Emissive texture x --emissive-scale (the scale ORCA's own Falcor scene files use)
 Lost: ambient occlusion (Specular.R), the HDR environment maps, anything UE's materials did beyond the textures.
 Without --orca, materials are simplified like a .blend's (common.simplify_material).
+With --stage-dir DIR the scene is saved for tools/scene-convert/bounded.py instead of exported (see there).
 """
 
 import os
@@ -31,6 +32,7 @@ a = common.args()
 src, out = os.path.abspath(a["--input"]), a["--output"]
 emissive_scale = float(a.get("--emissive-scale", 1.0))
 bpy.ops.wm.read_factory_settings(use_empty=True)
+common.defer_image_loads()  # the importer would decode every texture (4.9 GB for Emerald Square)
 bpy.ops.import_scene.fbx(filepath=src, use_image_search=True)
 scene = bpy.context.scene
 
@@ -121,8 +123,8 @@ def texture_names(material):
     names = set()
     if material.node_tree:
         for node in material.node_tree.nodes:
-            if node.type == "TEX_IMAGE" and node.image and node.image.filepath:
-                names.add(os.path.basename(bpy.path.abspath(node.image.filepath)))
+            if node.type == "TEX_IMAGE" and node.image and common.source_path(node.image):
+                names.add(os.path.basename(common.source_path(node.image)))
     stems = {re.sub(r"_(BaseColor|Specular|Normal|Emissive)\.dds$", "", n, flags=re.I) for n in names}
     stems.discard("")
     if not stems:
@@ -164,7 +166,9 @@ def orca_material(material, report):
         nt.links.new(node.outputs["Color"], sep.inputs["Color"])
         nt.links.new(sep.outputs["Green"], i["Roughness"])
         nt.links.new(sep.outputs["Blue"], i["Metallic"])
-        report.setdefault("ambient occlusion (Specular.R) not exported", []).append(material.name)
+        report.setdefault(
+            "ambient occlusion (Specular.R): kept in the texture, read by bounded.py --orm-occlusion"
+            if a.get("--stage-dir") else "ambient occlusion (Specular.R) not exported", []).append(material.name)
     else:
         i["Roughness"].default_value = 0.6
     if "Normal" in tex:
@@ -189,7 +193,8 @@ if a.get("--orca"):
     for what, names in report.items():
         kind = "LOST" if "not" in what or "no ORCA" in what else "NOTE"
         common.log(kind, f"material {what} [{len(names)}: {', '.join(names[:6])}{' ...' if len(names) > 6 else ''}]")
-else:
+common.load_deferred_images(load)  # textures of materials the ORCA rebuild did not replace
+if not a.get("--orca"):
     common.simplify_materials()
 # ORCA's second UV set is UE's lightmap UVs: nothing reads it, and it costs export memory.
 extra_uv = 0
@@ -201,4 +206,4 @@ if extra_uv:
     common.log("LOST", f"UV sets after the first ({extra_uv}: UE lightmap UVs, unused)")
 common.area_lights_to_spots()
 common.log("LOST", "environment: the HDR sky / reflection maps that come with the FBX (glTF has no environment light)")
-common.export_glb(out)
+common.finish(out)
