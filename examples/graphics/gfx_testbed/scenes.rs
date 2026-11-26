@@ -8,6 +8,7 @@
 use crate::{Scene, ToggleLight};
 use bevy::{
     image::{ImageAddressMode, ImageLoaderSettings},
+    light::NotShadowCaster,
     mesh::VertexAttributeValues,
     prelude::*,
 };
@@ -20,6 +21,8 @@ pub fn spawn(name: &str, world: &mut World) -> Option<Scene> {
     let scene = match name {
         "interior" => world.run_system_cached(interior),
         "many-lights" => world.run_system_cached(many_lights),
+        "glass" => world.run_system_cached(glass),
+        "glass-off" => world.run_system_cached(glass_off),
         _ => return None,
     };
     Some(scene.expect("scene systems take only resources the default plugins provide"))
@@ -259,5 +262,175 @@ fn many_lights(
         orbit: many_lights_orbit,
         fov: 1.0,
         assets: Vec::new(),
+    }
+}
+
+/// Frames of one sway of the `glass` camera.
+const GLASS_SWAY_FRAMES: f32 = 720.0;
+
+fn glass_orbit(frame: u32) -> Transform {
+    let angle = frame as f32 * (TAU / GLASS_SWAY_FRAMES);
+    Transform::from_xyz(-2.8 + 0.4 * ops::sin(angle), 1.7, 2.6)
+        .looking_at(Vec3::new(0.3, 0.9, -1.2), Vec3::Y)
+}
+
+/// Glass: a closed room, 8 m by 6 m and 3 m high, with a 2 m by 1.4 m window in its right wall and a low sun
+/// outside shining through it onto the floor, and two tinted glass spheres (`specular_transmission`, a volume
+/// with an attenuation colour) in front of a checkered back wall: the thicker one is the deeper colour. A ceiling
+/// point light fills the room. `glass-off` is the same room without the pane and the spheres: the cost of glass
+/// is the difference between the two.
+///
+/// The pane casts no shadow map: on Raster a shadow map would block the sun behind any glass (traced rungs let
+/// light through glass whatever its shadow flag).
+fn glass(
+    commands: Commands,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+) -> Scene {
+    glass_room(true, commands, meshes, materials, asset_server)
+}
+
+fn glass_off(
+    commands: Commands,
+    meshes: ResMut<Assets<Mesh>>,
+    materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+) -> Scene {
+    glass_room(false, commands, meshes, materials, asset_server)
+}
+
+fn glass_room(
+    with_glass: bool,
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    asset_server: Res<AssetServer>,
+) -> Scene {
+    let grey = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.7, 0.7, 0.7),
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+    let checker: Handle<Image> = asset_server
+        .load_builder()
+        .with_settings::<ImageLoaderSettings>(|settings| {
+            settings
+                .sampler
+                .get_or_init_descriptor()
+                .set_address_mode(ImageAddressMode::Repeat);
+        })
+        .load("textures/uv_checker_bw.png");
+    let checkered = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.8, 0.8, 0.8),
+        base_color_texture: Some(checker.clone()),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+
+    let plane = |normal: Vec3, half_size: Vec2| traceable(Plane3d::new(normal, half_size));
+    let surfaces = [
+        (Vec3::Y, Vec2::new(4.0, 3.0), Vec3::ZERO),
+        (Vec3::NEG_Y, Vec2::new(4.0, 3.0), Vec3::new(0.0, 3.0, 0.0)),
+        (Vec3::NEG_Z, Vec2::new(4.0, 1.5), Vec3::new(0.0, 1.5, 3.0)),
+        (Vec3::X, Vec2::new(1.5, 3.0), Vec3::new(-4.0, 1.5, 0.0)),
+    ];
+    for (normal, half_size, position) in surfaces {
+        commands.spawn((
+            Mesh3d(meshes.add(plane(normal, half_size))),
+            MeshMaterial3d(grey.clone()),
+            Transform::from_translation(position),
+        ));
+    }
+    // The back wall: one check per half metre behind the spheres.
+    let mut back = plane(Vec3::Z, Vec2::new(4.0, 1.5));
+    match back.attribute_mut(Mesh::ATTRIBUTE_UV_0) {
+        Some(VertexAttributeValues::Float32x2(uvs)) => {
+            for uv in uvs {
+                *uv = [uv[0] * 2.0, uv[1] * 0.75];
+            }
+        }
+        _ => unreachable!("a plane mesh has two-component UVs"),
+    }
+    commands.spawn((
+        Mesh3d(meshes.add(back)),
+        MeshMaterial3d(checkered),
+        Transform::from_xyz(0.0, 1.5, -3.0),
+    ));
+    // The right wall, around the window: x = 4, the hole spans z -1..1 and y 1..2.4.
+    let wall = [
+        (Vec3::new(0.1, 1.0, 6.0), Vec3::new(4.05, 0.5, 0.0)),
+        (Vec3::new(0.1, 0.6, 6.0), Vec3::new(4.05, 2.7, 0.0)),
+        (Vec3::new(0.1, 1.4, 2.0), Vec3::new(4.05, 1.7, -2.0)),
+        (Vec3::new(0.1, 1.4, 2.0), Vec3::new(4.05, 1.7, 2.0)),
+    ];
+    for (size, position) in wall {
+        commands.spawn((
+            Mesh3d(meshes.add(traceable(Cuboid::from_size(size)))),
+            MeshMaterial3d(grey.clone()),
+            Transform::from_translation(position),
+        ));
+    }
+    commands.spawn((
+        Mesh3d(meshes.add(traceable(Cuboid::new(2.4, 0.6, 0.8)))),
+        MeshMaterial3d(grey.clone()),
+        Transform::from_xyz(-0.5, 0.3, -1.6),
+    ));
+
+    if with_glass {
+        commands.spawn((
+            Mesh3d(meshes.add(traceable(Cuboid::new(0.02, 1.4, 2.0)))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                specular_transmission: 1.0,
+                perceptual_roughness: 0.05,
+                ior: 1.5,
+                ..default()
+            })),
+            Transform::from_xyz(4.05, 1.7, 0.0),
+            NotShadowCaster,
+        ));
+        let sphere = meshes.add(traceable(Sphere::new(0.45).mesh().uv(64, 32)));
+        for (x, thickness) in [(-1.1, 0.3), (0.1, 0.9)] {
+            commands.spawn((
+                Mesh3d(sphere.clone()),
+                MeshMaterial3d(materials.add(StandardMaterial {
+                    base_color: Color::WHITE,
+                    specular_transmission: 1.0,
+                    perceptual_roughness: 0.05,
+                    ior: 1.5,
+                    thickness,
+                    attenuation_distance: 1.0,
+                    attenuation_color: Color::linear_rgb(0.9, 0.35, 0.1),
+                    ..default()
+                })),
+                Transform::from_xyz(x, 1.05, -1.6),
+            ));
+        }
+    }
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 8_000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::default().looking_to(Vec3::new(-1.0, -0.8, -0.25), Vec3::Y),
+    ));
+    commands.spawn((
+        PointLight {
+            intensity: 150_000.0,
+            range: 10.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_xyz(-2.5, 2.6, 1.0),
+        ToggleLight,
+    ));
+
+    Scene {
+        orbit: glass_orbit,
+        fov: 1.2,
+        assets: vec![checker.untyped()],
     }
 }

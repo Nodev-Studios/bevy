@@ -1663,8 +1663,10 @@ const HIDDEN_LAYER: usize = 31;
 const CLASS_BLOCK: usize = 8;
 /// The mean absolute difference (8-bit, per channel) that makes a block count as changed. to tune.
 const CLASS_BLOCK_CHANGE: f64 = 4.0;
-/// The share of the blocks a class covers that must change. to tune.
-const CLASS_MIN_CHANGED_SHARE: f64 = 0.02;
+/// The share of the blocks a class covers that must change. to tune: on `dev`'s binary, where glass was drawn
+/// nowhere, noise moved at most 2.9 % (StainedGlassLamp, RtLite); with glass drawn the least was 8.8 % (Classroom's
+/// frosted windows, Raster).
+const CLASS_MIN_CHANGED_SHARE: f64 = 0.05;
 /// A class whose meshes cover less of the screen than this (by their bounding boxes) is not checked. to tune.
 const CLASS_MIN_COVER: f64 = 0.005;
 
