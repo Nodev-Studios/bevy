@@ -254,7 +254,7 @@ fn evaluate(cell: &mut Cell, dir: &Path, entry: &RunEntry, reference: Option<Pat
                             "coverage: {} has {} black px of {}",
                             check.label, check.zero, check.pixels
                         )
-                    }))
+                    }));
             }
             Ok(None) => cell
                 .failures

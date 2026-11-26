@@ -125,3 +125,56 @@ pub fn coverage(command: CoverageCommand) -> Result<bool, String> {
     println!("coverage: {}", if pass { "ok" } else { "FAIL" });
     Ok(pass)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{Rgb, RgbImage};
+
+    /// A coverage run of one 4×2 capture: its left half under the box mask, all of it under the surface mask.
+    fn run(name: &str, capture: [[u8; 3]; 8]) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("gfx-check-coverage-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let image = RgbImage::from_fn(4, 2, |x, y| Rgb(capture[(y * 4 + x) as usize]));
+        image.save(dir.join("a.png")).unwrap();
+        let mask = RgbImage::from_fn(4, 2, |x, _| Rgb(if x < 2 { [255; 3] } else { [0; 3] }));
+        mask.save(dir.join("mask-a.png")).unwrap();
+        RgbImage::from_pixel(4, 2, Rgb([255; 3]))
+            .save(dir.join("surface-a.png"))
+            .unwrap();
+        let report = serde_json::json!({ "gi": { "coverage_view": true, "captures": [
+            { "capture": "a.png", "mask": "mask-a.png", "surface": "surface-a.png" }
+        ] } });
+        fs::write(dir.join("report.json"), report.to_string()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_black_pixel_under_either_mask_fails() {
+        let lit = [10, 10, 10];
+        let clean = run("clean", [lit; 8]);
+        let checked = check_run(&clean).unwrap().unwrap();
+        assert_eq!(checked.len(), 2);
+        assert!(checked.iter().all(|check| check.zero == 0));
+        assert_eq!((checked[0].pixels, checked[1].pixels), (4, 8));
+
+        // A black pixel outside the box but on a surface (a door jamb): only the surface mask sees it.
+        let mut jamb = [lit; 8];
+        jamb[3] = [0; 3];
+        let checked = check_run(&run("jamb", jamb)).unwrap().unwrap();
+        assert_eq!((checked[0].zero, checked[1].zero), (0, 1));
+        assert!(!coverage(CoverageCommand {
+            dir: run("jamb2", jamb)
+        })
+        .unwrap());
+        assert!(coverage(CoverageCommand { dir: clean.clone() }).unwrap());
+
+        // A folder with no coverage run cannot be evaluated.
+        let plain =
+            std::env::temp_dir().join(format!("gfx-check-coverage-plain-{}", std::process::id()));
+        fs::create_dir_all(&plain).unwrap();
+        fs::write(plain.join("report.json"), "{}").unwrap();
+        assert!(coverage(CoverageCommand { dir: plain }).is_err());
+    }
+}
