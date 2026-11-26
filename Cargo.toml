@@ -1627,6 +1627,21 @@ required-features = ["bevy_solari", "area_light_luts", "bevy_graphics"]
 hidden = true
 
 [[example]]
+name = "gfx_viewer"
+path = "examples/graphics/gfx_viewer/main.rs"
+doc-scrape-examples = true
+required-features = [
+  "bevy_solari",
+  "area_light_luts",
+  "bevy_graphics",
+  "free_camera",
+  "jpeg",
+]
+
+[package.metadata.example.gfx_viewer]
+hidden = true
+
+[[example]]
 name = "spherical_area_lights"
 path = "examples/3d/spherical_area_lights.rs"
 doc-scrape-examples = true
