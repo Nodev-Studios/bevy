@@ -42,8 +42,9 @@ mod solari {
             world_cache_max_gi_ray_distance: 50.0,
             // Half of `full`'s. Updating as many cells as `full` does not shorten the lag after a light switches
             // off (1.22 against 1.06 % five frames after, DLSS-RR; 5.83 against 5.74 % with NRD) nor change
-            // the world cache pass's time (C1).
-            world_cache_cell_updates_soft_target: 20_000,
+            // the world cache pass's time (C1). Measured when this was a stochastic soft target; upstream #26626
+            // made it a hard per-frame limit taken in turns. To tune: remeasure the lag on the new world cache.
+            world_cache_max_cell_updates_per_frame: 20_000,
             // 0.15 m, as `full`: 0.3 m raises `interior`'s error from 2.85 to 4.51 % for 0.01 ms; 0.1 m lowers it
             // 0.03 points for 0.02 ms.
             world_cache_position_base_cell_size: 0.15,
@@ -70,7 +71,7 @@ mod solari {
             world_cache_max_temporal_samples: 32.0,
             world_cache_direct_light_sample_count: 32,
             world_cache_max_gi_ray_distance: 50.0,
-            world_cache_cell_updates_soft_target: 40_000,
+            world_cache_max_cell_updates_per_frame: 40_000,
             world_cache_position_base_cell_size: 0.15,
             world_cache_position_lod_scale: 15.0,
             world_cache_force_opaque: true,
@@ -125,8 +126,8 @@ mod solari {
                 theirs.world_cache_max_gi_ray_distance
             );
             assert_eq!(
-                ours.world_cache_cell_updates_soft_target,
-                theirs.world_cache_cell_updates_soft_target
+                ours.world_cache_max_cell_updates_per_frame,
+                theirs.world_cache_max_cell_updates_per_frame
             );
             assert_eq!(
                 ours.world_cache_position_base_cell_size,

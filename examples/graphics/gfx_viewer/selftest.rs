@@ -50,7 +50,7 @@ use bevy::{
     prelude::*,
     render::view::screenshot::{Screenshot, ScreenshotCaptured},
     solari::prelude::SolariLighting,
-    window::{CursorMoved, PrimaryWindow, WindowEvent},
+    window::{PrimaryWindow, RawCursorMoved, Window, WindowEvent},
 };
 use serde_json::{json, Value};
 use std::{
@@ -662,9 +662,10 @@ fn step(world: &mut World, test: &mut SelfTest) {
                 }
                 return;
             };
-            let window = world
-                .query_filtered::<Entity, With<PrimaryWindow>>()
+            let (window, scale_factor) = world
+                .query_filtered::<(Entity, &Window), With<PrimaryWindow>>()
                 .single(world)
+                .map(|(entity, window)| (entity, window.scale_factor()))
                 .expect("the viewer has a window");
             let position = Vec2::new(rect.center().x, rect.center().y);
             match stage {
@@ -676,10 +677,10 @@ fn step(world: &mut World, test: &mut SelfTest) {
                     };
                 }
                 0 => {
-                    world.write_message(WindowEvent::CursorMoved(CursorMoved {
+                    // The window backend's event: the physical position (bevy_window derives `CursorMoved`).
+                    world.write_message(WindowEvent::CursorMoved(RawCursorMoved {
                         window,
-                        position,
-                        delta: None,
+                        physical_position: (position * scale_factor).as_dvec2(),
                     }));
                     test.state = State::Clicking {
                         stage: 1,
