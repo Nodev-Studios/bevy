@@ -21,6 +21,10 @@
 //! (see the README). `--timestamps` only profiles: it runs `still` and prints the GPU time of the whole
 //! denoiser (`outer`: two timestamps around it), or of the whole denoiser and of every dispatch
 //! (`dispatches`), each the median of the timed frames. It checks nothing.
+//! `--resize-bench ROUNDS` only measures what a change of render size costs, alternating 2560x1440 and 1707x960
+//! (DLSS Quality at 1440p): making a denoiser with new pipelines, as every size change did before
+//! `Denoiser::resize`, against resizing one, each including its first frame. It also checks that a warmed-up
+//! pipeline set needs no new pipeline in a frame, and that `NRD_WGPU_FORCE_DEVICE_ERROR` comes back as an error.
 //! Exit code 0 when every check passes.
 
 #![allow(
@@ -30,8 +34,9 @@
 )]
 
 use nrd_wgpu::{
-    Denoiser, DenoiserInputs, DenoiserKind, DenoiserOutputs, FrameSettings,
-    HitDistanceReconstruction, ReblurSettings, TexturePrecision, OUTPUT_FORMAT,
+    Denoiser, DenoiserInputs, DenoiserKind, DenoiserOutputs, DenoiserPipelines, FrameSettings,
+    HitDistanceReconstruction, InputFormats, NrdError, ReblurSettings, TexturePrecision,
+    FORCE_DEVICE_ERROR_VARIABLE, OUTPUT_FORMAT,
 };
 use std::{
     process::ExitCode,
@@ -770,6 +775,7 @@ fn main() -> ExitCode {
         hit_distance: HitDistance::Uniform,
         timestamps: Timestamps::Off,
     };
+    let mut resize_rounds = 0u32;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         let value = arguments.next().unwrap_or_default();
@@ -787,6 +793,9 @@ fn main() -> ExitCode {
             ("--hit-distance", "random") => options.hit_distance = HitDistance::Random,
             ("--timestamps", "outer") => options.timestamps = Timestamps::Outer,
             ("--timestamps", "dispatches") => options.timestamps = Timestamps::Dispatches,
+            ("--resize-bench", rounds) => {
+                resize_rounds = rounds.parse().expect("--resize-bench takes a number")
+            }
             _ => panic!("unknown argument {argument} {value}"),
         }
     }
@@ -851,6 +860,10 @@ fn main() -> ExitCode {
         queue,
         errors,
     };
+
+    if resize_rounds > 0 {
+        return resize_bench(&gpu, precision, resize_rounds);
+    }
 
     if timestamps != Timestamps::Off {
         let still = run(&gpu, options, Scenario::Still);
@@ -1008,6 +1021,193 @@ fn main() -> ExitCode {
             "RESULT: FAIL"
         }
     );
+    if passed {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// Inputs and outputs of one size, filled with a plain floor, for `--resize-bench`.
+struct BenchTextures {
+    views: [wgpu::TextureView; 5],
+    outputs: [wgpu::TextureView; 2],
+}
+
+impl BenchTextures {
+    fn new(gpu: &Gpu, size: [u32; 2]) -> Self {
+        let input_usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+        let formats = [
+            TextureFormat::Rgba16Float,
+            TextureFormat::Rgba16Float,
+            TextureFormat::Rgba16Float,
+            TextureFormat::R32Float,
+            TextureFormat::Rg16Float,
+        ];
+        let pixels = (size[0] * size[1]) as usize;
+        let textures = formats.map(|format| create_texture(gpu, size, format, input_usage));
+        let radiance = [0.5, 0.5, 0.5, 1.0].map(f32_to_f16);
+        upload(gpu, &textures[0], &vec![radiance; pixels]);
+        upload(gpu, &textures[1], &vec![radiance; pixels]);
+        upload(
+            gpu,
+            &textures[2],
+            &vec![[0.0, 1.0, 0.0, ROUGHNESS].map(f32_to_f16); pixels],
+        );
+        upload(gpu, &textures[3], &vec![-5.0f32; pixels]);
+        upload(gpu, &textures[4], &vec![[0u16; 2]; pixels]);
+        Self {
+            views: textures.map(|texture| texture.create_view(&Default::default())),
+            outputs: [0, 1].map(|_| {
+                create_texture(gpu, size, OUTPUT_FORMAT, TextureUsages::STORAGE_BINDING)
+                    .create_view(&Default::default())
+            }),
+        }
+    }
+
+    fn inputs(&self) -> DenoiserInputs<'_> {
+        DenoiserInputs {
+            diffuse: &self.views[0],
+            specular: &self.views[1],
+            normal_roughness: &self.views[2],
+            view_depth: &self.views[3],
+            motion_vectors: &self.views[4],
+            history_confidence: None,
+        }
+    }
+}
+
+/// Records one frame, submits it and waits for the GPU.
+fn bench_frame(gpu: &Gpu, denoiser: &mut Denoiser, textures: &BenchTextures, frame: u32) {
+    let camera = Camera {
+        x: 0.0,
+        aspect: 16.0 / 9.0,
+    };
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    denoiser
+        .denoise(
+            &gpu.device,
+            &gpu.queue,
+            &mut encoder,
+            &frame_settings(&camera, -1.0, frame),
+            &textures.inputs(),
+            &DenoiserOutputs {
+                diffuse: &textures.outputs[0],
+                specular: &textures.outputs[1],
+            },
+        )
+        .expect("the frame could not be recorded");
+    gpu.queue.submit([encoder.finish()]);
+    gpu.device.poll(PollType::wait_indefinitely()).unwrap();
+}
+
+fn median(mut values: Vec<f64>) -> f64 {
+    values.sort_by(f64::total_cmp);
+    values[values.len() / 2]
+}
+
+/// `--resize-bench`: what a change of render size costs before and after `Denoiser::resize`.
+fn resize_bench(gpu: &Gpu, precision: TexturePrecision, rounds: u32) -> ExitCode {
+    let sizes = [[2560, 1440], [1707, 960]];
+    let textures = sizes.map(|size| BenchTextures::new(gpu, size));
+    let formats = InputFormats::of(&textures[0].inputs());
+    let milliseconds = |start: Instant| start.elapsed().as_secs_f64() * 1000.0;
+    let mut passed = true;
+
+    // The shared pipelines, warmed up once; a few frames at each size show none is created later.
+    let pipelines = DenoiserPipelines::new(&gpu.device, DenoiserKind::ReblurDiffuseSpecular)
+        .expect("the pipelines could not be created");
+    pipelines
+        .warm_up(&gpu.device, precision, &formats)
+        .expect("the warm-up failed");
+    let warmed = pipelines.pipeline_count();
+    let mut denoiser = Denoiser::with_pipelines(&gpu.device, &pipelines, sizes[0], precision)
+        .expect("the denoiser could not be created");
+    let mut frame = 0;
+    let mut steady = Vec::new();
+    for _ in 0..30 {
+        let start = Instant::now();
+        bench_frame(gpu, &mut denoiser, &textures[0], frame);
+        steady.push(milliseconds(start));
+        frame += 1;
+    }
+    let after_frames = pipelines.pipeline_count();
+    println!("{warmed} pipelines after the warm-up, {after_frames} after 30 frames");
+    let ok = after_frames == warmed;
+    println!(
+        "{} a frame at the default settings creates no pipeline the warm-up did not",
+        if ok { "pass" } else { "FAIL" }
+    );
+    passed &= ok;
+
+    let mut recreate = Vec::new();
+    let mut resize = Vec::new();
+    for round in 0..rounds as usize {
+        let to = (round + 1) % 2;
+        // Before: a new denoiser with pipelines of its own at the new size (modules, pipelines, textures).
+        let start = Instant::now();
+        let mut fresh = Denoiser::new(
+            &gpu.device,
+            DenoiserKind::ReblurDiffuseSpecular,
+            sizes[to],
+            precision,
+        )
+        .expect("the denoiser could not be created");
+        bench_frame(gpu, &mut fresh, &textures[to], 0);
+        recreate.push(milliseconds(start));
+        drop(fresh);
+
+        // After: the same change through `resize`.
+        let start = Instant::now();
+        denoiser
+            .resize(&gpu.device, sizes[to], precision)
+            .expect("the resize failed");
+        bench_frame(gpu, &mut denoiser, &textures[to], frame);
+        resize.push(milliseconds(start));
+        frame += 1;
+    }
+    let show = |values: &[f64]| {
+        values
+            .iter()
+            .map(|value| format!("{value:.1}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    println!(
+        "steady frame at 2560x1440: median {:.2} ms (wall clock, recording to an idle GPU)",
+        median(steady)
+    );
+    println!(
+        "size change with a new denoiser and new pipelines (before): median {:.1} ms; each round: {}",
+        median(recreate.clone()),
+        show(&recreate)
+    );
+    println!(
+        "size change with Denoiser::resize (after): median {:.1} ms; each round: {}",
+        median(resize.clone()),
+        show(&resize)
+    );
+
+    // SAFETY: nothing else reads the environment on another thread here.
+    unsafe { std::env::set_var(FORCE_DEVICE_ERROR_VARIABLE, "1") };
+    let forced = DenoiserPipelines::new(&gpu.device, DenoiserKind::ReblurDiffuseSpecular);
+    unsafe { std::env::remove_var(FORCE_DEVICE_ERROR_VARIABLE) };
+    let ok = matches!(&forced, Err(NrdError::Device(_)));
+    if let Err(error) = &forced {
+        println!("forced device error: {error}");
+    }
+    println!(
+        "{} a device error inside the pipelines' creation comes back as NrdError::Device",
+        if ok { "pass" } else { "FAIL" }
+    );
+    passed &= ok;
+    let errors = gpu.errors.load(Ordering::Relaxed);
+    println!(
+        "{} no wgpu error reached the uncaptured-error handler ({errors})",
+        if errors == 0 { "pass" } else { "FAIL" }
+    );
+    passed &= errors == 0;
+    println!("\nRESULT: {}", if passed { "pass" } else { "FAIL" });
     if passed {
         ExitCode::SUCCESS
     } else {

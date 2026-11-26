@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use crate::ResolvedGraphics;
+use crate::{Fallback, ResolvedGraphics};
 use bevy_ecs::prelude::*;
 
 /// The upscalers and the denoiser the apply layer reaches through a hook, each `None` until its module
@@ -51,4 +51,29 @@ pub struct CameraBackend {
     /// Removes from the camera everything [`Self::insert`] put there. Called once when the backend stops being
     /// the camera's choice.
     pub remove: fn(&mut EntityCommands),
+}
+
+/// The backends that failed on this device while the app ran, each as the [`Fallback`] that says so.
+///
+/// A backend's module watches its failure signal from `bevy_anti_alias` (for example `NrdFailure`), clears its
+/// capability in [`GraphicsCapabilities`](crate::GraphicsCapabilities) and records the failure here, in
+/// `PostUpdate` before [`GraphicsApplySystems::Resolve`](super::GraphicsApplySystems::Resolve). The apply layer
+/// then resolves again and adds these reasons to [`ResolvedGraphics::fallbacks`].
+#[derive(Resource, Default, Debug)]
+pub struct GraphicsBackendFailures(Vec<Fallback>);
+
+impl GraphicsBackendFailures {
+    /// Records a failure; returns `false` when it was already recorded.
+    pub fn record(&mut self, failure: Fallback) -> bool {
+        if self.0.contains(&failure) {
+            return false;
+        }
+        self.0.push(failure);
+        true
+    }
+
+    /// The failures recorded so far.
+    pub fn failures(&self) -> &[Fallback] {
+        &self.0
+    }
 }

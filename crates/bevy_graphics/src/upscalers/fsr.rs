@@ -6,21 +6,22 @@
 //!
 //! FSR is only used when asked for by name; `resolve` never picks it under `Auto` until it has run on real
 //! hardware. Where it cannot run, a request for it falls back to TSR, whose default algorithm is FSR 3.1 from
-//! AMD's source.
+//! AMD's source. If it fails on the device while the app runs (`FsrFailure`), the capability is cleared and the
+//! failure recorded (`Fallback::FsrFailed`), so the camera gets TSR.
 
 #[cfg(feature = "fsr")]
 use crate::{
     apply::{
-        backends::{CameraBackend, GraphicsBackends},
+        backends::{CameraBackend, GraphicsBackendFailures, GraphicsBackends},
         GraphicsApplySystems,
     },
-    FsrLevel, GraphicsCapabilities, GraphicsSystems, ResolvedGraphics,
+    Fallback, FsrLevel, GraphicsCapabilities, GraphicsSystems, ResolvedGraphics,
 };
 #[cfg(feature = "fsr")]
-use bevy_anti_alias::fsr::{Fsr, FsrSupported};
+use bevy_anti_alias::fsr::{Fsr, FsrFailure, FsrSupported};
 use bevy_app::App;
 #[cfg(feature = "fsr")]
-use bevy_app::PreStartup;
+use bevy_app::{PostUpdate, PreStartup};
 #[cfg(feature = "fsr")]
 use bevy_ecs::prelude::*;
 
@@ -38,7 +39,27 @@ pub(crate) fn build(app: &mut App) {
         detect_fsr
             .after(GraphicsSystems::DetectCapabilities)
             .before(GraphicsApplySystems::Resolve),
+    )
+    .add_systems(
+        PostUpdate,
+        watch_fsr_failure.before(GraphicsApplySystems::Resolve),
     );
+}
+
+/// Clears [`GraphicsCapabilities::fsr`] and records [`Fallback::FsrFailed`] once FSR failed on the device.
+#[cfg(feature = "fsr")]
+fn watch_fsr_failure(
+    failure: Option<Res<FsrFailure>>,
+    mut capabilities: ResMut<GraphicsCapabilities>,
+    mut failures: ResMut<GraphicsBackendFailures>,
+) {
+    if !failure.is_some_and(|failure| failure.0.has_failed())
+        || failures.failures().contains(&Fallback::FsrFailed)
+    {
+        return;
+    }
+    capabilities.fsr = None;
+    failures.record(Fallback::FsrFailed);
 }
 
 /// Called by [`GraphicsPlugin`](crate::GraphicsPlugin) when it is built. Without the `fsr` feature there is no
@@ -56,6 +77,7 @@ fn insert_fsr(camera: &mut EntityCommands, resolved: &ResolvedGraphics) {
         .and_modify(move |mut fsr| {
             if fsr.render_scale != render_scale {
                 fsr.render_scale = render_scale;
+                fsr.reset = true;
             }
         })
         .or_insert(Fsr {

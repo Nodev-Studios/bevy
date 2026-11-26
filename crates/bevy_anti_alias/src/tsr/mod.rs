@@ -24,6 +24,7 @@ mod fsr;
 mod node;
 mod prepare;
 
+use crate::backend_failure::BackendFailure;
 use bevy_app::{App, Plugin};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
 use bevy_camera::Hdr;
@@ -84,11 +85,13 @@ impl Plugin for TsrPlugin {
             info!("TSR's FSR 3.1 is not supported on this device: it needs Vulkan; SGSR 2 stands in for it");
         }
 
+        let failure = TsrFsr3Failure::default();
         render_app
             .insert_resource(fsr::TsrFsr {
                 supported: fsr3,
                 context: None,
             })
+            .insert_resource(failure.clone())
             .add_systems(RenderStartup, init_tsr_pipelines)
             .add_systems(ExtractSchedule, extract::extract_tsr)
             .add_systems(
@@ -102,9 +105,16 @@ impl Plugin for TsrPlugin {
                 (node::tsr, fsr::tsr_fsr).in_set(Core3dSystems::EarlyPostProcess),
             );
 
-        app.insert_resource(TsrSupported { fsr3 });
+        app.insert_resource(TsrSupported { fsr3 })
+            .insert_resource(failure);
     }
 }
+
+/// Set when TSR's FSR 3.1 failed on this device, in both the main and the render world (see
+/// [`backend_failure`](crate::backend_failure)). From the next frame on TSR runs SGSR 2 on every camera; the
+/// main world's [`TsrSupported::fsr3`] is left for a settings layer to clear.
+#[derive(Resource, Clone, Default, Debug)]
+pub struct TsrFsr3Failure(pub BackendFailure);
 
 /// Whether the device has what TSR's passes use: compute shaders, and write-only storage textures of the two
 /// formats it writes (`R32Uint` and `Rgba16Float`, which is also the format of an [`Hdr`] camera's main texture,
@@ -173,7 +183,8 @@ pub enum TsrAlgorithm {
     /// Snapdragon Game Super Resolution 2: three compute passes in WESL, on every device TSR supports.
     Sgsr2,
     /// AMD's FSR 3.1 (`FidelityFX` Super Resolution): seven compute passes of AMD's SPIR-V, on Vulkan only
-    /// ([`TsrSupported::fsr3`]). Where it cannot run, SGSR 2 runs instead, and that is logged once.
+    /// ([`TsrSupported::fsr3`]). Where it cannot run, or once it failed on the device ([`TsrFsr3Failure`]),
+    /// SGSR 2 runs instead, and that is logged once.
     #[default]
     Fsr3,
 }

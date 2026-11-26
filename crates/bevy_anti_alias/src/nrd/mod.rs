@@ -22,12 +22,22 @@
 //! history can still be trusted, so that a change of light shows within a few frames (see
 //! `history_confidence.rs`). A view where NRD cannot run (see
 //! [`Nrd::required_wgpu_features`]) logs why once and shows the noisy lighting.
+//!
+//! NRD's shaders and pipelines are created once per render device, inside wgpu error scopes, when the first
+//! view asks for NRD. If the driver refuses them, or NRD fails later, [`NrdFailure`] says so in the main world
+//! and no view tries NRD again: a settings layer (`bevy_graphics`) then puts another denoiser or rasterized
+//! lighting on the camera. When the render size changes, NRD's textures follow once the new size has held for
+//! a few frames, without compiling anything; the view shows the noisy lighting until then.
 
 mod history_confidence;
 mod node;
 
-use crate::ray_reconstruction::{
-    DenoiserSystems, ViewDenoisedRadianceTextures, ViewDenoiserInputTextures,
+use crate::{
+    backend_failure::BackendFailure,
+    ray_reconstruction::{
+        DenoiserSystems, ViewDenoisedRadianceTextures, ViewDenoiserGuideTextures,
+        ViewDenoiserInputTextures,
+    },
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer};
@@ -54,9 +64,9 @@ use bevy_render::{
 };
 use bevy_utils::default;
 use history_confidence::{init_history_confidence_pipelines, HistoryConfidence};
-use nrd_wgpu::{Denoiser, DenoiserKind, TexturePrecision};
+use nrd_wgpu::{Denoiser, DenoiserKind, DenoiserPipelines, InputFormats, TexturePrecision};
 use std::sync::Mutex;
-use tracing::{error, info};
+use tracing::info;
 
 /// Adds [`Nrd`]. Part of [`AntiAliasPlugin`](crate::AntiAliasPlugin) when the `nrd` feature is on.
 #[derive(Default)]
@@ -67,10 +77,14 @@ impl Plugin for NrdPlugin {
         embedded_asset!(app, "crop_motion_vectors.wesl");
         embedded_asset!(app, "history_confidence.wesl");
 
+        let failure = NrdFailure::default();
+        app.insert_resource(failure.clone());
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
         render_app
+            .insert_resource(failure)
+            .init_resource::<NrdDevicePipelines>()
             .add_systems(
                 RenderStartup,
                 (init_nrd_crop_pipeline, init_history_confidence_pipelines),
@@ -124,6 +138,13 @@ impl NrdPrecision {
     }
 }
 
+/// Set when NRD failed on this render device, in both the main and the render world (see
+/// [`backend_failure`](crate::backend_failure)): the driver refused its shaders, pipelines or textures, or a frame
+/// failed. From then on no view runs NRD; views with [`Nrd`] show the noisy lighting until the camera gets
+/// another denoiser.
+#[derive(Resource, Clone, Default, Debug)]
+pub struct NrdFailure(pub BackendFailure);
+
 impl Nrd {
     /// The wgpu features the render device needs for [`Nrd`] at `precision`.
     ///
@@ -138,15 +159,31 @@ impl Nrd {
     }
 }
 
-/// The NRD denoiser of one view, at one size and precision.
+/// The NRD denoiser of one view.
 #[derive(Component)]
 pub struct ViewNrd {
+    /// The size and precision the view renders at, and its outputs have.
     size: UVec2,
     precision: NrdPrecision,
-    /// `None` once creating or running the denoiser failed: the view then shows the noisy
-    /// lighting until its size or precision changes.
+    /// Frames the view has had a size or precision its denoiser does not have yet. The denoiser follows once
+    /// it reaches [`RESIZE_AFTER_STABLE_FRAMES`]; until then the view shows the noisy lighting.
+    unsettled_frames: u32,
+    /// `None` once creating or running the denoiser failed: the view then shows the noisy lighting.
     state: Mutex<Option<NrdState>>,
 }
+
+impl ViewNrd {
+    /// Whether the denoiser is at the view's size and precision, so it can run this frame.
+    fn is_settled(state: &NrdState, size: UVec2, precision: NrdPrecision) -> bool {
+        state.denoiser.size() == size.to_array()
+            && state.denoiser.precision() == precision.texture_precision()
+    }
+}
+
+/// How many frames in a row a view must keep a new render size before NRD's textures follow it. A window being
+/// dragged, or a quality slider being moved, changes the size every frame; remaking 300-650 MiB of textures each
+/// time would stall every one of those frames. to tune: 4 frames is about 70 ms at 60 Hz.
+const RESIZE_AFTER_STABLE_FRAMES: u32 = 4;
 
 struct NrdState {
     denoiser: Denoiser,
@@ -155,6 +192,26 @@ struct NrdState {
     /// larger (an upscaler is on).
     motion_vectors: Option<CachedTexture>,
     history_confidence: HistoryConfidence,
+}
+
+/// NRD's pipelines for the render device, shared by every view, created when the first view asks for NRD.
+#[derive(Resource, Default)]
+struct NrdDevicePipelines(Option<DenoiserPipelines>);
+
+/// The formats of what the lighting pass hands NRD.
+fn input_formats(
+    inputs: &ViewDenoiserInputTextures,
+    guides: &ViewDenoiserGuideTextures,
+) -> InputFormats {
+    InputFormats {
+        diffuse: inputs.diffuse_radiance_hit_distance.texture.format(),
+        specular: inputs.specular_radiance_hit_distance.texture.format(),
+        normal_roughness: guides.normal_roughness.texture.format(),
+        view_depth: inputs.view_depth.texture.format(),
+        // The prepass's, or the cut copy of `motion_vectors`, which has the same format.
+        motion_vectors: TextureFormat::Rg16Float,
+        history_confidence: Some(HistoryConfidence::FORMAT),
+    }
 }
 
 fn extract_nrd(
@@ -180,99 +237,181 @@ fn extract_nrd(
     }
 }
 
-/// Creates the denoiser of each view with [`Nrd`] and the textures it writes, and recreates them
-/// when the view's render resolution or the precision changes.
+/// Creates the denoiser of each view with [`Nrd`] and the textures it writes. When the view's render resolution
+/// or the precision changes, the outputs follow at once and NRD's own textures once the change has held for
+/// [`RESIZE_AFTER_STABLE_FRAMES`].
 fn prepare_nrd(
-    views: Query<(
+    mut views: Query<(
         Entity,
         &ExtractedCamera,
         Option<&MainPassResolutionOverride>,
         &Nrd,
-        Option<&ViewNrd>,
-        Has<ViewDenoiserInputTextures>,
+        Option<&mut ViewNrd>,
+        Option<&ViewDenoiserInputTextures>,
+        Option<&ViewDenoiserGuideTextures>,
     )>,
+    mut device_pipelines: ResMut<NrdDevicePipelines>,
+    failure: Res<NrdFailure>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
     mut commands: Commands,
 ) {
-    for (entity, camera, resolution_override, nrd, view_nrd, has_inputs) in &views {
+    for (entity, camera, resolution_override, nrd, view_nrd, inputs, guides) in &mut views {
         let mut entity_commands = commands.entity(entity);
         // The lighting pass inserts its textures one frame after the camera asks for them.
-        let (true, Some(mut size)) = (has_inputs, camera.physical_viewport_size) else {
+        let (Some(inputs), Some(guides), Some(mut size)) =
+            (inputs, guides, camera.physical_viewport_size)
+        else {
             entity_commands.remove::<(ViewNrd, ViewDenoisedRadianceTextures)>();
             continue;
         };
         if let Some(MainPassResolutionOverride(resolution_override)) = resolution_override {
             size = *resolution_override;
         }
-
-        if let Some(view_nrd) = view_nrd
-            && view_nrd.size == size
-            && view_nrd.precision == nrd.precision
-        {
-            if view_nrd.state.lock().unwrap().is_none() {
-                entity_commands.remove::<ViewDenoisedRadianceTextures>();
-            }
+        if failure.0.has_failed() {
+            // NRD failed on this device: no view tries it again.
+            entity_commands.remove::<(ViewNrd, ViewDenoisedRadianceTextures)>();
             continue;
         }
+        let precision = nrd.precision;
+        let formats = input_formats(inputs, guides);
 
-        let denoiser = Denoiser::new(
-            render_device.wgpu_device(),
-            DenoiserKind::ReblurDiffuseSpecular,
-            size.to_array(),
-            nrd.precision.texture_precision(),
-        );
-        let state = match denoiser {
-            Ok(denoiser) => {
-                info!(
-                    "NRD: ReBLUR at {}x{}, {:?} precision, {:.1} MiB of textures",
-                    size.x,
-                    size.y,
-                    nrd.precision,
-                    denoiser.texture_bytes() as f64 / (1024.0 * 1024.0)
-                );
-                let create_texture = |label| {
-                    let texture = render_device.create_texture(&TextureDescriptor {
-                        label: Some(label),
-                        size: size.to_extents(),
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: TextureDimension::D2,
-                        format: nrd_wgpu::OUTPUT_FORMAT,
-                        // `COPY_DST`: a frame NRD cannot denoise gets the noisy lighting copied in.
-                        usage: TextureUsages::STORAGE_BINDING
-                            | TextureUsages::TEXTURE_BINDING
-                            | TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    });
-                    let default_view = texture.create_view(&TextureViewDescriptor::default());
-                    CachedTexture {
-                        texture,
-                        default_view,
-                    }
-                };
-                entity_commands.insert(ViewDenoisedRadianceTextures {
-                    diffuse: create_texture("nrd_denoised_diffuse"),
-                    specular: create_texture("nrd_denoised_specular"),
-                });
-                Some(NrdState {
-                    denoiser,
-                    frame_index: 0,
-                    motion_vectors: None,
-                    history_confidence: HistoryConfidence::new(&render_device, &render_queue, size),
-                })
+        let Some(mut view_nrd) = view_nrd else {
+            let pipelines = match &device_pipelines.0 {
+                Some(pipelines) => Ok(pipelines.clone()),
+                None => DenoiserPipelines::new(
+                    render_device.wgpu_device(),
+                    DenoiserKind::ReblurDiffuseSpecular,
+                )
+                .inspect(|pipelines| device_pipelines.0 = Some(pipelines.clone())),
+            };
+            let denoiser = pipelines.and_then(|pipelines| {
+                pipelines.warm_up(
+                    render_device.wgpu_device(),
+                    precision.texture_precision(),
+                    &formats,
+                )?;
+                Denoiser::with_pipelines(
+                    render_device.wgpu_device(),
+                    &pipelines,
+                    size.to_array(),
+                    precision.texture_precision(),
+                )
+            });
+            match denoiser {
+                Ok(denoiser) => {
+                    info!(
+                        "NRD: ReBLUR at {}x{}, {:?} precision, {:.1} MiB of textures",
+                        size.x,
+                        size.y,
+                        precision,
+                        denoiser.texture_bytes() as f64 / (1024.0 * 1024.0)
+                    );
+                    entity_commands.insert((
+                        denoised_textures(&render_device, size),
+                        ViewNrd {
+                            size,
+                            precision,
+                            unsettled_frames: 0,
+                            state: Mutex::new(Some(NrdState {
+                                denoiser,
+                                frame_index: 0,
+                                motion_vectors: None,
+                                history_confidence: HistoryConfidence::new(
+                                    &render_device,
+                                    &render_queue,
+                                    size,
+                                ),
+                            })),
+                        },
+                    ));
+                }
+                Err(error) => {
+                    failure.0.report("NRD", error);
+                    entity_commands.remove::<ViewDenoisedRadianceTextures>();
+                }
             }
-            Err(error) => {
-                error!("NRD cannot denoise this view, which shows the noisy lighting: {error}");
-                entity_commands.remove::<ViewDenoisedRadianceTextures>();
-                None
-            }
+            continue;
         };
-        entity_commands.insert(ViewNrd {
-            size,
-            precision: nrd.precision,
-            state: Mutex::new(state),
+
+        let ViewNrd {
+            size: view_size,
+            precision: view_precision,
+            unsettled_frames,
+            state,
+        } = &mut *view_nrd;
+        let Some(nrd_state) = state.get_mut().unwrap() else {
+            entity_commands.remove::<ViewDenoisedRadianceTextures>();
+            continue;
+        };
+        if (*view_size, *view_precision) != (size, precision) {
+            // The outputs and the confidence estimate are small and follow at once; NRD's textures wait.
+            entity_commands.insert(denoised_textures(&render_device, size));
+            nrd_state.history_confidence =
+                HistoryConfidence::new(&render_device, &render_queue, size);
+            nrd_state.motion_vectors = None;
+            *view_size = size;
+            *view_precision = precision;
+            *unsettled_frames = 0;
+        }
+        if ViewNrd::is_settled(nrd_state, size, precision) {
+            continue;
+        }
+        *unsettled_frames += 1;
+        if *unsettled_frames < RESIZE_AFTER_STABLE_FRAMES {
+            continue;
+        }
+        let device = render_device.wgpu_device();
+        let pipelines = nrd_state.denoiser.pipelines().clone();
+        let resized = pipelines
+            .warm_up(device, precision.texture_precision(), &formats)
+            .and_then(|()| {
+                nrd_state
+                    .denoiser
+                    .resize(device, size.to_array(), precision.texture_precision())
+            });
+        match resized {
+            Ok(()) => info!(
+                "NRD: ReBLUR resized to {}x{}, {:?} precision, {:.1} MiB of textures",
+                size.x,
+                size.y,
+                precision,
+                nrd_state.denoiser.texture_bytes() as f64 / (1024.0 * 1024.0)
+            ),
+            Err(error) => {
+                failure.0.report("NRD", error);
+                *state.get_mut().unwrap() = None;
+                entity_commands.remove::<ViewDenoisedRadianceTextures>();
+            }
+        }
+    }
+}
+
+/// The two textures NRD writes for the lighting pass to compose.
+fn denoised_textures(render_device: &RenderDevice, size: UVec2) -> ViewDenoisedRadianceTextures {
+    let create_texture = |label| {
+        let texture = render_device.create_texture(&TextureDescriptor {
+            label: Some(label),
+            size: size.to_extents(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: nrd_wgpu::OUTPUT_FORMAT,
+            // `COPY_DST`: a frame NRD does not denoise gets the noisy lighting copied in.
+            usage: TextureUsages::STORAGE_BINDING
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST,
+            view_formats: &[],
         });
+        let default_view = texture.create_view(&TextureViewDescriptor::default());
+        CachedTexture {
+            texture,
+            default_view,
+        }
+    };
+    ViewDenoisedRadianceTextures {
+        diffuse: create_texture("nrd_denoised_diffuse"),
+        specular: create_texture("nrd_denoised_specular"),
     }
 }
 

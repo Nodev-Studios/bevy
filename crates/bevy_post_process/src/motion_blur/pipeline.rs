@@ -130,11 +130,6 @@ impl SpecializedRenderPipeline for MotionBlurPipeline {
             shader_defs.push(ShaderDefVal::from("MULTISAMPLED"));
         }
 
-        #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-        {
-            shader_defs.push("SIXTEEN_BYTE_ALIGNMENT".into());
-        }
-
         RenderPipelineDescriptor {
             label: Some("motion_blur_pipeline".into()),
             layout,

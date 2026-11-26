@@ -22,6 +22,7 @@ mod extract;
 mod node;
 mod prepare;
 
+use crate::backend_failure::BackendFailure;
 use alloc::sync::Arc;
 use bevy_app::{App, Plugin};
 use bevy_camera::Hdr;
@@ -120,8 +121,10 @@ impl Plugin for FsrPlugin {
             provider.name, provider.id
         );
 
+        let failure = FsrFailure::default();
         render_app
             .insert_resource(FsrSdkResource(sdk))
+            .insert_resource(failure.clone())
             .add_systems(ExtractSchedule, extract::extract_fsr)
             .add_systems(
                 Render,
@@ -133,9 +136,17 @@ impl Plugin for FsrPlugin {
         app.insert_resource(FsrSupported {
             provider_name: provider.name,
             provider_id: provider.id,
-        });
+        })
+        .insert_resource(failure);
     }
 }
+
+/// Set when FSR failed on this device, in both the main and the render world (see
+/// [`backend_failure`](crate::backend_failure)). From then on no camera is upscaled with FSR; the cameras that
+/// have [`Fsr`] render at the output's resolution without anti-aliasing until it is replaced, which a settings
+/// layer does when it reads this.
+#[derive(Resource, Clone, Default, Debug)]
+pub struct FsrFailure(pub BackendFailure);
 
 /// Camera component that renders below the output's resolution and upscales with FSR.
 ///

@@ -2,8 +2,8 @@
 //! into what will run, and says why the two differ.
 
 use crate::{
-    raster::RasterLevel, DenoiserChoice, GpuDeviceType, GpuVendor, GraphicsCapabilities, GraphicsPreset,
-    GraphicsSettings, UpscaleQuality, UpscalerChoice,
+    raster::RasterLevel, DenoiserChoice, GpuDeviceType, GpuVendor, GraphicsCapabilities,
+    GraphicsPreset, GraphicsSettings, UpscaleQuality, UpscalerChoice,
 };
 use bevy_ecs::prelude::*;
 use bevy_math::UVec2;
@@ -183,6 +183,14 @@ pub enum Fallback {
     /// NRD denoises instead of DLSS Ray Reconstruction, under `Auto` only, on `RtLite` on an RTX 20 or 30
     /// card: Ray Reconstruction's cost on those cards' tensor cores is unmeasured.
     NrdOnOlderRtx,
+    /// NRD failed on this device while the app ran (the driver refused its shaders, pipelines or textures, or
+    /// a frame failed): DLSS Ray Reconstruction denoises, or `Raster` runs. Added by the apply layer, not by
+    /// [`resolve`].
+    NrdFailed,
+    /// FSR failed on this device while the app ran: TSR upscales. Added by the apply layer.
+    FsrFailed,
+    /// TSR's FSR 3.1 failed on this device while the app ran: TSR runs SGSR 2. Added by the apply layer.
+    TsrFsr3Failed,
 }
 
 impl fmt::Display for Fallback {
@@ -228,6 +236,11 @@ impl fmt::Display for Fallback {
             Self::NrdOnOlderRtx => {
                 "NRD denoises: DLSS Ray Reconstruction's cost on RTX 20 and 30 cards is unmeasured"
             }
+            Self::NrdFailed => {
+                "NRD failed on this driver: DLSS Ray Reconstruction denoises, or Raster runs"
+            }
+            Self::FsrFailed => "FSR failed on this driver: TSR upscales",
+            Self::TsrFsr3Failed => "TSR's FSR 3.1 failed on this driver: TSR runs SGSR 2",
         })
     }
 }

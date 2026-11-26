@@ -8,7 +8,7 @@ use crate::{
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::embedded_asset;
-use bevy_camera::{Camera, Camera3d};
+use bevy_camera::{Camera, Camera3d, MainPassResolutionOverride};
 use bevy_core_pipeline::{
     prepass::{MotionVectorPrepass, ViewPrepassTextures},
     schedule::{Core3d, Core3dSystems},
@@ -20,6 +20,7 @@ use bevy_ecs::{
     schedule::IntoScheduleConfigs,
     system::{Query, Res},
 };
+use bevy_math::{Vec2, Vec4Swizzles};
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
 use bevy_render::{
     diagnostic::RecordDiagnostics,
@@ -33,7 +34,7 @@ use bevy_render::{
     },
     renderer::{RenderContext, ViewQuery},
     sync_component::SyncComponent,
-    view::{prepare_view_targets, Msaa, ViewDepthStencilTexture, ViewTarget},
+    view::{prepare_view_targets, ExtractedView, Msaa, ViewDepthStencilTexture, ViewTarget},
     GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
 };
 
@@ -128,8 +129,8 @@ impl ExtractComponent<RenderApp> for MotionBlur {
         Some(MotionBlurUniform {
             shutter_angle: item.shutter_angle,
             samples: item.samples,
-            #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-            _webgl2_padding: Default::default(),
+            // Set per view by `prepare_motion_blur_main_pass_scale`.
+            main_pass_scale: Vec2::ONE,
         })
     }
 }
@@ -139,9 +140,10 @@ impl ExtractComponent<RenderApp> for MotionBlur {
 pub struct MotionBlurUniform {
     shutter_angle: f32,
     samples: u32,
-    #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
-    // WebGL2 structs must be 16 byte aligned.
-    _webgl2_padding: bevy_math::Vec2,
+    /// The main pass's resolution over the output's. Under an upscaler the depth and the motion vectors are
+    /// drawn in that share of their textures (from the top-left), while this pass runs on the upscaled output.
+    /// It also makes the struct 16 bytes, as WebGL 2 needs.
+    main_pass_scale: Vec2,
 }
 
 /// Adds support for per-object motion blur to the app. See [`MotionBlur`] for details.
@@ -171,6 +173,9 @@ impl Plugin for MotionBlurPlugin {
                         .in_set(RenderSystems::PrepareViews)
                         .after(prepare_view_targets)
                         .ambiguous_with_all(),
+                    prepare_motion_blur_main_pass_scale
+                        .in_set(RenderSystems::PrepareViews)
+                        .after(prepare_view_targets),
                 ),
             );
 
@@ -273,5 +278,21 @@ fn prepare_view_depth_texture_usages_for_motion_blur(
 ) {
     for mut camera in view_targets.iter_mut() {
         camera.depth_texture_usages.0 |= TextureUsages::TEXTURE_BINDING.bits();
+    }
+}
+
+/// Sets [`MotionBlurUniform::main_pass_scale`] from the view's main-pass resolution override, which an upscaler
+/// (DLSS, TSR, FSR) inserts; without one the scale is 1.
+fn prepare_motion_blur_main_pass_scale(
+    mut views: Query<(
+        &ExtractedView,
+        Option<&MainPassResolutionOverride>,
+        &mut MotionBlurUniform,
+    )>,
+) {
+    for (view, resolution_override, mut uniform) in &mut views {
+        let output = view.viewport.zw().as_vec2().max(Vec2::ONE);
+        let main_pass = resolution_override.map_or(output, |resolution| resolution.0.as_vec2());
+        uniform.main_pass_scale = main_pass / output;
     }
 }

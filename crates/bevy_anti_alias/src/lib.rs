@@ -5,7 +5,6 @@
     html_favicon_url = "https://bevy.org/assets/icon.png"
 )]
 
-#[cfg(feature = "fsr")]
 extern crate alloc;
 
 use bevy_app::Plugin;
@@ -14,6 +13,7 @@ use fxaa::FxaaPlugin;
 use smaa::SmaaPlugin;
 use taa::TemporalAntiAliasPlugin;
 
+pub mod backend_failure;
 pub mod contrast_adaptive_sharpening;
 #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
 pub mod dlss;

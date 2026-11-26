@@ -57,6 +57,24 @@ noisy floor and exits 0 when the gate passes: per channel and lobe, the denoised
 the variance down at least 10 times, no NaN or infinity in any frame, no wgpu error. It needs no window, only a
 Vulkan adapter, chosen with `WGPU_ADAPTER_NAME`. See its header for the scenarios and options.
 
+`reblur_plane --resize-bench N` measures what a change of render size costs (see "Pipelines and sizes").
+
+## Pipelines and sizes
+
+NRD's shaders do not depend on the size; only its textures do. `DenoiserPipelines` holds what a device needs once:
+the shader modules, the layouts, the samplers and the compute pipelines (one per shader and set of texture formats).
+`DenoiserPipelines::warm_up` creates every pipeline a frame at the default ReBLUR settings uses, for a precision
+and a set of input formats, before the first frame; a pipeline the warm-up did not foresee (other settings) is
+created when a frame needs it. `Denoiser::with_pipelines` makes a denoiser on shared pipelines and
+`Denoiser::resize` changes its size or precision by remaking its textures only, dropping the history.
+`Denoiser::new` still makes a denoiser with pipelines of its own.
+
+Every module, pipeline and texture is created inside wgpu error scopes (validation, internal, out of memory): a
+driver or wgpu refusing one comes back as `NrdError::Device` instead of reaching the device's uncaptured-error
+handler, so an application can fall back to something else. Setting `NRD_WGPU_FORCE_DEVICE_ERROR` makes
+`DenoiserPipelines::new` provoke a validation error inside its scope, to test that path on a driver that accepts
+NRD. A driver that crashes on NRD's SPIR-V instead of returning an error cannot be caught this way.
+
 ## Known limits, with the measurements behind them
 
 All measured on 2026-11-24 with NRD 4.18.0 on an RTX 5070 (NVIDIA 620.73.04) and on the Ryzen 9600X's integrated
@@ -67,7 +85,8 @@ GPU (Mesa RADV 26.3.1), both through Vulkan.
   the device features `shaderStorageImageWriteWithoutFormat` / `shaderStorageImageReadWithoutFormat`, which wgpu
   never enables and has no way to ask for. Both drivers above ran the shaders correctly anyway. A driver is free
   to refuse; AMD's Windows driver has not been tried. Rewriting the formats into NRD's SPIR-V would modify NVIDIA's
-  object code and is not done.
+  object code and is not done. An application can read whether the device supports the two features from the
+  raw Vulkan adapter (Bevy's `bevy_graphics` does, and does not offer NRD where they are missing).
 - **16-bit float textures darken the result.** Both drivers round toward zero when a shader stores into a 16-bit
   float texture, so a value blended a little closer to its target each frame stops short of it. With the textures
   NRD asks for (`TexturePrecision::Half`) the denoised mean of a uniform floor came out 2.1 % dark after 32

@@ -1,4 +1,4 @@
-use super::{prepare::FsrViewContext, Fsr};
+use super::{prepare::FsrViewContext, Fsr, FsrFailure};
 use bevy_camera::MainPassResolutionOverride;
 use bevy_core_pipeline::prepass::ViewPrepassTextures;
 use bevy_ecs::prelude::*;
@@ -11,7 +11,7 @@ use bevy_render::{
 };
 use bevy_time::Time;
 use fsr_wgpu::FsrRenderParameters;
-use tracing::{error, warn};
+use tracing::warn;
 
 pub fn fsr(
     view: ViewQuery<(
@@ -24,6 +24,7 @@ pub fn fsr(
         &ViewPrepassTextures,
         &Msaa,
     )>,
+    failure: Res<FsrFailure>,
     time: Res<Time>,
     mut ctx: RenderContext,
 ) {
@@ -73,7 +74,8 @@ pub fn fsr(
     let time_span = diagnostics.time_span(ctx.command_encoder(), "fsr");
     match upscaler.render(&parameters, ctx.command_encoder()) {
         Ok(command_buffer) => ctx.add_command_buffer(command_buffer),
-        Err(render_error) => bevy_utils::once!(error!("FSR did not run: {render_error}")),
+        // `prepare_fsr` stops upscaling with FSR from the next frame.
+        Err(render_error) => failure.0.report("FSR", render_error),
     }
     time_span.end(ctx.command_encoder());
 }

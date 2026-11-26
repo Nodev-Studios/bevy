@@ -54,6 +54,10 @@ nrd_wgpu = { path = "../../vendor/nrd_wgpu", optional = true }
 fsr_wgpu = { path = "../../vendor/fsr_wgpu", optional = true }
 # AMD's FSR 3.1 upscaler for TSR (MIT; vendored, see its README).
 wgpu_ffx = { path = "../../vendor/wgpu_ffx" }
+# Error scopes around the backends' shader and pipeline creation (`backend_failure`). `std` makes wgpu keep one
+# error scope stack per thread; without it the stack is shared by every thread, and the scopes of two render
+# threads (Bevy's shader cache, a backend) pop each other's and panic.
+wgpu = { version = "30", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

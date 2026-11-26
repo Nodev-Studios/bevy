@@ -1,6 +1,6 @@
 //! TSR's FSR 3.1 algorithm: AMD's upscaler from `vendor/wgpu_ffx`, recorded into Bevy's command encoder.
 
-use super::Tsr;
+use super::{Tsr, TsrFsr3Failure};
 use bevy_camera::MainPassResolutionOverride;
 use bevy_core_pipeline::prepass::ViewPrepassTextures;
 use bevy_ecs::prelude::*;
@@ -12,7 +12,7 @@ use bevy_render::{
     view::{ExtractedView, Msaa, ViewTarget},
 };
 use bevy_time::Time;
-use tracing::{error, warn};
+use tracing::warn;
 use wgpu_ffx::{FsrContext, FsrDispatchInfo, FsrView};
 
 /// Whether FSR runs on this device, and its pipelines once a camera has asked for them.
@@ -29,6 +29,9 @@ pub struct TsrFsr {
 pub struct TsrFsrView {
     pub view: FsrView,
     pub output_size: UVec2,
+    /// The render size of the last frame upscaled, zero before the first. FSR keeps one history across render
+    /// sizes; a change of size drops it, as SGSR 2's path does.
+    pub render_size: UVec2,
 }
 
 pub fn tsr_fsr(
@@ -43,6 +46,7 @@ pub fn tsr_fsr(
         &Msaa,
     )>,
     fsr: Res<TsrFsr>,
+    failure: Res<TsrFsr3Failure>,
     time: Res<Time>,
     mut ctx: RenderContext,
 ) {
@@ -83,7 +87,7 @@ pub fn tsr_fsr(
         upscale_size: fsr_view.output_size.to_array(),
         // FSR only reads it to smooth its frame-to-frame luma, and refuses values under 1 ms.
         frame_time_delta: (time.delta_secs() * 1000.0).max(1.0),
-        reset_history: tsr.reset,
+        reset_history: tsr.reset || fsr_view.render_size != render_size.as_uvec2(),
         // FSR names a reverse-Z depth's planes the other way round: its "near" is the far plane, at infinity.
         camera_near: f32::INFINITY,
         camera_far: near_plane,
@@ -91,12 +95,15 @@ pub fn tsr_fsr(
         view_space_to_meters_factor: 1.0,
     };
 
+    fsr_view.render_size = render_size.as_uvec2();
+
     let diagnostics = ctx.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
     let time_span = diagnostics.time_span(ctx.command_encoder(), "tsr");
     if let Err(dispatch_error) = context.dispatch(&mut fsr_view.view, ctx.command_encoder(), &info)
     {
-        bevy_utils::once!(error!("TSR's FSR 3.1 did not run: {dispatch_error}"));
+        // `prepare_tsr` switches the camera to SGSR 2 from the next frame.
+        failure.0.report("TSR's FSR 3.1", dispatch_error);
     }
     time_span.end(ctx.command_encoder());
 }

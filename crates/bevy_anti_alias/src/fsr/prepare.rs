@@ -1,4 +1,5 @@
-use super::{Fsr, FsrSdkResource};
+use super::{Fsr, FsrFailure, FsrSdkResource};
+use crate::backend_failure::is_forced;
 use bevy_camera::{Camera3d, CameraMainTextureUsages, MainPassResolutionOverride};
 use bevy_core_pipeline::prepass::{DepthPrepass, MotionVectorPrepass};
 use bevy_diagnostic::FrameCount;
@@ -40,6 +41,7 @@ pub fn prepare_fsr(
         (With<DepthPrepass>, With<MotionVectorPrepass>),
     >,
     sdk: Res<FsrSdkResource>,
+    failure: Res<FsrFailure>,
     frame_count: Res<FrameCount>,
     mut commands: Commands,
 ) {
@@ -60,6 +62,13 @@ pub fn prepare_fsr(
         depth_texture_usages |= TextureUsages::TEXTURE_BINDING;
         camera_3d.depth_texture_usages = depth_texture_usages.into();
 
+        if failure.0.has_failed() {
+            commands
+                .entity(entity)
+                .remove::<(FsrViewContext, MainPassResolutionOverride)>();
+            continue;
+        }
+
         let output_size = view.viewport.zw();
         let render_size = (output_size.as_vec2() * fsr.render_scale.clamp(0.0, 1.0))
             .round()
@@ -77,7 +86,13 @@ pub fn prepare_fsr(
             _ => {
                 // The inputs are output-sized, with the image in their top-left render rectangle: the maximum
                 // render size is the textures' size, as for TSR's FSR 3.1.
-                match FsrUpscaler::new(&sdk.0, output_size.to_array(), output_size.to_array()) {
+                let upscaler = if is_forced("fsr") {
+                    Err("forced by BEVY_FORCE_BACKEND_FAILURE".to_string())
+                } else {
+                    FsrUpscaler::new(&sdk.0, output_size.to_array(), output_size.to_array())
+                        .map_err(|error| error.to_string())
+                };
+                match upscaler {
                     Ok(upscaler) => {
                         info!(
                             "FSR: {}x{} context runs FSR {} (provider id {:#x})",
@@ -94,7 +109,10 @@ pub fn prepare_fsr(
                         })
                     }
                     Err(context_error) => {
-                        bevy_utils::once!(error!("FSR context not created: {context_error}"));
+                        failure.0.report(
+                            "FSR",
+                            format!("its context was not created: {context_error}"),
+                        );
                         commands
                             .entity(entity)
                             .remove::<(FsrViewContext, MainPassResolutionOverride)>();

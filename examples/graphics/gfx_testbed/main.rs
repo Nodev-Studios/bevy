@@ -83,6 +83,9 @@ gfx_testbed: renders a scene one way, measures it, and writes report.json, scree
   --light-toggle-at N            switch one fixture off at measured frame N and capture toggle.png 5 frames later
   --force-no-rt                  ask the GPU for no ray query, as on a card without ray tracing
   --force-black                  spawn no light, so the frame is black: the harness's own failure case
+  --dof                          add depth of field (Gaussian, focus 4 m) to the camera
+  --motion-blur                  add motion blur (shutter angle 1, 4 samples) to the camera; needs --camera orbit
+                                 to show anything
   --out DIR                      folder for the results (default gfx-testbed-out)
 ";
 
@@ -215,6 +218,10 @@ pub struct Args {
     pub force_no_rt: bool,
     /// `--force-black`.
     pub force_black: bool,
+    /// `--dof`.
+    pub dof: bool,
+    /// `--motion-blur`.
+    pub motion_blur: bool,
     /// `--out`.
     pub out: PathBuf,
 }
@@ -272,6 +279,8 @@ impl Args {
             light_toggle_at: flags.parsed("--light-toggle-at"),
             force_no_rt: flags.switch("--force-no-rt"),
             force_black: flags.switch("--force-black"),
+            dof: flags.switch("--dof"),
+            motion_blur: flags.switch("--motion-blur"),
             out: flags
                 .value("--out")
                 .map_or_else(|| PathBuf::from("gfx-testbed-out"), PathBuf::from),
@@ -625,6 +634,20 @@ fn setup(world: &mut World) {
     };
     contract.camera(&args, &mut camera);
     baked.camera(&args, &mut camera);
+    // Post effects that read the depth and motion vector prepasses after an upscaler.
+    if args.dof {
+        camera.insert(bevy::post_process::dof::DepthOfField {
+            mode: bevy::post_process::dof::DepthOfFieldMode::Gaussian,
+            focal_distance: 4.0,
+            ..default()
+        });
+    }
+    if args.motion_blur {
+        camera.insert(bevy::post_process::motion_blur::MotionBlur {
+            shutter_angle: 1.0,
+            samples: 4,
+        });
+    }
     let scene = baked.prepare(world, scene);
     world.insert_resource(ActiveScene(scene));
     if let Some(failure) = raw_failure {
