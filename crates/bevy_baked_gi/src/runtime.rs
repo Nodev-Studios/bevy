@@ -34,7 +34,9 @@ use wgpu_types::{Features, Limits};
 /// Loads baked irradiance volumes and keeps their intensity in step with the lights.
 ///
 /// Add a [`BakedGi`] entity naming a manifest; the plugin spawns one [`LightProbe`] + [`IrradianceVolume`] child
-/// per baked region and reports what happened in [`BakedGiStatus`]. It needs no ray tracing.
+/// per baked region, and a reflection probe beside it when the region has one
+/// ([`BakedGiReflection`](crate::BakedGiReflection)), and reports what happened in [`BakedGiStatus`]. It needs no
+/// ray tracing.
 pub struct BakedGiPlugin;
 
 impl Plugin for BakedGiPlugin {
@@ -50,6 +52,8 @@ impl Plugin for BakedGiPlugin {
                     spawn_baked_volumes,
                     check_stale_regions,
                     update_volume_intensities,
+                    crate::reflection::spawn_reflection_probes,
+                    crate::reflection::follow_volume_intensity,
                     update_status,
                 )
                     .chain()
@@ -394,6 +398,7 @@ mod tests {
             bounce,
             static_weight,
             light_weights,
+            reflection: None,
         }
     }
 
@@ -488,6 +493,7 @@ mod tests {
                 region("c", 0.0, 0.0, vec![0.0, 0.0]),
             ],
             volumes: Vec::new(),
+            reflections: Vec::new(),
         };
         let handle = app
             .world_mut()

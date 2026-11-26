@@ -9,12 +9,20 @@
 //!   every volume at intensity 1, no tonemapping. Beside each capture it writes `mask-<capture>.png`: the pixels
 //!   whose surface lies inside a baked box, found by tracing the scene's triangles on the CPU. A black pixel of
 //!   the capture inside the mask is a surface the bake does not reach.
+//! - `--gi-no-reflections` hides the bake's reflection probes, leaving its volumes (gate 15's "volumes alone").
+//! - `--gi-reflection-only` keeps only the light the reflection probes reflect: no analytic light, every dielectric's
+//!   base colour black (its specular stays), no emission, volumes and probes at intensity 1, no screen-space
+//!   reflections; the run's exposure and tonemapping are kept. In `interior` it records `floor_region`, a rectangle
+//!   of the glossy floor (gate 15's "not black").
+//! - `--gi-reflection-coverage` is the coverage view of the reflection probes alone: every material white metal of
+//!   roughness 0.5, so every pixel shows only what a probe reflects; masks as `--gi-coverage`.
 //! - In `gi-furnace` with a bake loaded, the run also writes the CPU's prediction of the frame
 //!   (`predicted.png`), the same with each axis's two sides swapped (`predicted-swap-{x,y,z}.png`), and one mask
 //!   per side of the sphere's pixels whose normal faces that wall (`mask-{px,nx,py,ny,pz,nz}.png`).
 //!
-//! `report.json` gets a `gi` section: the bake's status, the boxes in the camera's frustum, the device limits
-//! that decide whether Bevy can bind them, and the scenes' measurement rectangles.
+//! `report.json` gets a `gi` section: the bake's status, the boxes in the camera's frustum, how many volumes and
+//! reflection probes Bevy bound for the view, the device limits that decide whether Bevy can bind them, and the
+//! scenes' measurement rectangles.
 
 use crate::{ActiveScene, Args, Flags, Phase, Report, Run, Scene, TestbedCamera, ToggleLight};
 use bevy::{
@@ -28,18 +36,26 @@ use bevy::{
         GraphicsSettings,
     },
     image::{CompressedImageFormats, ImageSampler, ImageType},
-    light::IrradianceVolume,
+    light::{EnvironmentMapLight, IrradianceVolume, LightProbe},
     math::Affine3A,
     mesh::{Indices, VertexAttributeValues},
+    pbr::RenderViewLightProbes,
     prelude::*,
     render::{
         render_resource::{Extent3d, TextureDimension, TextureFormat},
         renderer::RenderDevice,
         view::{DebandDither, Tonemapping},
+        Render, RenderApp, RenderSystems,
     },
 };
 use serde_json::{json, Map, Value};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 /// The usage text of this file's flags, printed by `--help` after the others.
 pub const HELP: &str = "
@@ -55,6 +71,12 @@ Baked indirect light (bevy_baked_gi):
   --lights-off NAME,...          spawn the scene without these named lights
   --gi-pin-intensity             hold every baked volume at intensity 1, whatever the lights do
   --gi-coverage                  the bake alone: white matte materials, no analytic light, volumes at
+                                 intensity 1, exposure 0 EV, no tonemapping; writes mask-<capture>.png
+  --gi-no-reflections            hide the bake's reflection probes (its volumes alone; with a reflection
+                                 view, its negative control)
+  --gi-reflection-only           only what the reflection probes reflect: no analytic light, dielectrics' base
+                                 colour black, no emission, intensity 1, no SSR; exposure and tonemapping kept
+  --gi-reflection-coverage       the reflection probes alone: white metal of roughness 0.5, no analytic light,
                                  intensity 1, exposure 0 EV, no tonemapping; writes mask-<capture>.png
   Scenes: two-rooms (0.45 m wall), two-rooms-thin (0.10 m), two-rooms-door (0.45 m, 1 m door), rooms (12 rooms
   off a corridor), gi-furnace (gate 2's asymmetric furnace with a white sphere left out of the bake),
@@ -79,6 +101,10 @@ const FURNACE_HALF: f32 = 1.0;
 const FURNACE_SPHERE: f32 = 0.35;
 /// The exposure of the scenes whose frames are predicted on the CPU: 1 / 1.2 of the radiance.
 const PREDICTED_EV100: f32 = 0.0;
+/// Gate 15's crop of `interior`'s floor (world x and z ranges at y = 0): clear of the sphere, the cubes and the
+/// green box, and in front of the default camera.
+const FLOOR_X: (f32, f32) = (-0.3, 1.0);
+const FLOOR_Z: (f32, f32) = (-0.2, 1.0);
 
 /// A thing the bake leaves out: it moves at run time (gate 6's sphere).
 #[derive(Component)]
@@ -101,6 +127,9 @@ pub struct Baked {
     lights_off: Vec<String>,
     pin_intensity: bool,
     coverage: bool,
+    no_reflections: bool,
+    reflection_only: bool,
+    reflection_coverage: bool,
 }
 
 impl Baked {
@@ -126,6 +155,9 @@ impl Baked {
                 .unwrap_or_default(),
             pin_intensity: flags.switch("--gi-pin-intensity"),
             coverage: flags.switch("--gi-coverage"),
+            no_reflections: flags.switch("--gi-no-reflections"),
+            reflection_only: flags.switch("--gi-reflection-only"),
+            reflection_coverage: flags.switch("--gi-reflection-coverage"),
         };
         if baked.load.is_some() && baked.bake.is_some() {
             flags.error("--bake-gi bakes and exits: no --baked-gi with it");
@@ -133,8 +165,16 @@ impl Baked {
         if baked.bake_samples.is_some_and(|n| n == 0 || n % 256 != 0) {
             flags.error("--bake-samples must be a positive multiple of 256");
         }
-        if baked.coverage && baked.load.is_none() {
-            flags.error("--gi-coverage shows a bake: give --baked-gi");
+        let views = [
+            baked.coverage,
+            baked.reflection_only,
+            baked.reflection_coverage,
+        ];
+        if views.iter().any(|v| *v) && baked.load.is_none() {
+            flags.error("--gi-coverage and the reflection views show a bake: give --baked-gi");
+        }
+        if views.iter().filter(|v| **v).count() > 1 {
+            flags.error("--gi-coverage, --gi-reflection-only and --gi-reflection-coverage are separate views");
         }
         baked
     }
@@ -182,19 +222,27 @@ impl Baked {
         if !app.is_plugin_added::<BakedGiPlugin>() {
             app.add_plugins(BakedGiPlugin);
         }
-        if self.coverage
+        if self.isolating_view()
             && let Some(mut settings) = app.world_mut().get_resource_mut::<GraphicsSettings>()
         {
-            // Nothing but the volumes may light or darken the coverage view.
+            // Nothing but the bake may light or darken these views.
             let overrides = &mut settings.overrides;
             overrides.ssao = Some(false);
             overrides.ssr = Some(false);
             overrides.contact_shadows = Some(false);
             overrides.bloom = Some(false);
         }
-        if self.pin_intensity || self.coverage {
+        if self.pin_intensity || self.isolating_view() {
             app.add_systems(Last, pin_intensity);
         }
+        if self.no_reflections {
+            app.add_systems(PostUpdate, hide_reflection_probes);
+        }
+        let bound = BoundProbes::default();
+        app.insert_resource(bound.clone());
+        app.sub_app_mut(RenderApp)
+            .insert_resource(bound)
+            .add_systems(Render, count_bound_probes.in_set(RenderSystems::Queue));
         app.add_systems(Update, record.after(crate::drive).before(crate::finish));
     }
 
@@ -211,9 +259,14 @@ impl Baked {
         })
     }
 
+    /// A view that removes the analytic lights to show the bake alone.
+    fn isolating_view(&self) -> bool {
+        self.coverage || self.reflection_only || self.reflection_coverage
+    }
+
     /// Gives the camera what this file's views need.
     pub fn camera(&self, args: &Args, camera: &mut EntityWorldMut) {
-        if self.coverage || args.scene == "gi-furnace" {
+        if self.coverage || self.reflection_coverage || args.scene == "gi-furnace" {
             // A frame the CPU predicts or reads for black: linear light times the exposure, clamped, sRGB.
             camera.insert((
                 Exposure {
@@ -238,7 +291,7 @@ impl Baked {
             scene.assets.push(manifest.clone().untyped());
             world.spawn((Name::new("baked GI"), BakedGi(manifest)));
         }
-        if self.coverage {
+        if self.isolating_view() {
             let lights: Vec<Entity> = world
                 .query_filtered::<Entity, Or<(
                     With<PointLight>,
@@ -252,13 +305,30 @@ impl Baked {
                 world.despawn(light);
             }
             for (_, material) in world.resource_mut::<Assets<StandardMaterial>>().iter_mut() {
-                *material = StandardMaterial {
-                    base_color: Color::WHITE,
-                    perceptual_roughness: 1.0,
-                    reflectance: 0.0,
-                    metallic: 0.0,
-                    ..default()
-                };
+                if self.coverage {
+                    *material = StandardMaterial {
+                        base_color: Color::WHITE,
+                        perceptual_roughness: 1.0,
+                        reflectance: 0.0,
+                        metallic: 0.0,
+                        ..default()
+                    };
+                } else if self.reflection_coverage {
+                    *material = StandardMaterial {
+                        base_color: Color::WHITE,
+                        perceptual_roughness: 0.5,
+                        metallic: 1.0,
+                        ..default()
+                    };
+                } else {
+                    // A dielectric's specular does not depend on its base colour; a metal's is its base colour.
+                    if material.metallic < 1.0 {
+                        material.base_color = Color::BLACK;
+                        material.base_color_texture = None;
+                    }
+                    material.emissive = LinearRgba::BLACK;
+                    material.emissive_texture = None;
+                }
             }
         }
         scene
@@ -875,6 +945,38 @@ fn pin_intensity(mut volumes: Query<&mut IrradianceVolume>) {
     }
 }
 
+/// The bake's reflection probes: the testbed spawns no other `EnvironmentMapLight` light probe.
+type ReflectionProbe = (With<LightProbe>, With<EnvironmentMapLight>);
+
+fn hide_reflection_probes(mut probes: Query<&mut Visibility, ReflectionProbe>) {
+    for mut visibility in &mut probes {
+        visibility.set_if_neq(Visibility::Hidden);
+    }
+}
+
+/// How many irradiance volumes and reflection probes Bevy bound for the most recent frame's views (the largest
+/// over views), written by the render world.
+#[derive(Resource, Clone, Default)]
+struct BoundProbes(Arc<[AtomicUsize; 2]>);
+
+fn count_bound_probes(
+    bound: Res<BoundProbes>,
+    views: Query<(
+        Option<&RenderViewLightProbes<IrradianceVolume>>,
+        Option<&RenderViewLightProbes<EnvironmentMapLight>>,
+    )>,
+) {
+    let (mut volumes, mut reflections) = (0, 0);
+    for (volume, reflection) in &views {
+        volumes =
+            volumes.max(volume.map_or(0, |v| v.main_entity_to_render_light_probe_index.len()));
+        reflections = reflections
+            .max(reflection.map_or(0, |r| r.main_entity_to_render_light_probe_index.len()));
+    }
+    bound.0[0].store(volumes, Ordering::Relaxed);
+    bound.0[1].store(reflections, Ordering::Relaxed);
+}
+
 /// The frames `main.rs` captures, by name: the orbit's eight and `a`.
 fn capture_name(args: &Args, frame: u32) -> Option<String> {
     let measured = args.warmup..args.warmup + args.frames;
@@ -925,6 +1027,16 @@ fn record(
         .filter(|(_, affine)| frustum.intersects_obb(&unit, affine, true, false))
         .map(|(name, _)| name.as_str())
         .collect();
+    let probes: Vec<Affine3A> = world
+        .query_filtered::<&GlobalTransform, ReflectionProbe>()
+        .iter(world)
+        .map(GlobalTransform::affine)
+        .collect();
+    let probes_in_view = probes
+        .iter()
+        .filter(|affine| frustum.intersects_obb(&unit, affine, true, false))
+        .count();
+    let bound = world.resource::<BoundProbes>().clone();
     let mut failures: Vec<String> = Vec::new();
     let mut entry = json!({
         "capture": format!("{name}.png"),
@@ -932,9 +1044,26 @@ fn record(
         "boxes": boxes.len(),
         "boxes_in_view": in_view.len(),
         "boxes_in_view_names": in_view,
+        "reflection_probes": probes.len(),
+        "reflection_probes_in_view": probes_in_view,
+        "volumes_bound": bound.0[0].load(Ordering::Relaxed),
+        "reflection_probes_bound": bound.0[1].load(Ordering::Relaxed),
     });
 
-    if baked.coverage {
+    if args.scene == "interior" {
+        // Gate 15's crop of the glossy floor: clear of the furniture, in front of the default camera.
+        let (x, z) = (FLOOR_X, FLOOR_Z);
+        let corners = [
+            Vec3::new(x.0, 0.0, z.0),
+            Vec3::new(x.1, 0.0, z.0),
+            Vec3::new(x.0, 0.0, z.1),
+            Vec3::new(x.1, 0.0, z.1),
+        ];
+        if let Some(rect) = camera.project_rect(&corners) {
+            entry["floor_region"] = json!(rect);
+        }
+    }
+    if baked.coverage || baked.reflection_coverage {
         let triangles = triangles.get_or_insert_with(|| collect_triangles(world));
         let hits = trace(&camera, triangles);
         let (mask, inside) = coverage_mask(&camera, &hits, &boxes);
@@ -999,8 +1128,11 @@ fn record(
         let section = json!({
             "dir": baked.load,
             "status": status,
-            "pinned_intensity": baked.pin_intensity || baked.coverage,
+            "pinned_intensity": baked.pin_intensity || baked.isolating_view(),
             "coverage_view": baked.coverage,
+            "reflection_coverage_view": baked.reflection_coverage,
+            "reflection_only_view": baked.reflection_only,
+            "reflections_hidden": baked.no_reflections,
             "lights_off": baked.lights_off,
             "without_toggle_light": baked.without_toggle_light,
             "binding_arrays_are_usable":

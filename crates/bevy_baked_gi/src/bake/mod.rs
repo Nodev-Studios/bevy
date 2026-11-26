@@ -6,6 +6,10 @@
 //! the volumes and the manifest to [`GiBakeSettings::output`], and exits the app: code 0 when it wrote a bake,
 //! 2 when it refused to.
 //!
+//! After the volumes it captures one reflection probe per region ([`GiBakeReflections`]): a cubemap traced with the
+//! same paths from the box's centre (or its nearest valid voxel when the centre is inside geometry), prefiltered for
+//! GGX roughness on the CPU, written beside the volume as `<region>.refl.ktx2` and listed in the manifest.
+//!
 //! It refuses when nothing is traceable, when the level has no light source at all, and (in full mode) when a
 //! light it would record as on reaches no region: those are mistakes, not bakes. A region with no lamp of its own,
 //! a bake with every lamp removed, or a furnace lit only by emissive walls are correct bakes.
@@ -13,15 +17,18 @@
 mod directions;
 mod gpu;
 mod post;
+pub mod reflection;
+mod reflection_gpu;
 
 pub use directions::{
     fibonacci_directions, pcg_hash, sample_direction, voxel_rotation, voxel_seed,
 };
+pub use reflection::GiBakeReflections;
 
 use crate::{
     encode_ktx2_rgba16f, hash::mesh_entity_hash, light_power, scene_hash, BakeProvenance,
-    BakedGiManifest, BakedLight, BakedLightKind, BakedRegion, GiBakeRegion, GiBakeSkipEmission,
-    LightKey, SceneHash, MANIFEST_FORMAT,
+    BakedGiManifest, BakedLight, BakedLightKind, BakedReflection, BakedRegion, GiBakeRegion,
+    GiBakeSkipEmission, LightKey, SceneHash, MANIFEST_FORMAT,
 };
 use alloc::{format, string::String, sync::Arc, vec::Vec};
 use bevy_app::{App, AppExit, Last, Plugin, Update};
@@ -83,6 +90,8 @@ pub struct GiBakeSettings {
     pub mode: GiBakeMode,
     /// A voxel more than this share of whose first hits are back faces is inside geometry. to tune: DDGI's rule.
     pub invalid_back_face_share: f32,
+    /// Captures a reflection probe per region after the volumes, in [`GiBakeMode::Full`]. `None`: volumes only.
+    pub reflections: Option<GiBakeReflections>,
 }
 
 impl Default for GiBakeSettings {
@@ -94,6 +103,7 @@ impl Default for GiBakeSettings {
             seed: 0,
             mode: GiBakeMode::Full,
             invalid_back_face_share: 0.25,
+            reflections: Some(GiBakeReflections::default()),
         }
     }
 }
@@ -198,6 +208,7 @@ pub struct GiBakeSummary {
 impl Plugin for GiBakePlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "bake.wesl");
+        embedded_asset!(app, "reflection.wesl");
         if !app.is_plugin_added::<RaytracingScenePlugin>() {
             app.add_plugins(RaytracingScenePlugin);
         }
@@ -223,7 +234,11 @@ impl Plugin for GiBakePlugin {
             .insert_resource(exchange)
             .add_systems(
                 RenderStartup,
-                gpu::init_bake_pipeline.after(init_gpu_resource::<RaytracingSceneBindings>),
+                (
+                    gpu::init_bake_pipeline,
+                    reflection_gpu::init_reflection_pipeline,
+                )
+                    .after(init_gpu_resource::<RaytracingSceneBindings>),
             )
             .add_systems(
                 RenderGraph,
@@ -474,6 +489,20 @@ fn send_job(world: &mut World) {
             ),
         );
     }
+    let reflections = settings
+        .reflections
+        .filter(|_| settings.mode == GiBakeMode::Full);
+    if let Some(r) = reflections
+        && !r.is_valid()
+    {
+        return refuse(
+            world,
+            &format!(
+                "reflection probes need a power-of-two size of at least 4, at least one level and no more levels \
+                 than the size has, and positive sample counts: {r:?}"
+            ),
+        );
+    }
     let hash = scene_hash(world);
 
     // Regions, sorted by name so the voxel order (and with it every seed) does not depend on spawn order.
@@ -495,7 +524,8 @@ fn send_job(world: &mut World) {
     let mut voxel_region = Vec::new();
     for (index, (name, region, transform)) in regions.into_iter().enumerate() {
         let file = file_name(&name);
-        if !files.insert(file.clone()) {
+        let cubemap = reflections.map(|_| reflection::file_name(&file));
+        if !files.insert(file.clone()) || cubemap.is_some_and(|cubemap| !files.insert(cubemap)) {
             return refuse(world, &format!("two regions share the file name {file}"));
         }
         let (scale, ..) = transform.to_scale_rotation_translation();
@@ -685,6 +715,15 @@ fn send_job(world: &mut World) {
         adaptive,
         light_keys,
         positioned_lights,
+        reflections: reflections.map(|settings| reflection_gpu::ReflectionJob {
+            settings,
+            probes: records
+                .iter()
+                .map(|record| reflection_gpu::ProbeJob {
+                    world_from_box: record.transform.affine(),
+                })
+                .collect(),
+        }),
     };
     world.resource::<BakeExchange>().0.lock().unwrap().job = Some(Arc::new(job));
     let mut progress = world.resource_mut::<BakeProgress>();
@@ -741,6 +780,7 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
 
     let mut regions = Vec::new();
     let mut volumes = Vec::new();
+    let mut cubemaps = Vec::new();
     let mut summary = record.summary.clone();
     let adaptive = settings
         .adaptive
@@ -797,6 +837,30 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
             0.0
         };
         let (scale, rotation, translation) = region.transform.to_scale_rotation_translation();
+        let reflection = match (outcome.reflections.get(index), settings.reflections) {
+            (Some(capture), Some(probe)) => {
+                info!("{}", reflection_gpu::describe(&region.name, capture));
+                let levels = reflection::prefilter(
+                    probe.size as usize,
+                    capture.faces.clone(),
+                    probe.levels,
+                    probe.prefilter_samples,
+                );
+                let file = reflection::file_name(&region.file);
+                cubemaps.push((
+                    file.clone(),
+                    reflection::encode_ktx2_cubemap(probe.size, &levels),
+                ));
+                Some(BakedReflection {
+                    file,
+                    origin: capture.origin.to_array(),
+                    size: probe.size,
+                    levels: probe.levels,
+                    samples: probe.samples,
+                })
+            }
+            _ => None,
+        };
         regions.push(BakedRegion {
             name: region.name.clone(),
             file: region.file.clone(),
@@ -811,6 +875,7 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
             bounce,
             static_weight,
             light_weights,
+            reflection,
         });
         volumes.push(encode_ktx2_rgba16f(&volume));
     }
@@ -844,6 +909,7 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
         lights,
         regions,
         volumes: Vec::new(),
+        reflections: Vec::new(),
     };
     let text = match ron::ser::to_string_pretty(&manifest, ron::ser::PrettyConfig::default()) {
         Ok(text) => text,
@@ -852,6 +918,9 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
     let written = std::fs::create_dir_all(&settings.output).and_then(|()| {
         for (region, bytes) in manifest.regions.iter().zip(&volumes) {
             std::fs::write(settings.output.join(&region.file), bytes)?;
+        }
+        for (file, bytes) in &cubemaps {
+            std::fs::write(settings.output.join(file), bytes)?;
         }
         std::fs::write(settings.output.join("manifest.gi.ron"), text + "\n")
     });
@@ -867,9 +936,10 @@ fn finish_bake(world: &mut World, outcome: gpu::BakeOutcome) {
     summary.slowest_chunk_ms = outcome.slowest_chunk_ms;
     summary.first_ray_miss_share = accumulated.misses as f64 / accumulated.rays.max(1) as f64;
     info!(
-        "baked GI: wrote {} regions to {} in {:.2} s ({} submits, slowest {:.1} ms) on {} ({}); {} of {} voxels \
+        "baked GI: wrote {} regions ({} reflection probes) to {} in {:.2} s ({} submits, slowest {:.1} ms) on {} ({}); {} of {} voxels \
          inside geometry, {:.4} % of first rays missed; scene hash {}",
         manifest.regions.len(),
+        cubemaps.len(),
         settings.output.display(),
         summary.seconds,
         summary.chunks,
