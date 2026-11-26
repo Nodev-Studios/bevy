@@ -300,7 +300,8 @@ bevy_ui_render = ["dep:bevy_ui_render", "bevy_sprite_render", "bevy_ui"]
 # Feathers ships its built-in icons as PNGs, so enable the PNG feature
 bevy_feathers = ["dep:bevy_feathers", "png"]
 bevy_solari = ["dep:bevy_solari", "bevy_pbr", "bevy_graphics?/solari"]
-bevy_graphics = ["dep:bevy_graphics", "bevy_anti_alias"]
+# The ladder draws glTF glass with its transmission and thickness maps.
+bevy_graphics = ["dep:bevy_graphics", "bevy_anti_alias", "pbr_transmission_textures"]
 bevy_baked_gi = ["dep:bevy_baked_gi", "bevy_pbr"]
 bevy_baked_gi_bake = ["bevy_baked_gi", "bevy_baked_gi?/bake", "bevy_solari"]
 bevy_gizmos = ["dep:bevy_gizmos", "bevy_camera", "bevy_light?/bevy_gizmos"]

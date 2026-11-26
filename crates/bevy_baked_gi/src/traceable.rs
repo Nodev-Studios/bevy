@@ -7,9 +7,13 @@
 //!
 //! - **Fit** ([`fit`]): a mesh that does not fit gets a traced copy: missing normals, UVs and tangents generated,
 //!   every other attribute dropped, indices added. The drawn mesh is never changed.
-//! - **Skip blended materials** ([`traced_kind`]): `Blend`, `Premultiplied`, `Add` and `Multiply` (glass, curtains,
-//!   particles, smoke) are not traced. `bevy_solari` would trace them as opaque walls (its binder has no
-//!   transparency), which blocks the sun and the bounce behind every window. They are still drawn.
+//! - **Skip blended materials** ([`traced_kind`]): `Blend`, `Premultiplied`, `Add` and `Multiply` (curtains,
+//!   particles, smoke, blended glass) are not traced. `bevy_solari` would trace them as opaque walls (its binder
+//!   has no blending), which blocks the sun and the bounce behind every window. They are still drawn.
+//! - **Glass is traced non-opaque** ([`traced_kind`]): a material with `specular_transmission` that does not
+//!   blend (glTF `KHR_materials_transmission`) is traced hit by hit, so `bevy_solari` lets light through it,
+//!   dimmed by its transmittance, and draws it with the rasterizer's transmissive pass on top of the traced
+//!   image.
 //! - **Skip deforming meshes** ([`is_deforming`]): a skinned or morphed mesh would be traced frozen in its bind
 //!   pose.
 //!
@@ -48,12 +52,20 @@ impl fmt::Display for NotTraced {
 /// The kind of acceleration structure a mesh with `material` is traced with, or [`NotTraced::Blended`].
 pub fn traced_kind(material: &StandardMaterial) -> Result<MeshRaytracingFlags, NotTraced> {
     match material.alpha_mode {
+        // Glass: rays look at each hit to let light through.
+        AlphaMode::Opaque if is_glass(material) => Ok(MeshRaytracingFlags::NON_OPAQUE),
         AlphaMode::Opaque => Ok(MeshRaytracingFlags::OPAQUE),
         AlphaMode::Mask(_) | AlphaMode::AlphaToCoverage => Ok(MeshRaytracingFlags::NON_OPAQUE),
         AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
             Err(NotTraced::Blended)
         }
     }
+}
+
+/// Whether `material` lets light through as glass: some `specular_transmission` on a dielectric (a fully
+/// metallic surface transmits nothing).
+pub fn is_glass(material: &StandardMaterial) -> bool {
+    material.specular_transmission > 0.0 && material.metallic < 1.0
 }
 
 /// Whether a mesh deforms: an entity with a `SkinnedMesh` or `MorphWeights` (`skinned_or_morphed`), or a mesh
@@ -217,4 +229,68 @@ pub fn fit(mesh: &Mesh, needs: MeshRaytracingFlags) -> Result<Fitted, Unfit> {
         }
     }
     Ok(Fitted::Copy(Box::new(fitted)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn material(alpha_mode: AlphaMode, specular_transmission: f32) -> StandardMaterial {
+        StandardMaterial {
+            alpha_mode,
+            specular_transmission,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn solids_are_opaque_and_masks_are_not() {
+        assert_eq!(
+            traced_kind(&material(AlphaMode::Opaque, 0.0)),
+            Ok(MeshRaytracingFlags::OPAQUE)
+        );
+        assert_eq!(
+            traced_kind(&material(AlphaMode::Mask(0.5), 0.0)),
+            Ok(MeshRaytracingFlags::NON_OPAQUE)
+        );
+        assert_eq!(
+            traced_kind(&material(AlphaMode::AlphaToCoverage, 0.0)),
+            Ok(MeshRaytracingFlags::NON_OPAQUE)
+        );
+    }
+
+    #[test]
+    fn glass_is_traced_non_opaque() {
+        assert_eq!(
+            traced_kind(&material(AlphaMode::Opaque, 1.0)),
+            Ok(MeshRaytracingFlags::NON_OPAQUE)
+        );
+        assert_eq!(
+            traced_kind(&material(AlphaMode::Mask(0.5), 1.0)),
+            Ok(MeshRaytracingFlags::NON_OPAQUE)
+        );
+        let metal = StandardMaterial {
+            metallic: 1.0,
+            ..material(AlphaMode::Opaque, 1.0)
+        };
+        assert_eq!(traced_kind(&metal), Ok(MeshRaytracingFlags::OPAQUE));
+    }
+
+    #[test]
+    fn blended_materials_are_not_traced_even_as_glass() {
+        for alpha_mode in [
+            AlphaMode::Blend,
+            AlphaMode::Premultiplied,
+            AlphaMode::Add,
+            AlphaMode::Multiply,
+        ] {
+            for transmission in [0.0, 1.0] {
+                assert_eq!(
+                    traced_kind(&material(alpha_mode, transmission)),
+                    Err(NotTraced::Blended),
+                    "{alpha_mode:?} {transmission}"
+                );
+            }
+        }
+    }
 }

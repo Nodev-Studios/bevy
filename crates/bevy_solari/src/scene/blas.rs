@@ -161,7 +161,8 @@ impl BlasOpacity {
     fn geometry_flags(self) -> AccelerationStructureGeometryFlags {
         match self {
             Self::Opaque => AccelerationStructureGeometryFlags::OPAQUE,
-            Self::NonOpaque => AccelerationStructureGeometryFlags::empty(),
+            // Shadow rays multiply glass crossings: each candidate must come once.
+            Self::NonOpaque => AccelerationStructureGeometryFlags::NO_DUPLICATE_ANY_HIT_INVOCATION,
         }
     }
 }

@@ -57,14 +57,36 @@ impl GpuTransform {
     }
 }
 
-/// The device address of a slot's acceleration structure. Zero marks an inactive slot.
+/// The device address of a slot's acceleration structure, and the TLAS instance mask it is traced with.
+/// All zero marks an inactive slot.
 #[derive(Clone, Copy, Default, PartialEq, Pod, Zeroable)]
-#[repr(transparent)]
-pub struct GpuBlasRef(u64);
+#[repr(C)]
+pub struct GpuBlasRef {
+    address: u64,
+    mask: u32,
+    _padding: u32,
+}
 
 impl GpuBlasRef {
-    const NONE: Self = Self(0);
+    const NONE: Self = Self {
+        address: 0,
+        mask: 0,
+        _padding: 0,
+    };
+
+    fn new(address: u64, mask: u32) -> Self {
+        Self {
+            address,
+            mask,
+            _padding: 0,
+        }
+    }
 }
+
+/// TLAS instance mask of everything but glass (`INSTANCE_MASK_SOLID` in `bindings.wesl`).
+pub const INSTANCE_MASK_SOLID: u8 = 0x01;
+/// TLAS instance mask of glass (`INSTANCE_MASK_GLASS` in `bindings.wesl`): a ray forced opaque skips it.
+pub const INSTANCE_MASK_GLASS: u8 = 0x02;
 
 impl_atomic_pod!(GpuInstanceGeometryIds, GpuInstanceGeometryIdsBlob);
 impl_atomic_pod!(GpuTransform, GpuTransformBlob);
@@ -133,16 +155,23 @@ impl InstanceState {
         }
     }
 
-    /// Every drawable instance's slot, mesh and world-from-local transform.
+    /// Every drawable instance's slot, mesh, world-from-local transform and instance mask.
     ///
     /// Only the `wgpu-core` TLAS build path needs this, to fill in the instance descriptors that
     /// the raw path sets up on the GPU. Slots with a null acceleration structure reference are not
     /// currently drawable, and are left out.
-    pub fn drawable(&self) -> impl Iterator<Item = (u32, BlasKey, [f32; 12])> + '_ {
+    pub fn drawable(&self) -> impl Iterator<Item = (u32, BlasKey, [f32; 12], u8)> + '_ {
         self.records.values().filter_map(|instance| {
             let slot = instance.slot;
-            (self.blas_refs.get(slot) != GpuBlasRef::NONE)
-                .then(|| (slot, instance.blas_key(), self.transforms.get(slot).rows()))
+            let blas_ref = self.blas_refs.get(slot);
+            (blas_ref != GpuBlasRef::NONE).then(|| {
+                (
+                    slot,
+                    instance.blas_key(),
+                    self.transforms.get(slot).rows(),
+                    blas_ref.mask as u8,
+                )
+            })
         })
     }
 
@@ -413,7 +442,12 @@ impl InstanceState {
             },
         );
         self.material_ids.grow_and_set(slot, material_slot);
-        self.set_blas_ref(slot, GpuBlasRef(blas_address));
+        let mask = if inputs.assets.glass_materials.contains(&instance.material) {
+            INSTANCE_MASK_GLASS
+        } else {
+            INSTANCE_MASK_SOLID
+        };
+        self.set_blas_ref(slot, GpuBlasRef::new(blas_address, mask.into()));
 
         let is_emissive = inputs
             .assets

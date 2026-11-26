@@ -55,7 +55,11 @@ struct Material {
     uv_transform: mat2x2<f32>,
     alpha: f32,
     alpha_cutoff: f32,
-    _padding: vec2<f32>,
+    /// Glass: the share of light one crossing of the surface lets through, before its base colour. 0 on
+    /// everything else.
+    transmission: f32,
+    /// Glass: what the volume behind one crossing lets through (1 for thin glass).
+    transmission_volume: f32,
 }
 
 const TEXTURE_MAP_NONE = 0xFFFFFFFFu;
@@ -150,13 +154,23 @@ const RAY_T_MAX = 100000.0f;
 
 const RAY_NO_CULL = 0xFFu;
 
+/// TLAS instance masks: glass is apart so that a ray forced opaque can skip it instead of hitting a wall.
+const INSTANCE_MASK_SOLID = 0x01u;
+const INSTANCE_MASK_GLASS = 0x02u;
+
+fn cull_mask(ray_flag: u32) -> u32 {
+    return select(RAY_NO_CULL, INSTANCE_MASK_SOLID, (ray_flag & RAY_FLAG_FORCE_OPAQUE) != 0u);
+}
+
+/// Path and bounce rays: alpha-masked holes and glass are passed through (glass is drawn by the
+/// rasterizer's transmissive pass on top of the traced image, and light reaches the far side untinted).
 fn trace_ray(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> RayIntersection {
-    let ray = RayDesc(ray_flag, RAY_NO_CULL, ray_t_min, ray_t_max, ray_origin, ray_direction);
+    let ray = RayDesc(ray_flag, cull_mask(ray_flag), ray_t_min, ray_t_max, ray_origin, ray_direction);
     var rq: ray_query;
     rayQueryInitialize(&rq, tlas, ray);
     while rayQueryProceed(&rq) {
         let candidate = rayQueryGetCandidateIntersection(&rq);
-        if passes_alpha_test(candidate) {
+        if candidate_transmittance(candidate) == 0.0 {
             rayQueryConfirmIntersection(&rq);
         }
     }
@@ -164,21 +178,85 @@ fn trace_ray(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ra
 }
 
 fn trace_ray_previous_frame(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> RayIntersection {
-    let ray = RayDesc(ray_flag, RAY_NO_CULL, ray_t_min, ray_t_max, ray_origin, ray_direction);
+    let ray = RayDesc(ray_flag, cull_mask(ray_flag), ray_t_min, ray_t_max, ray_origin, ray_direction);
     var rq: ray_query;
     rayQueryInitialize(&rq, previous_frame_tlas, ray);
     while rayQueryProceed(&rq) {
         let candidate = rayQueryGetCandidateIntersection(&rq);
-        if passes_alpha_test(candidate) {
+        if candidate_transmittance(candidate) == 0.0 {
             rayQueryConfirmIntersection(&rq);
         }
     }
     return rayQueryGetCommittedIntersection(&rq);
 }
 
-fn passes_alpha_test(candidate: RayIntersection) -> bool {
+/// Shadow rays: 1 when the light reaches the end of the ray, 0 when something blocks it. Each glass crossing lets
+/// the ray through with a probability equal to its transmittance, so the mean over rays is the light glass lets
+/// through (a lighter shadow, not a coloured one) while each ray stays visible or not, as ReSTIR's reuse expects:
+/// it folds visibility into its target function, which cancels any fraction in between.
+fn trace_shadow_ray(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> f32 {
+    let flags = ray_flag | RAY_FLAG_TERMINATE_ON_FIRST_HIT;
+    let ray = RayDesc(flags, cull_mask(flags), ray_t_min, ray_t_max, ray_origin, ray_direction);
+    var rq: ray_query;
+    rayQueryInitialize(&rq, tlas, ray);
+    while rayQueryProceed(&rq) {
+        let candidate = rayQueryGetCandidateIntersection(&rq);
+        if !crosses(candidate, ray_origin, ray_direction) {
+            rayQueryConfirmIntersection(&rq);
+        }
+    }
+    return f32(rayQueryGetCommittedIntersection(&rq).kind == RAY_QUERY_INTERSECTION_NONE);
+}
+
+fn trace_shadow_ray_previous_frame(ray_origin: vec3<f32>, ray_direction: vec3<f32>, ray_t_min: f32, ray_t_max: f32, ray_flag: u32) -> f32 {
+    let flags = ray_flag | RAY_FLAG_TERMINATE_ON_FIRST_HIT;
+    let ray = RayDesc(flags, cull_mask(flags), ray_t_min, ray_t_max, ray_origin, ray_direction);
+    var rq: ray_query;
+    rayQueryInitialize(&rq, previous_frame_tlas, ray);
+    while rayQueryProceed(&rq) {
+        let candidate = rayQueryGetCandidateIntersection(&rq);
+        if !crosses(candidate, ray_origin, ray_direction) {
+            rayQueryConfirmIntersection(&rq);
+        }
+    }
+    return f32(rayQueryGetCommittedIntersection(&rq).kind == RAY_QUERY_INTERSECTION_NONE);
+}
+
+/// Whether a shadow ray goes through a non-opaque candidate hit: always through an alpha-masked hole, never
+/// through a solid surface, through glass with a probability equal to its transmittance. The random number is a
+/// hash of the ray and the hit: light samples move every frame, so the pattern does too.
+fn crosses(candidate: RayIntersection, ray_origin: vec3<f32>, ray_direction: vec3<f32>) -> bool {
+    let transmittance = candidate_transmittance(candidate);
+    if transmittance <= 0.0 { return false; }
+    if transmittance >= 1.0 { return true; }
+    var h = pcg_hash(candidate.primitive_index ^ pcg_hash(candidate.instance_custom_data));
+    h = pcg_hash(h ^ bitcast<u32>(ray_origin.x));
+    h = pcg_hash(h ^ bitcast<u32>(ray_origin.y));
+    h = pcg_hash(h ^ bitcast<u32>(ray_origin.z));
+    h = pcg_hash(h ^ bitcast<u32>(ray_direction.x));
+    h = pcg_hash(h ^ bitcast<u32>(ray_direction.y));
+    h = pcg_hash(h ^ bitcast<u32>(ray_direction.z));
+    return f32(h >> 8u) * (1.0 / 16777216.0) < transmittance;
+}
+
+fn pcg_hash(input: u32) -> u32 {
+    let state = input * 747796405u + 2891336453u;
+    let word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+/// How much light a non-opaque candidate hit lets through: 1 where the alpha test cuts the surface away,
+/// one glass crossing's transmittance on glass (`transmission` × the volume's share × the mean of the
+/// textured base colour), 0 on a solid surface.
+fn candidate_transmittance(candidate: RayIntersection) -> f32 {
     let barycentrics = vec3(1.0 - candidate.barycentrics.x - candidate.barycentrics.y, candidate.barycentrics);
-    return !resolve_triangle_data_full(candidate.instance_custom_data, candidate.primitive_index, barycentrics).material.alpha_masked_out;
+    let resolved = resolve_triangle_data_full(candidate.instance_custom_data, candidate.primitive_index, barycentrics).material;
+    if resolved.alpha_masked_out {
+        return 1.0;
+    }
+    let material = materials[material_ids[candidate.instance_custom_data]];
+    let tint = dot(resolved.base_color, vec3(1.0 / 3.0));
+    return saturate(material.transmission * material.transmission_volume * tint);
 }
 
 fn sample_texture(id: u32, uv: vec2<f32>) -> vec4<f32> {

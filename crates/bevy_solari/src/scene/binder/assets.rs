@@ -47,7 +47,8 @@ pub struct GpuMaterial {
     uv_transform: Mat2,
     alpha: f32,
     alpha_cutoff: f32,
-    _padding: Vec2,
+    transmission: f32,
+    transmission_volume: f32,
 }
 
 impl_atomic_pod!(GpuMaterial, GpuMaterialBlob);
@@ -60,6 +61,8 @@ pub struct AssetState {
     material_textures: HashMap<AssetId<StandardMaterial>, MaterialTextures>,
     pub emissive_materials: HashSet<AssetId<StandardMaterial>>,
     pub non_opaque_materials: HashSet<AssetId<StandardMaterial>>,
+    /// Glass ([`glass_transmission`]): traced as non-opaque in its own TLAS instance mask.
+    pub glass_materials: HashSet<AssetId<StandardMaterial>>,
     /// Materials to retry because at least one required texture is not on the GPU yet.
     unresolved_materials: HashSet<AssetId<StandardMaterial>>,
     /// Bound images whose replacement GPU data has not landed yet.
@@ -75,6 +78,7 @@ impl AssetState {
             material_textures: HashMap::default(),
             emissive_materials: HashSet::default(),
             non_opaque_materials: HashSet::default(),
+            glass_materials: HashSet::default(),
             unresolved_materials: HashSet::default(),
             pending_texture_updates: HashSet::default(),
         }
@@ -214,8 +218,11 @@ impl AssetState {
             | AlphaMode::Add
             | AlphaMode::Multiply => 0.0,
         };
+        let (transmission, transmission_volume) = glass_transmission(material);
+        let is_glass = transmission > 0.0;
         let is_opaque = match material.alpha_mode {
-            AlphaMode::Opaque => true,
+            // Rays test glass hit by hit to let light through it
+            AlphaMode::Opaque => !is_glass,
             AlphaMode::Mask(_) | AlphaMode::AlphaToCoverage => false,
             // TODO: Solari doesn't support transparency yet, so these are traced as opaque for now
             #[expect(clippy::match_same_arms, reason = "Transparency not yet supported")]
@@ -249,7 +256,8 @@ impl AssetState {
                 uv_transform: material.uv_transform.matrix2,
                 alpha: base_color.alpha,
                 alpha_cutoff,
-                _padding: Vec2::ZERO,
+                transmission,
+                transmission_volume,
             },
         );
 
@@ -263,7 +271,16 @@ impl AssetState {
         } else {
             self.non_opaque_materials.insert(material_id)
         };
-        if !was_resolved || was_emissive != is_emissive || was_opaque != is_opaque {
+        let was_glass = if is_glass {
+            !self.glass_materials.insert(material_id)
+        } else {
+            self.glass_materials.remove(&material_id)
+        };
+        if !was_resolved
+            || was_emissive != is_emissive
+            || was_opaque != is_opaque
+            || was_glass != is_glass
+        {
             instances.invalidate_material(material_id);
         }
     }
@@ -303,6 +320,7 @@ impl AssetState {
         self.material_textures.remove(&material_id);
         self.emissive_materials.remove(&material_id);
         self.non_opaque_materials.remove(&material_id);
+        self.glass_materials.remove(&material_id);
         instances.invalidate_material(material_id);
     }
 
@@ -313,5 +331,85 @@ impl AssetState {
         for image_id in textures.into_iter().flatten() {
             self.textures.release(&image_id);
         }
+    }
+}
+
+/// What one crossing of a glass surface lets through, as `(transmission, volume)`: both 0 for a material
+/// that is not glass.
+///
+/// Glass is a material with `specular_transmission` that does not blend (blended materials are drawn, not
+/// traced). Rays treat it as thin: no refraction, no caustics, one number instead of a colour. A crossing
+/// lets through `transmission` (the dielectric share of `specular_transmission`) times the mean of its base
+/// colour (applied in the shader, where the texture is read) times `volume`: what the attenuation colour
+/// leaves after `thickness`, split evenly between the two crossings of a closed mesh.
+pub fn glass_transmission(material: &StandardMaterial) -> (f32, f32) {
+    let blends = matches!(
+        material.alpha_mode,
+        AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply
+    );
+    let transmission =
+        material.specular_transmission.clamp(0.0, 1.0) * (1.0 - material.metallic.clamp(0.0, 1.0));
+    if blends || transmission <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let thickness = material.thickness.max(0.0);
+    let distance = material.attenuation_distance;
+    let volume = if thickness > 0.0 && distance.is_finite() && distance > 0.0 {
+        let attenuation = LinearRgba::from(material.attenuation_color).to_vec3();
+        let through = attenuation
+            .max(Vec3::ZERO)
+            .powf(thickness / distance)
+            .element_sum()
+            / 3.0;
+        through.sqrt()
+    } else {
+        1.0
+    };
+    (transmission, volume)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy_color::Color;
+
+    #[test]
+    fn glass_lets_light_through_and_solids_do_not() {
+        assert_eq!(glass_transmission(&StandardMaterial::default()), (0.0, 0.0));
+
+        let clear = StandardMaterial {
+            specular_transmission: 1.0,
+            ..Default::default()
+        };
+        assert_eq!(glass_transmission(&clear), (1.0, 1.0));
+
+        let blended = StandardMaterial {
+            alpha_mode: AlphaMode::Blend,
+            ..clear.clone()
+        };
+        assert_eq!(glass_transmission(&blended), (0.0, 0.0));
+
+        let metal = StandardMaterial {
+            metallic: 1.0,
+            ..clear.clone()
+        };
+        assert_eq!(glass_transmission(&metal), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_thicker_tinted_volume_lets_less_through() {
+        let tinted = |thickness| StandardMaterial {
+            specular_transmission: 1.0,
+            thickness,
+            attenuation_distance: 0.5,
+            attenuation_color: Color::linear_rgb(1.0, 0.5, 0.25),
+            ..Default::default()
+        };
+        let (_, thin) = glass_transmission(&tinted(0.1));
+        let (_, thick) = glass_transmission(&tinted(1.0));
+        assert!(0.0 < thick && thick < thin && thin < 1.0, "{thin} {thick}");
+        // One crossing of two: their product is the whole volume's mean transmittance.
+        let whole = (1.0 + 0.25 + 0.0625) / 3.0;
+        assert!((thick * thick - whole).abs() < 1e-5, "{thick}");
     }
 }

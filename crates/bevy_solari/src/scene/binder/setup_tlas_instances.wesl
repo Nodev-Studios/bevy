@@ -1,6 +1,13 @@
 @group(0) @binding(0) var<storage, read> transforms: array<array<vec4<f32>, 3>>;
-@group(0) @binding(1) var<storage, read> blas_refs: array<vec2<u32>>;
+@group(0) @binding(1) var<storage, read> blas_refs: array<BlasRef>;
 @group(0) @binding(2) var<storage, read_write> instances: array<TlasInstance>;
+
+// `GpuBlasRef`: the acceleration structure's address and the instance mask.
+struct BlasRef {
+    address: vec2<u32>,
+    mask: u32,
+    _padding: u32,
+}
 
 struct TlasInstance {
     transform: array<vec4<f32>, 3>,
@@ -18,8 +25,8 @@ fn setup_tlas_instances(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     instances[slot] = TlasInstance(
         transforms[slot],
-        (slot & 0xFFFFFFu) | 0xFF000000u,
+        (slot & 0xFFFFFFu) | ((blas_refs[slot].mask & 0xFFu) << 24u),
         0u,
-        blas_refs[slot],
+        blas_refs[slot].address,
     );
 }
