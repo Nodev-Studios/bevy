@@ -19,7 +19,8 @@
         (name: "NVIDIA", resolutions: ["1920x1080"]),
         (name: "AMD", resolutions: ["1920x1080"]),
     ],
-    scenes: ["interior", "many-lights"],
+    // `glass`: glass and a window on every rung (the traced rungs light the floor through the window).
+    scenes: ["interior", "many-lights", "glass"],
     warmup: 300,
     frames: 30,
     seconds: 300,

@@ -49,3 +49,24 @@ scene = "many-lights"
 file = "rt-lite-many-lights.png"
 tolerance = 1.0
 written_from = [0.334, 0.385, 0.357, 0.348, 0.318, 0.35, 0.499]
+
+[[image]]
+run = "raster"
+scene = "glass"
+file = "raster-glass.png"
+tolerance = 0.33
+written_from = [0.039, 0.077, 0.161, 0.076, 0.046, 0.044, 0.062]
+
+[[image]]
+run = "rt-full"
+scene = "glass"
+file = "rt-full-glass.png"
+tolerance = 0.5
+written_from = [0.147, 0.21, 0.131, 0.151, 0.152, 0.156, 0.247]
+
+[[image]]
+run = "rt-lite"
+scene = "glass"
+file = "rt-lite-glass.png"
+tolerance = 0.61
+written_from = [0.144, 0.175, 0.189, 0.202, 0.186, 0.138, 0.303]

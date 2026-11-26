@@ -9,6 +9,8 @@
 //! - the frame is not black;
 //! - what resolved is what the step asked for, or a [`Fallback`] of the right kind says why not;
 //! - the camera carries the effects the resolved rung and the overrides call for (the apply layer did its job);
+//! - each class of material in the scene ([`MaterialClass`]: glass, blended) shows: hidden from the camera alone,
+//!   the frame changes where it covers the screen (one step per class per preset, added when the scene opens);
 //! - each control did what it says: the lamp, exposure, lamp-intensity, sun and coverage steps differ from the
 //!   frame before them; a click moved the setting it clicked; a bookmark brings the camera back; the bake
 //!   loaded, unloaded and loaded again; the split view's left half shows the other set and its right half the
@@ -29,9 +31,8 @@ use crate::{
 };
 use bevy::{
     app::AppExit,
-    math::ops,
     asset::RecursiveDependencyLoadState,
-    camera::Exposure,
+    camera::{primitives::Aabb, visibility::RenderLayers, Exposure},
     camera_controller::free_camera::FreeCameraState,
     diagnostic::DiagnosticsStore,
     graphics::{
@@ -43,6 +44,7 @@ use bevy::{
         UpscaleQuality, UpscalerChoice,
     },
     input::{mouse::MouseButtonInput, ButtonState},
+    math::ops,
     pbr::{ContactShadows, ScreenSpaceAmbientOcclusion, ScreenSpaceReflections},
     post_process::bloom::Bloom,
     prelude::*,
@@ -142,6 +144,12 @@ enum Kind {
     },
     /// Captures with the panels shown. Not checked for black.
     ShowUi,
+    /// Hides the scene's meshes of `class` from the camera (they keep casting shadows and stay traced); the
+    /// frame must differ from step `reference`'s where they cover the screen.
+    HideClass {
+        class: MaterialClass,
+        reference: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -553,6 +561,7 @@ fn step(world: &mut World, test: &mut SelfTest) {
     };
     match test.state {
         State::Start => {
+            show_hidden_class(world);
             test.step_started = Instant::now();
             test.noted.clear();
             info!(
@@ -787,6 +796,7 @@ fn step(world: &mut World, test: &mut SelfTest) {
             if let Some(image) = image {
                 world.resource_mut::<UiState>().visible = true;
                 evaluate(world, test, &current, image);
+                plan_class_steps(world, test, &current);
                 test.index += 1;
                 test.state = State::Start;
             } else if test.step_started.elapsed() > STEP_LIMIT + Duration::from_secs(30) {
@@ -888,6 +898,9 @@ fn act(world: &mut World, test: &mut SelfTest, current: &Step) {
             ui.visible = true;
             ui.windows.baked = true;
             ui.windows.compare = true;
+        }
+        Kind::HideClass { class, .. } => {
+            hide_class(world, *class);
         }
     }
 }
@@ -1312,6 +1325,17 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
                 )),
             }
         }
+        Kind::HideClass { class, reference } => {
+            let width = image_width(world);
+            failures.extend(check_hidden_class(
+                world,
+                *class,
+                test.references.get(reference).map(Vec::as_slice),
+                &rgb,
+                width,
+                &mut extra,
+            ));
+        }
         Kind::Plain | Kind::ShowUi => {}
     }
     if matches!(current.kind, Kind::Plain | Kind::Bake { .. }) {
@@ -1582,6 +1606,7 @@ fn finish(world: &mut World, test: &mut SelfTest) {
     {
         return;
     }
+    show_hidden_class(world);
     test.done = true;
     let ok = test.failures.is_empty();
     write_report(world, test, Some(ok));
@@ -1597,4 +1622,293 @@ fn finish(world: &mut World, test: &mut SelfTest) {
     } else {
         AppExit::error()
     });
+}
+
+// The material-class check: a class of material present in a scene must show on every preset.
+
+/// A class of material that a rung can lose without the frame going black (glass drawn nowhere, blended
+/// surfaces dropped). To add one (mirrors), extend [`MaterialClass::ALL`] and [`MaterialClass::of`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialClass {
+    /// `specular_transmission` on a material that does not blend: glass, drawn by the transmissive pass.
+    Transmissive,
+    /// `Blend`, `Premultiplied`, `Add` or `Multiply`.
+    Blended,
+}
+
+impl MaterialClass {
+    const ALL: [Self; 2] = [Self::Transmissive, Self::Blended];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Transmissive => "transmissive",
+            Self::Blended => "blended",
+        }
+    }
+
+    fn of(material: &StandardMaterial) -> Option<Self> {
+        match material.alpha_mode {
+            AlphaMode::Blend | AlphaMode::Premultiplied | AlphaMode::Add | AlphaMode::Multiply => {
+                Some(Self::Blended)
+            }
+            _ if material.specular_transmission > 0.0 => Some(Self::Transmissive),
+            _ => None,
+        }
+    }
+}
+
+/// The render layer hidden meshes go to: no camera shows it, every light keeps it (shadows stay).
+const HIDDEN_LAYER: usize = 31;
+/// Side of the pixel blocks compared: averaging over a block keeps the traced rungs' noise out. to tune.
+const CLASS_BLOCK: usize = 8;
+/// The mean absolute difference (8-bit, per channel) that makes a block count as changed. to tune.
+const CLASS_BLOCK_CHANGE: f64 = 4.0;
+/// The share of the blocks a class covers that must change. to tune: on `dev`'s binary, where glass was drawn
+/// nowhere, noise moved at most 2.9 % (`StainedGlassLamp`, `RtLite`); with glass drawn the least was 8.8 % (Classroom's
+/// frosted windows, Raster).
+const CLASS_MIN_CHANGED_SHARE: f64 = 0.05;
+/// A class whose meshes cover less of the screen than this (by their bounding boxes) is not checked. to tune.
+const CLASS_MIN_COVER: f64 = 0.005;
+
+/// What [`hide_class`] changed, to put back.
+#[derive(Resource, Default)]
+struct HiddenClass {
+    meshes: Vec<(Entity, Option<RenderLayers>)>,
+    lights: Vec<(Entity, Option<RenderLayers>)>,
+}
+
+/// The visible meshes of `class` in the world.
+fn class_meshes(world: &mut World, class: MaterialClass) -> Vec<Entity> {
+    let mut meshes = world.query::<(
+        Entity,
+        &MeshMaterial3d<StandardMaterial>,
+        &InheritedVisibility,
+    )>();
+    let found: Vec<_> = meshes
+        .iter(world)
+        .filter(|(_, _, visibility)| visibility.get())
+        .map(|(entity, material, _)| (entity, material.0.id()))
+        .collect();
+    let materials = world.resource::<Assets<StandardMaterial>>();
+    found
+        .into_iter()
+        .filter(|(_, material)| {
+            materials
+                .get(*material)
+                .is_some_and(|material| MaterialClass::of(material) == Some(class))
+        })
+        .map(|(entity, _)| entity)
+        .collect()
+}
+
+/// The pixel rectangles (`[x0, y0, x1, y1]`, in `0..1` of the screen) the bounding boxes of `meshes` cover
+/// from the viewer's camera.
+fn screen_rects(world: &mut World, meshes: &[Entity]) -> Vec<[f32; 4]> {
+    let mut cameras = world.query_filtered::<(&Camera, &GlobalTransform), With<ViewerCamera>>();
+    let Some((camera, camera_transform)) = cameras.iter(world).next() else {
+        return Vec::new();
+    };
+    let (camera, camera_transform) = (camera.clone(), *camera_transform);
+    let view_from_world = camera_transform.affine().inverse();
+    let mut boxes = world.query::<(&Aabb, &GlobalTransform)>();
+    let mut rects = Vec::new();
+    for &entity in meshes {
+        let Ok((aabb, transform)) = boxes.get(world, entity) else {
+            continue;
+        };
+        let (center, half) = (Vec3::from(aabb.center), Vec3::from(aabb.half_extents));
+        let mut rect = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
+        let mut behind = false;
+        for corner in 0..8 {
+            let sign = Vec3::new(
+                if corner & 1 == 0 { -1.0 } else { 1.0 },
+                if corner & 2 == 0 { -1.0 } else { 1.0 },
+                if corner & 4 == 0 { -1.0 } else { 1.0 },
+            );
+            let world_point = transform.transform_point(center + sign * half);
+            if view_from_world.transform_point3(world_point).z > -1e-3 {
+                behind = true;
+                break;
+            }
+            let Some(ndc) = camera.world_to_ndc(&camera_transform, world_point) else {
+                continue;
+            };
+            let (x, y) = ((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5);
+            rect = [
+                rect[0].min(x),
+                rect[1].min(y),
+                rect[2].max(x),
+                rect[3].max(y),
+            ];
+        }
+        if behind {
+            // A box around the camera may cover anything.
+            rect = [0.0, 0.0, 1.0, 1.0];
+        }
+        let clipped = [
+            rect[0].clamp(0.0, 1.0),
+            rect[1].clamp(0.0, 1.0),
+            rect[2].clamp(0.0, 1.0),
+            rect[3].clamp(0.0, 1.0),
+        ];
+        if clipped[2] > clipped[0] && clipped[3] > clipped[1] {
+            rects.push(clipped);
+        }
+    }
+    rects
+}
+
+/// After a preset's own step on a scene, adds a [`Kind::HideClass`] step for each class the scene shows.
+fn plan_class_steps(world: &mut World, test: &mut SelfTest, current: &Step) {
+    let scene = &world.resource::<Catalog>().entries[current.scene].name;
+    if current.kind != Kind::Plain
+        || current.name != format!("{scene}-{}", preset_name(current.settings.preset))
+    {
+        return;
+    }
+    let mut added = Vec::new();
+    for class in MaterialClass::ALL {
+        let meshes = class_meshes(world, class);
+        if meshes.is_empty() {
+            continue;
+        }
+        added.push(Step {
+            name: format!("{}-without-{}", current.name, class.name()),
+            scene: current.scene,
+            settings: current.settings.clone(),
+            kind: Kind::HideClass {
+                class,
+                reference: current.name.clone(),
+            },
+        });
+    }
+    let at = (test.index + 1).min(test.steps.len());
+    test.steps.splice(at..at, added);
+}
+
+/// Moves the meshes of `class` to [`HIDDEN_LAYER`] and adds that layer to every light.
+fn hide_class(world: &mut World, class: MaterialClass) {
+    show_hidden_class(world);
+    let meshes = class_meshes(world, class);
+    let mut hidden = HiddenClass::default();
+    for entity in meshes {
+        let layers = world.get::<RenderLayers>(entity).cloned();
+        world
+            .entity_mut(entity)
+            .insert(RenderLayers::layer(HIDDEN_LAYER));
+        hidden.meshes.push((entity, layers));
+    }
+    let mut lights = world.query_filtered::<(Entity, Option<&RenderLayers>), Or<(
+        With<DirectionalLight>,
+        With<PointLight>,
+        With<SpotLight>,
+    )>>();
+    let found: Vec<_> = lights
+        .iter(world)
+        .map(|(entity, layers)| (entity, layers.cloned()))
+        .collect();
+    for (entity, layers) in found {
+        let shown = layers.clone().unwrap_or_default().with(HIDDEN_LAYER);
+        world.entity_mut(entity).insert(shown);
+        hidden.lights.push((entity, layers));
+    }
+    world.insert_resource(hidden);
+}
+
+/// Puts back what [`hide_class`] changed.
+fn show_hidden_class(world: &mut World) {
+    let Some(hidden) = world.remove_resource::<HiddenClass>() else {
+        return;
+    };
+    for (entity, layers) in hidden.meshes.into_iter().chain(hidden.lights) {
+        let Ok(mut entity) = world.get_entity_mut(entity) else {
+            continue;
+        };
+        match layers {
+            Some(layers) => {
+                entity.insert(layers);
+            }
+            None => {
+                entity.remove::<RenderLayers>();
+            }
+        }
+    }
+}
+
+/// The frame without `class` must differ from `before` (with it) in enough of the blocks the class covers.
+fn check_hidden_class(
+    world: &mut World,
+    class: MaterialClass,
+    before: Option<&[u8]>,
+    after: &[u8],
+    width: Option<usize>,
+    extra: &mut serde_json::Map<String, Value>,
+) -> Option<String> {
+    let meshes = world
+        .get_resource::<HiddenClass>()
+        .map(|hidden| {
+            hidden
+                .meshes
+                .iter()
+                .map(|(entity, _)| *entity)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let rects = screen_rects(world, &meshes);
+    extra.insert("class".into(), json!(class.name()));
+    extra.insert("class_meshes".into(), json!(meshes.len()));
+    let (Some(before), Some(width)) = (before, width) else {
+        return Some("no frame with the class to compare with".into());
+    };
+    if before.len() != after.len() || width == 0 || !after.len().is_multiple_of(width * 3) {
+        return Some("the frames with and without the class differ in size".into());
+    }
+    let height = after.len() / (width * 3);
+    let (columns, rows) = (width / CLASS_BLOCK, height / CLASS_BLOCK);
+    let (mut covered, mut changed) = (0usize, 0usize);
+    for by in 0..rows {
+        for bx in 0..columns {
+            let (cx, cy) = (
+                (bx as f32 + 0.5) / columns as f32,
+                (by as f32 + 0.5) / rows as f32,
+            );
+            if !rects
+                .iter()
+                .any(|r| cx >= r[0] && cx <= r[2] && cy >= r[1] && cy <= r[3])
+            {
+                continue;
+            }
+            covered += 1;
+            let mut sum = 0.0;
+            for y in by * CLASS_BLOCK..(by + 1) * CLASS_BLOCK {
+                let row = y * width * 3;
+                for i in row + bx * CLASS_BLOCK * 3..row + (bx + 1) * CLASS_BLOCK * 3 {
+                    sum += (before[i] as f64 - after[i] as f64).abs();
+                }
+            }
+            if sum / (CLASS_BLOCK * CLASS_BLOCK * 3) as f64 > CLASS_BLOCK_CHANGE {
+                changed += 1;
+            }
+        }
+    }
+    let cover = covered as f64 / (columns * rows).max(1) as f64;
+    let share = changed as f64 / covered.max(1) as f64;
+    extra.insert("class_cover".into(), json!(cover));
+    extra.insert("class_changed_share".into(), json!(share));
+    if cover < CLASS_MIN_COVER {
+        extra.insert(
+            "class_unchecked".into(),
+            json!("its meshes cover too little of the screen"),
+        );
+        return None;
+    }
+    (share < CLASS_MIN_CHANGED_SHARE).then(|| {
+        format!(
+            "hiding the {} meshes changed {:.2} % of the {covered} blocks they cover (at least {:.0} % \
+             wanted): they are not drawn",
+            class.name(),
+            share * 100.0,
+            CLASS_MIN_CHANGED_SHARE * 100.0
+        )
+    })
 }

@@ -8,8 +8,8 @@
 //!   output is the largest viewport among the active [`GraphicsCamera`]s, or the primary window before any
 //!   camera has one.
 //! - **Every [`GraphicsCamera`]** (a `Camera3d`) always has `Hdr`, `Msaa::Off`, the depth, motion vector and
-//!   deferred prepasses, and one temporal anti-aliasing: TAA, DLSS, or an upscaler from
-//!   [`backends`]. On a traced rung it also has `SolariLighting` with the rung's parameter set
+//!   deferred prepasses, `ScreenSpaceTransmission` (glass), and one temporal anti-aliasing: TAA, DLSS, or an
+//!   upscaler from [`backends`]. On a traced rung it also has `SolariLighting` with the rung's parameter set
 //!   ([`traced`](crate::traced)) and a storage-bindable main texture; on `Raster` it has the effects of
 //!   [`raster`](crate::raster). The lighting, the anti-aliasing and the denoiser on such a camera are the
 //!   ladder's: it overwrites and removes them.
@@ -76,7 +76,7 @@ use bevy_light::{
 use bevy_math::UVec2;
 use bevy_pbr::{
     ContactShadows, DefaultOpaqueRendererMethod, ScreenSpaceAmbientOcclusion,
-    ScreenSpaceReflections,
+    ScreenSpaceReflections, ScreenSpaceTransmission,
 };
 use bevy_post_process::bloom::Bloom;
 use bevy_render::{
@@ -393,6 +393,9 @@ fn shape_camera(
         MotionVectorPrepass,
     ));
     camera.insert_if_new((TemporalJitter::default(), MipBias::default()));
+    // Glass (`specular_transmission`) is drawn by the transmissive pass on every rung, refracting the lit
+    // frame; without it a deferred camera would draw glass nowhere. A game's own setting is kept.
+    camera.insert_if_new(ScreenSpaceTransmission::default());
 
     shape_lighting(camera, state, shape, before, wanted);
 

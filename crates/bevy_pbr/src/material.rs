@@ -1301,6 +1301,15 @@ pub fn queue_material_meshes(
             let render_phase_type = if !has_transmission {
                 // Fall back to rendering based on alpha mode when `ScreenSpaceTransmission` is disabled
                 match material.properties.alpha_mode {
+                    // The prepasses leave transmissive materials to this pass, so a deferred one would be
+                    // drawn nowhere: draw it forward, refracting only the environment map.
+                    _ if matches!(
+                        material.properties.render_phase_type,
+                        RenderPhaseType::Transmissive
+                    ) =>
+                    {
+                        RenderPhaseType::Transparent
+                    }
                     AlphaMode::Blend
                     | AlphaMode::Premultiplied
                     | AlphaMode::Add
