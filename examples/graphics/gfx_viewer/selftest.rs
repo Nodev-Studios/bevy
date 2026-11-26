@@ -967,13 +967,15 @@ fn luma_stats(rgb: &[u8]) -> (f64, f64) {
     (sum / pixels, lit / pixels)
 }
 
-/// The frame is Raster's, no light of the scene is visible, and no bake is loaded: nothing can light it but its
+/// The frame is Raster's, no light of the scene is visible, and no bake shows: nothing can light it but its
 /// emissive surfaces.
 fn unlit_raster(world: &mut World) -> bool {
     let raster = world
         .get_resource::<ResolvedGraphics>()
         .is_some_and(|resolved| resolved.rung == GraphicsRung::Raster);
-    let baked = world.get_resource::<BakedGiStatus>().copied() == Some(BakedGiStatus::Loaded);
+    // A bake lights the frame only when it is loaded and not hidden by the override.
+    let baked = world.get_resource::<BakedGiStatus>().copied() == Some(BakedGiStatus::Loaded)
+        && world.resource::<GraphicsSettings>().overrides.baked_gi != Some(false);
     let mut lights = world.query_filtered::<&InheritedVisibility, Or<(
         With<PointLight>,
         With<SpotLight>,
