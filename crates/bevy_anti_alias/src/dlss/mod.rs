@@ -158,9 +158,10 @@ impl Plugin for DlssPlugin {
         };
         let project_id = app.world().get_resource::<DlssProjectId>()
             .expect("The `dlss` feature is enabled, but DlssProjectId was not added to the App before DlssPlugin.");
-        let dlss_sdk = dlss_wgpu::DlssSdk::new(project_id.0, wgpu_device);
-        if dlss_sdk.is_err() {
+        let dlss_sdk = dlss_wgpu::DlssSdk::new(project_id.0, wgpu_device.clone());
+        if let Err(error) = &dlss_sdk {
             info!("DLSS is not supported on this system");
+            shut_down_ngx_after_failed_sdk(&wgpu_device, error);
             return;
         }
 
@@ -196,6 +197,39 @@ impl Plugin for DlssPlugin {
         );
     }
 }
+
+/// Shuts NGX down after `DlssSdk::new` failed, so the process does not crash when it exits.
+///
+/// `dlss_wgpu` 6.0.1's `DlssSdk::new` initializes NGX, then returns `FeatureNotSupported` when the DLSS library
+/// is not found (NGX reports `SuperSampling.Available = 0`) without calling `NVSDK_NGX_VULKAN_Shutdown1`, the
+/// call its `Drop` makes for an SDK that was created. NGX then stays initialized on a device wgpu destroys, and
+/// the process segfaults in NGX's code at `exit` (measured on Linux, driver 620.73.04: exit code 255 after a
+/// clean run). Shutting down an NGX that failed earlier, during its own init, only returns an error code, which
+/// is logged and ignored.
+#[cfg(not(feature = "force_disable_dlss"))]
+#[expect(unsafe_code, reason = "calls NGX's C shutdown on the raw Vulkan device")]
+fn shut_down_ngx_after_failed_sdk(device: &wgpu::Device, error: &dlss_wgpu::DlssError) {
+    use ash::vk::Handle;
+
+    unsafe extern "C" {
+        // Linked from NGX's static library, which `dlss_wgpu` links.
+        fn NVSDK_NGX_VULKAN_Shutdown1(device: *mut core::ffi::c_void) -> core::ffi::c_uint;
+    }
+
+    // SAFETY: the device is Vulkan (DLSS's support flags exist only on Vulkan) and nothing in NGX is in use:
+    // the SDK was never created, so no feature or parameter block exists.
+    let result = unsafe {
+        let Some(hal_device) = device.as_hal::<wgpu::hal::api::Vulkan>() else {
+            return;
+        };
+        let raw = hal_device.raw_device().handle().as_raw() as usize as *mut core::ffi::c_void;
+        NVSDK_NGX_VULKAN_Shutdown1(raw)
+    };
+    tracing::debug!("DLSS: NGX shut down after `DlssSdk::new` failed ({error}); NGX result {result:#x}");
+}
+
+#[cfg(feature = "force_disable_dlss")]
+fn shut_down_ngx_after_failed_sdk(_: &wgpu::Device, _: &dlss_wgpu::DlssError) {}
 
 /// Camera component to enable DLSS.
 #[derive(Component, Reflect, Clone)]

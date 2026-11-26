@@ -14,7 +14,7 @@ trace = []
 webgl = []
 webgpu = []
 smaa_luts = ["bevy_image/ktx2", "bevy_image/zstd"]
-dlss = ["dep:dlss_wgpu", "dep:uuid", "bevy_render/raw_vulkan_init"]
+dlss = ["dep:dlss_wgpu", "dep:uuid", "dep:ash", "bevy_render/raw_vulkan_init"]
 force_disable_dlss = ["dlss_wgpu?/mock"]
 # NVIDIA's NRD (ReBLUR) as the denoiser of ray traced lighting. Needs the NRD SDK at build time: see
 # `vendor/nrd_wgpu/README.md` in the repository.
@@ -50,6 +50,8 @@ bevy_time = { path = "../bevy_time", version = "0.20.1" }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 dlss_wgpu = { version = "6.0.0", optional = true }
 uuid = { version = "1.21.0", optional = true }
+# The Vulkan device handle `DlssPlugin` passes to NGX's shutdown when DLSS is unavailable (see `dlss/mod.rs`).
+ash = { version = "0.38", default-features = false, optional = true }
 nrd_wgpu = { path = "../../vendor/nrd_wgpu", optional = true }
 fsr_wgpu = { path = "../../vendor/fsr_wgpu", optional = true }
 # AMD's FSR 3.1 upscaler for TSR (MIT; vendored, see its README).

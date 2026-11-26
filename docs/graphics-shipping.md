@@ -66,6 +66,8 @@ one.
 DLSS: **every NVIDIA player gets NRD + TSR on the traced rungs and TSR (or TAA) on Raster**, with a worse image (more
 lag, softer reflections). Only the log shows it (see "Checking a build" below). With only `nvngx_dlss.dll` and no
 `nvngx_dlssd.dll`, Super Resolution works and the traced rungs use NRD.
+The game also exits cleanly: before 2026-11-25 such a build crashed at exit on NVIDIA (NGX left initialized by
+`dlss_wgpu`); the fork now shuts NGX down when DLSS turns out unavailable (`crates/bevy_anti_alias/src/dlss/mod.rs`).
 
 **Notices and other terms.**
 - The DLSS programming guide (section 4.2.3) asks for "the full text of copyright and license blurbs that are
