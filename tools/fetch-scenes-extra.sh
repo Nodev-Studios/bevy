@@ -200,6 +200,9 @@ scene_intel-sponza() {
   # Its sun and lamps are at intensity 0 in the glTF: a lit copy beside it (the original is left as it is).
   python3 -I "$convert_dir/gltf_light_patch.py" --input "$d/source/main_sponza/NewSponza_Main_glTF_003.gltf" \
     --output "$d/source/main_sponza/NewSponza_Main_day.gltf" --sun-lux 20000 --drop-zero-lights | sed -e 's/^/  /'
+  # And a night copy, every light removed, to pair with the 10 000 candles of pkg_d.
+  python3 -I "$convert_dir/gltf_light_patch.py" --input "$d/source/main_sponza/NewSponza_Main_glTF_003.gltf" \
+    --output "$d/source/main_sponza/NewSponza_Main_night.gltf" --drop-zero-lights | sed -e 's/^/  /'
   find "$d/source" -name '*.gltf' -printf '  %p\n'
 }
 
