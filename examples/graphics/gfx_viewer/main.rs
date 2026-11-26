@@ -288,6 +288,7 @@ fn main() -> AppExit {
         ..default()
     })
     .insert_resource(settings.clone())
+    .insert_resource(stage::render_error_handler())
     .add_plugins(GraphicsPlugin)
     .insert_resource(AbCompare {
         other: settings,
@@ -325,6 +326,7 @@ fn main() -> AppExit {
             open_scene,
             stage::place_gltf_scene,
             stage::watch_loading,
+            stage::release_freed_memory,
             bake::poll_bake,
             actions::apply_view_controls,
             compare::run_split,
