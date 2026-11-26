@@ -1,4 +1,4 @@
-use crate::{GiBakeRegion, GiBakeSkipEmission};
+use crate::{GiBakeExclude, GiBakeLight, GiBakeRegion, GiBakeSkipEmission};
 use alloc::{format, vec::Vec};
 use bevy_asset::{Assets, Handle};
 use bevy_camera::visibility::Visibility;
@@ -7,7 +7,7 @@ use bevy_ecs::{
     entity::Entity,
     hierarchy::ChildOf,
     name::Name,
-    query::Has,
+    query::{Has, QueryState},
     system::{Query, Res},
     world::World,
 };
@@ -19,7 +19,7 @@ use bevy_transform::components::GlobalTransform;
 use core::fmt;
 
 /// A hash of everything a bake depends on: the visible meshes (their geometry, materials and placement), the
-/// lights and the regions. A bake records it; a level whose hash differs needs a new bake.
+/// lights (with their [`GiBakeLight`] ids) and the regions. Entities under a [`GiBakeExclude`] do not count. A bake records it; a level whose hash differs needs a new bake.
 ///
 /// It is computed on the CPU from the main world alone, so it needs no GPU, and it does not depend on entity ids,
 /// spawn order or asset ids: each entity is hashed from its content and the entity hashes are sorted before they
@@ -85,6 +85,54 @@ impl Fnv {
             self.f32(t, 1e-4);
         }
     }
+}
+
+/// Whether `entity` or one of its ancestors has [`GiBakeExclude`], read through `get`, which gives an entity's
+/// marker and parent.
+fn excluded_by(entity: Entity, get: impl Fn(Entity) -> Option<(bool, Option<Entity>)>) -> bool {
+    let mut current = Some(entity);
+    while let Some(entity) = current {
+        let Some((excluded, parent)) = get(entity) else {
+            return false;
+        };
+        if excluded {
+            return true;
+        }
+        current = parent;
+    }
+    false
+}
+
+/// Whether the bake leaves `entity` out ([`GiBakeExclude`] on it or an ancestor).
+pub(crate) fn is_excluded(
+    entity: Entity,
+    tree: &Query<(Has<GiBakeExclude>, Option<&ChildOf>)>,
+) -> bool {
+    excluded_by(entity, |e| {
+        tree.get(e)
+            .ok()
+            .map(|(excluded, parent)| (excluded, parent.map(ChildOf::parent)))
+    })
+}
+
+/// [`is_excluded`] on a `World`.
+#[cfg_attr(not(feature = "bake"), expect(dead_code, reason = "used by the baker"))]
+pub(crate) fn is_excluded_in(
+    world: &World,
+    tree: &mut QueryState<(Has<GiBakeExclude>, Option<&ChildOf>)>,
+    entity: Entity,
+) -> bool {
+    let mut current = Some(entity);
+    while let Some(entity) = current {
+        let Ok((excluded, parent)) = tree.get(world, entity) else {
+            return false;
+        };
+        if excluded {
+            return true;
+        }
+        current = parent.map(ChildOf::parent);
+    }
+    false
 }
 
 fn effectively_visible(
@@ -205,6 +253,7 @@ fn compute_scene_hash(
     lights: Query<(
         Entity,
         &GlobalTransform,
+        Option<&GiBakeLight>,
         Option<&PointLight>,
         Option<&SpotLight>,
         Option<&RectLight>,
@@ -212,6 +261,7 @@ fn compute_scene_hash(
     )>,
     regions: Query<(&GiBakeRegion, &GlobalTransform, Option<&Name>)>,
     hierarchy: Query<(Option<&Visibility>, Option<&ChildOf>)>,
+    exclusions: Query<(Has<GiBakeExclude>, Option<&ChildOf>)>,
     mesh_assets: Option<Res<Assets<Mesh>>>,
     materials: Option<Res<Assets<StandardMaterial>>>,
     images: Option<Res<Assets<Image>>>,
@@ -220,7 +270,7 @@ fn compute_scene_hash(
     let mut entity_hashes: Vec<u64> = Vec::new();
 
     for (entity, mesh, material, transform, skip_emission) in &meshes {
-        if !effectively_visible(entity, &hierarchy) {
+        if !effectively_visible(entity, &hierarchy) || is_excluded(entity, &exclusions) {
             continue;
         }
         entity_hashes.push(mesh_entity_hash(
@@ -234,12 +284,16 @@ fn compute_scene_hash(
         ));
     }
 
-    for (entity, transform, point, spot, rect, directional) in &lights {
-        if !effectively_visible(entity, &hierarchy) {
+    for (entity, transform, id, point, spot, rect, directional) in &lights {
+        if !effectively_visible(entity, &hierarchy) || is_excluded(entity, &exclusions) {
             continue;
         }
         let mut hasher = Fnv::new();
         hasher.transform(transform);
+        if let Some(GiBakeLight(id)) = id {
+            hasher.str("id");
+            hasher.u64(u64::from(*id));
+        }
         if let Some(light) = point {
             hasher.str("point");
             hasher.color(light.color.into());
@@ -350,6 +404,36 @@ mod tests {
             GlobalTransform::from_xyz(0.0, 2.9, 0.0),
         ));
         core::mem::take(app.world_mut())
+    }
+
+    #[test]
+    fn excluded_entities_do_not_count() {
+        let mut world = world_with_wall(0.0, false);
+        let before = scene_hash(&mut world);
+        let mesh = world.resource_mut::<Assets<Mesh>>().add(quad(1.0, 1.0));
+        let material = world
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let character = world
+            .spawn((GiBakeExclude, GlobalTransform::from_xyz(1.0, 0.0, 1.0)))
+            .id();
+        world.spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            GlobalTransform::from_xyz(1.0, 0.0, 1.0),
+            ChildOf(character),
+        ));
+        world.spawn((
+            PointLight::default(),
+            GlobalTransform::from_xyz(1.0, 1.0, 1.0),
+            GiBakeExclude,
+        ));
+        assert_eq!(scene_hash(&mut world), before);
+        world.spawn((
+            PointLight::default(),
+            GlobalTransform::from_xyz(1.0, 1.0, 1.0),
+        ));
+        assert_ne!(scene_hash(&mut world), before);
     }
 
     #[test]

@@ -22,6 +22,7 @@ bevy_color = { path = "../bevy_color", version = "0.20.1" }
 bevy_ecs = { path = "../bevy_ecs", version = "0.20.1" }
 bevy_image = { path = "../bevy_image", version = "0.20.1", features = ["ktx2"] }
 bevy_light = { path = "../bevy_light", version = "0.20.1" }
+bevy_material = { path = "../bevy_material", version = "0.20.1" }
 bevy_math = { path = "../bevy_math", version = "0.20.1" }
 bevy_mesh = { path = "../bevy_mesh", version = "0.20.1" }
 bevy_pbr = { path = "../bevy_pbr", version = "0.20.1" }

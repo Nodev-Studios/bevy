@@ -245,6 +245,7 @@ mod on_entities {
         world.init_resource::<Assets<StandardMaterial>>();
         world.init_resource::<Messages<AssetEvent<Mesh>>>();
         world.init_resource::<systems::FittedMeshes>();
+        world.init_resource::<SkippedBlendedMeshes>();
         // Registered once: the system must remember when it last ran to tell what changed since.
         let system = world.register_system(systems::fit_meshes);
         world.insert_resource(FitMeshes(system));
@@ -322,6 +323,8 @@ mod on_entities {
         );
         let opaque = material(&mut world, AlphaMode::Opaque);
         let masked = material(&mut world, AlphaMode::Mask(0.5));
+        let glass = material(&mut world, AlphaMode::Blend);
+        let smoke = material(&mut world, AlphaMode::Add);
         let cube_before = world.resource::<Assets<Mesh>>().get(&cube).unwrap().clone();
 
         let spawn =
@@ -335,6 +338,8 @@ mod on_entities {
         let cutout = spawn(&mut world, &cube, &masked);
         let as_is = spawn(&mut world, &fitting, &opaque);
         let wire = spawn(&mut world, &lines, &opaque);
+        let pane = spawn(&mut world, &cube, &glass);
+        let puff = spawn(&mut world, &cube, &smoke);
         let skinned = world
             .spawn((
                 Mesh3d(cube.clone()),
@@ -386,6 +391,15 @@ mod on_entities {
         assert!(traced_mesh(&world, wire).is_none());
         assert!(world.entity(skinned).contains::<SkippedDeformingMesh>());
         assert!(traced_mesh(&world, skinned).is_none());
+        // Glass and particles are drawn, not traced as walls, and counted.
+        for entity in [pane, puff] {
+            assert!(world.entity(entity).contains::<SkippedBlendedMesh>());
+            assert!(traced_mesh(&world, entity).is_none());
+        }
+        assert_eq!(
+            *world.resource::<SkippedBlendedMeshes>(),
+            SkippedBlendedMeshes(2)
+        );
         // The game's own choice and non-standard entities are not the ladder's.
         assert_eq!(traced_mesh(&world, own), Some(cube.clone()));
         assert!(!world.entity(own).contains::<FittedMesh>());
@@ -394,14 +408,19 @@ mod on_entities {
         // Back on Raster nothing of the ladder's is left, and the game's own stays.
         set_rung(&mut world, GraphicsRung::Raster);
         run(&mut world);
-        for entity in [a, b, cutout, as_is, wire, skinned] {
+        for entity in [a, b, cutout, as_is, wire, skinned, pane, puff] {
             assert!(traced_mesh(&world, entity).is_none());
+            assert!(!world.entity(entity).contains::<SkippedBlendedMesh>());
             assert!(!world.entity(entity).contains::<FittedMesh>());
             assert!(!world.entity(entity).contains::<UnfittedMesh>());
             assert!(!world.entity(entity).contains::<SkippedDeformingMesh>());
         }
         assert_eq!(traced_mesh(&world, own), Some(cube.clone()));
         assert_eq!(counts(&world), (0, 0));
+        assert_eq!(
+            *world.resource::<SkippedBlendedMeshes>(),
+            SkippedBlendedMeshes(0)
+        );
         assert!(world.resource::<systems::FittedMeshes>().0.is_empty());
 
         // And a second visit to a traced rung fits them again.
