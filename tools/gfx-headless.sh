@@ -45,6 +45,12 @@ trap 'rm -f "$inner"' EXIT
 chmod +x "$inner"
 
 # A memory cap with no swap: a runaway run is killed alone instead of the whole desktop session.
-systemd-run --user --scope --quiet -p MemoryMax="$memory" -p MemorySwapMax=0 \
-  timeout "$seconds" kwin_wayland --virtual --no-lockscreen --no-global-shortcuts \
-  --socket "$socket" --width "$width" --height "$height" --exit-with-session "$inner"
+# The session gets its own D-Bus bus, and everything it started lives in one named scope that is stopped when the
+# run ends: the desktop portal and secret service it activates outlive their bus otherwise (1 500 after two days).
+unit="gfx-headless-$$-$RANDOM"
+trap 'rm -f "$inner"; systemctl --user stop "$unit.scope" 2>/dev/null || true' EXIT
+status=0
+systemd-run --user --scope --quiet --unit "$unit" -p MemoryMax="$memory" -p MemorySwapMax=0 \
+  dbus-run-session -- timeout "$seconds" kwin_wayland --virtual --no-lockscreen --no-global-shortcuts \
+  --socket "$socket" --width "$width" --height "$height" --exit-with-session "$inner" || status=$?
+exit "$status"
