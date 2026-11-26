@@ -9,16 +9,35 @@ import package::render::clustered_forward::ClusterableObjectIndexRanges;
 
 @if(LIGHTMAP) import package::render::mesh_view_types::LIGHT_PROBE_FLAG_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE;
 
-@if(IRRADIANCE_VOLUMES_ARE_USABLE)
+/// The irradiance volumes' light at a fragment, and how much of the fragment they cover: 1 when at least one
+/// volume contains it, 0 when none does (the light is then 0 and other sources must stand in).
+struct IrradianceVolumeLight {
+    irradiance: vec3<f32>,
+    coverage: f32,
+}
 
-/// See:
-/// https://advances.realtimerendering.com/s2006/Mitchell-ShadingInValvesSourceEngine.pdf
-/// Slide 28, "Ambient Cube Basis"
+@if(IRRADIANCE_VOLUMES_ARE_USABLE)
 fn irradiance_volume_light(
     world_position: vec3<f32>,
     N: vec3<f32>,
     clusterable_object_index_ranges: ptr<function, ClusterableObjectIndexRanges>,
 ) -> vec3<f32> {
+    return irradiance_volume_light_and_coverage(world_position, N, clusterable_object_index_ranges).irradiance;
+}
+
+@if(IRRADIANCE_VOLUMES_ARE_USABLE)
+
+/// See:
+/// https://advances.realtimerendering.com/s2006/Mitchell-ShadingInValvesSourceEngine.pdf
+/// Slide 28, "Ambient Cube Basis"
+///
+/// The volumes' weights are normalised, so falloff only blends overlapping volumes: inside any volume the
+/// coverage is 1. (The light probe iterator returns only volumes whose weight is above 0.)
+fn irradiance_volume_light_and_coverage(
+    world_position: vec3<f32>,
+    N: vec3<f32>,
+    clusterable_object_index_ranges: ptr<function, ClusterableObjectIndexRanges>,
+) -> IrradianceVolumeLight {
     // Find all irradiance volumes that contain the fragment. We're going to
     // accumulate all the irradiance from them in a weighted sum.
     var iterator = light_probe_iterator_new(
@@ -78,9 +97,11 @@ fn irradiance_volume_light(
         total_weight += query_result.weight;
     }
 
+    var coverage = 0.0;
     if (total_weight != 0.0) {
         total_irradiance /= total_weight;
+        coverage = 1.0;
     }
 
-    return total_irradiance;
+    return IrradianceVolumeLight(total_irradiance, coverage);
 }
