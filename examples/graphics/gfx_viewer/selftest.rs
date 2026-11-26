@@ -195,6 +195,8 @@ pub struct SelfTest {
     scenes: Option<Vec<String>>,
     /// The scenes baked and loaded.
     bake: Vec<String>,
+    /// How many times the list of steps runs.
+    repeat: usize,
     steps: Vec<Step>,
     /// Scenes of the list left out because their files are missing.
     missing: Vec<String>,
@@ -222,6 +224,8 @@ Self-test:
                                  the presets each scene is shown with (default all four)
   --self-test-scenes NAME,...    only these scenes (default every scene of the list that is downloaded)
   --self-test-bake NAME,...      the scenes baked and loaded (default interior; an empty value bakes none)
+  --self-test-repeat N           run the whole list of steps N times in a row (default 1), to see whether
+                                 memory comes back between scenes (`rss_mib`, `gpu_allocated_mib` per step)
 ";
 
 impl SelfTest {
@@ -231,7 +235,16 @@ impl SelfTest {
         let presets = flags.value("--self-test-presets");
         let scenes = flags.value("--self-test-scenes");
         let bake = flags.value("--self-test-bake");
+        let repeat = flags.value("--self-test-repeat");
         let dir = dir?;
+        let repeat = match repeat.map(|value| value.parse::<usize>()) {
+            None => 1,
+            Some(Ok(n)) if n > 0 => n,
+            Some(_) => {
+                flags.error("--self-test-repeat takes a count of at least 1");
+                1
+            }
+        };
         let presets = match presets {
             None => vec![
                 GraphicsPreset::Auto,
@@ -263,6 +276,7 @@ impl SelfTest {
                         .collect()
                 },
             ),
+            repeat,
             steps: Vec::new(),
             missing: Vec::new(),
             index: 0,
@@ -497,6 +511,14 @@ impl SelfTest {
                 settings: with(GraphicsPreset::Auto),
                 kind: Kind::ShowUi,
             });
+        }
+        // Later rounds are named `<step>#<round>`; their checks compare with the first round's frames.
+        let first = steps.clone();
+        for round in 2..=self.repeat {
+            steps.extend(first.iter().map(|step| Step {
+                name: format!("{}#{round}", step.name),
+                ..step.clone()
+            }));
         }
         self.steps = steps;
         info!(
@@ -994,6 +1016,13 @@ fn resident_mib() -> Option<u64> {
     Some(kib / 1024)
 }
 
+/// What wgpu has allocated on the GPU in MiB (buffers and textures alive), where the backend reports it.
+fn gpu_allocated_mib(world: &World) -> Option<u64> {
+    let device = world.get_resource::<bevy::render::renderer::RenderDevice>()?;
+    let report = device.wgpu_device().generate_allocator_report()?;
+    Some(report.total_allocated_bytes / (1024 * 1024))
+}
+
 /// The width of the captures (the window's).
 fn image_width(world: &mut World) -> Option<usize> {
     world
@@ -1076,7 +1105,9 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         }
     }
 
-    if scene_failed(world) {
+    if let Some(error) = &world.resource::<Stage>().error {
+        failures.push(format!("the scene did not open: {error}"));
+    } else if scene_failed(world) {
         failures.push("a file of the scene failed to load (the log names it)".into());
     }
     let settings = world.resource::<GraphicsSettings>().clone();
@@ -1345,6 +1376,7 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
         "lit_share": lit,
         "frame_ms_median": frame_ms,
         "rss_mib": resident_mib(),
+        "gpu_allocated_mib": gpu_allocated_mib(world),
         "camera_ev100": camera_ev100,
         "gpu_ms_top": passes,
         "failures": failures,

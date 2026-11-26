@@ -454,8 +454,8 @@ fn scene_panel(ui: &mut egui::Ui, state: &mut UiState, view: &View, edit: &mut E
         if view.stage.is_gltf() && !view.stage.placed {
             ui.weak("loading…");
         }
-        if view.stage.failed {
-            ui.colored_label(NC, "some files failed to load (see the log)");
+        if let Some(error) = &view.stage.error {
+            ui.colored_label(NC, format!("could not open it: {error}"));
         }
     });
     match &entry.licence {

@@ -92,21 +92,31 @@ pub struct Stage {
     pub generation: u32,
     /// A file of the scene failed to load.
     pub failed: bool,
+    /// Why the scene is not (all) there: the first load error, or that the file has no mesh.
+    pub error: Option<String>,
+    /// Frames since the glTF scene's instances were spawned.
+    pub frames_since_ready: u32,
 }
+
+/// Frames after a glTF scene is spawned before meshes still without bounds are left out of its placement (bounds
+/// come a frame after a mesh; a mesh with no positions never gets them). to tune.
+const BOUNDS_WAIT_FRAMES: u32 = 30;
 
 /// Notes when a file of the open scene fails to load, for the overlay.
 pub fn watch_loading(server: Res<AssetServer>, mut stage: ResMut<Stage>) {
     if stage.failed {
         return;
     }
-    let failed = stage.assets.iter().any(|asset| {
-        matches!(
-            server.recursive_dependency_load_state(asset.id()),
-            bevy::asset::RecursiveDependencyLoadState::Failed(_)
-        )
+    let error = stage.assets.iter().find_map(|asset| {
+        match server.recursive_dependency_load_state(asset.id()) {
+            bevy::asset::RecursiveDependencyLoadState::Failed(error) => Some(error.to_string()),
+            _ => None,
+        }
     });
-    if failed {
+    if let Some(error) = error {
+        warn!("gfx_viewer: {} failed to load: {error}", stage.name);
         stage.failed = true;
+        stage.error = Some(error);
         // Nothing more will come: the scene is as placed as it gets (the overlay says a file failed).
         stage.placed = true;
     }
@@ -267,10 +277,12 @@ pub fn place_camera(world: &mut World, start: Transform, fov: f32, speed: f32) {
 /// Once a glTF scene's instance is spawned and its meshes have bounds: places the camera from the bounds, and
 /// gives the scene the default sun when it has no light.
 pub fn place_gltf_scene(world: &mut World) {
-    let stage = world.resource::<Stage>();
+    let mut stage = world.resource_mut::<Stage>();
     let (Some(root), true, false) = (stage.gltf_root, stage.instance_ready, stage.placed) else {
         return;
     };
+    stage.frames_since_ready += 1;
+    let waited = stage.frames_since_ready > BOUNDS_WAIT_FRAMES;
     let mut meshes =
         world.query_filtered::<(Entity, Option<&Aabb>, &GlobalTransform), With<Mesh3d>>();
     let mut parents = world.query::<&ChildOf>();
@@ -281,8 +293,11 @@ pub fn place_gltf_scene(world: &mut World) {
         if !descends_from(world, &mut parents, entity, root) {
             continue;
         }
-        // Bounds come a frame after the mesh loads.
+        // Bounds come a frame after the mesh loads; a mesh that never gets them is left out.
         let Some(aabb) = aabb else {
+            if waited {
+                continue;
+            }
             return;
         };
         let (center, half) = (Vec3::from(aabb.center), Vec3::from(aabb.half_extents));
@@ -299,6 +314,13 @@ pub fn place_gltf_scene(world: &mut World) {
         count += 1;
     }
     if count == 0 {
+        if waited {
+            // Nothing to show: say so and stop waiting, the viewer stays usable.
+            let mut stage = world.resource_mut::<Stage>();
+            warn!("gfx_viewer: {} has no mesh to show", stage.name);
+            stage.error = Some("the file has no mesh to show".into());
+            stage.placed = true;
+        }
         return;
     }
 
