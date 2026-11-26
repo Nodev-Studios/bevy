@@ -1,5 +1,6 @@
 use super::{
-    history_confidence::HistoryConfidencePipelines, Nrd, NrdCropPipeline, NrdState, ViewNrd,
+    history_confidence::HistoryConfidencePipelines, Nrd, NrdCropPipeline, NrdFailure, NrdState,
+    ViewNrd,
 };
 use crate::ray_reconstruction::{
     ViewDenoisedRadianceTextures, ViewDenoiserGuideTextures, ViewDenoiserInputTextures,
@@ -20,7 +21,6 @@ use bevy_render::{
     view::ExtractedView,
 };
 use nrd_wgpu::{DenoiserInputs, DenoiserOutputs, FrameSettings};
-use tracing::error;
 
 /// Runs NRD on one view: the noisy lighting in, the denoised lighting out.
 pub(super) fn nrd(
@@ -39,6 +39,7 @@ pub(super) fn nrd(
     pipeline_cache: Res<PipelineCache>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    failure: Res<NrdFailure>,
     mut ctx: RenderContext,
 ) {
     let (nrd, view_nrd, view, jitter, prepass, guides, inputs, outputs) = view.into_inner();
@@ -48,6 +49,12 @@ pub(super) fn nrd(
         copy_noisy(ctx.command_encoder(), inputs, outputs);
         return;
     };
+    if !ViewNrd::is_settled(nrd_state, view_nrd.size, view_nrd.precision) {
+        // The render size changed and NRD's textures have not followed yet (`prepare_nrd`).
+        nrd_state.history_confidence.invalidate();
+        copy_noisy(ctx.command_encoder(), inputs, outputs);
+        return;
+    }
 
     let diagnostics = ctx.diagnostic_recorder();
     let diagnostics = diagnostics.as_deref();
@@ -115,7 +122,7 @@ pub(super) fn nrd(
     );
     nrd_state.frame_index = nrd_state.frame_index.wrapping_add(1);
     if let Err(error) = result {
-        error!("NRD failed; this view shows the noisy lighting from now on: {error}");
+        failure.0.report("NRD", error);
         *state = None;
         copy_noisy(ctx.command_encoder(), inputs, outputs);
     }

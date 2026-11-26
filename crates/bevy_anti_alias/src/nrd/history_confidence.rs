@@ -158,6 +158,9 @@ pub(super) struct HistoryConfidence {
 }
 
 impl HistoryConfidence {
+    /// The format of the texture NRD reads, [`Self::texture`].
+    pub(super) const FORMAT: TextureFormat = TextureFormat::Rgba8Unorm;
+
     pub(super) fn new(
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
@@ -184,7 +187,7 @@ impl HistoryConfidence {
         let confidence = create_texture(
             "nrd_history_confidence",
             tile_count,
-            TextureFormat::Rgba8Unorm,
+            Self::FORMAT,
             TextureUsages::STORAGE_BINDING
                 | TextureUsages::TEXTURE_BINDING
                 | TextureUsages::COPY_DST,
