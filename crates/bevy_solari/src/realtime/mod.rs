@@ -1,12 +1,16 @@
 mod denoiser;
 mod extract;
+mod forward_light;
 mod node;
 mod prepare;
 
 pub use denoiser::{SolariDenoiserInputs, SolariSkipSpecularMotionVectors};
 
 use crate::{
-    scene::{prepare_raytracing_scene_resources, RaytracingSceneBindings},
+    scene::{
+        prepare_raytracing_scene_bind_group, prepare_raytracing_scene_resources,
+        RaytracingSceneBindings,
+    },
     SolariPlugins,
 };
 use bevy_anti_alias::ray_reconstruction::DenoiserSystems;
@@ -39,6 +43,7 @@ use bevy_render::{
 use bevy_shader::load_shader_library;
 use denoiser::{init_solari_compose_pipeline, prepare_solari_denoiser_textures, solari_compose};
 use extract::extract_solari_lighting;
+use forward_light::{prepare_traced_forward_light_bind_groups, traced_forward_light_layout};
 use node::{init_solari_lighting_pipelines, solari_lighting};
 use prepare::{
     prepare_solari_lighting_resources, setup_raytracing_scene_needs_previous_frame_data,
@@ -61,6 +66,7 @@ impl Plugin for SolariLightingPlugin {
         embedded_asset!(app, "restir.wesl");
         embedded_asset!(app, "no_restir.wesl");
         load_shader_library!(app, "world_cache_query.wesl");
+        load_shader_library!(app, "forward_light.wesl");
         embedded_asset!(app, "world_cache_compact.wesl");
         embedded_asset!(app, "world_cache_update.wesl");
 
@@ -94,6 +100,8 @@ impl Plugin for SolariLightingPlugin {
         );
 
         app.sub_app_mut(RenderApp)
+            // Glass and blended surfaces drawn over the traced image take the traced light (`forward_light`).
+            .insert_resource(traced_forward_light_layout())
             .add_systems(
                 RenderStartup,
                 (
@@ -112,6 +120,12 @@ impl Plugin for SolariLightingPlugin {
                         .before(prepare_raytracing_scene_resources),
                 )
                     .in_set(RenderSystems::PrepareResources),
+            )
+            .add_systems(
+                Render,
+                prepare_traced_forward_light_bind_groups
+                    .after(prepare_raytracing_scene_bind_group)
+                    .in_set(RenderSystems::PrepareBindGroups),
             )
             .configure_sets(
                 Core3d,

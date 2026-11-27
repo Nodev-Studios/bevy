@@ -21,7 +21,7 @@ import package::{
 };
 import package::render::mesh_view_bindings::globals;
 import package::render::view_transformations::{position_world_to_ndc};
-import bevy_render::maths::{E, powsafe};
+import bevy_render::maths::{E, PI, powsafe};
 
 @if(STANDARD_MATERIAL_SPECULAR_TRANSMISSION) import package::transmission;
 
@@ -32,6 +32,11 @@ import bevy_render::maths::{E, powsafe};
 @else import package::render::forward_io::VertexOutput;
 
 @if(ENVIRONMENT_MAP) import package::light_probe::environment_map;
+
+// Fork: on a ray-traced view the forward-shaded surfaces (glass, blended) take their light from the tracer
+// (`TracedForwardLight`): shadow rays and Solari's world cache instead of unshadowed lights and an unoccluded
+// ambient and environment.
+@if(TRACED_FORWARD_LIGHT) import bevy_solari::realtime::forward_light;
 
 @if(TONEMAP_IN_SHADER) import bevy_core_pipeline::tonemapping::{tone_mapping, screen_space_dither};
 
@@ -322,6 +327,12 @@ fn calculate_contact_shadow(
     return 1.0;
 }
 
+/// Fork: how far a traced ray toward a directional light or the sky goes before it counts as reaching it.
+const TRACED_DIRECTIONAL_LIGHT_DISTANCE: f32 = 100000.0;
+/// Fork: the albedo assumed for what a traced reflection ray meets (to tune: a mid grey; the forward pass does not
+/// read the material it hits).
+const TRACED_SURROUNDINGS_ALBEDO: f32 = 0.5;
+
 @if(!PREPASS_FRAGMENT)
 fn apply_pbr_lighting(
     in: pbr_types::PbrInput,
@@ -467,7 +478,10 @@ fn apply_pbr_lighting(
 
         // If we're lightmapped, disable diffuse contribution from the light if
         // requested, to avoid double-counting light.
-        @if(LIGHTMAP)
+        // Fork: on a traced view the diffuse part of every light is in the world cache's irradiance.
+        @if(TRACED_FORWARD_LIGHT)
+        let enable_diffuse = false;
+        @elif(LIGHTMAP)
         let enable_diffuse =
             (view_bindings::clustered_lights.data[light_id].flags &
                 mesh_view_types::POINT_LIGHT_FLAGS_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE_BIT) != 0u;
@@ -486,6 +500,11 @@ fn apply_pbr_lighting(
                     mesh_view_types::POINT_LIGHT_FLAGS_CONTACT_SHADOWS_ENABLED_BIT) != 0u {
             let L = normalize(view_bindings::clustered_lights.data[light_id].position_radius.xyz - in.world_position.xyz);
             shadow *= calculate_contact_shadow(in.world_position.xyz, in.frag_coord.xy, L, contact_shadow_steps);
+        }
+
+        @if(TRACED_FORWARD_LIGHT) {
+        let to_light = view_bindings::clustered_lights.data[light_id].position_radius.xyz - in.world_position.xyz;
+        shadow *= forward_light::visibility(in.world_position.xyz, in.world_normal, normalize(to_light), length(to_light));
         }
 
         let light_contrib = lighting::point_light(light_id, &lighting_input, enable_diffuse, true);
@@ -521,7 +540,10 @@ fn apply_pbr_lighting(
 
         // If we're lightmapped, disable diffuse contribution from the light if
         // requested, to avoid double-counting light.
-        @if(LIGHTMAP)
+        // Fork: on a traced view the diffuse part of every light is in the world cache's irradiance.
+        @if(TRACED_FORWARD_LIGHT)
+        let enable_diffuse = false;
+        @elif(LIGHTMAP)
         let enable_diffuse =
             (view_bindings::clustered_lights.data[light_id].flags &
                 mesh_view_types::POINT_LIGHT_FLAGS_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE_BIT) != 0u;
@@ -547,6 +569,11 @@ fn apply_pbr_lighting(
                     mesh_view_types::POINT_LIGHT_FLAGS_CONTACT_SHADOWS_ENABLED_BIT) != 0u {
             let L = normalize(view_bindings::clustered_lights.data[light_id].position_radius.xyz - in.world_position.xyz);
             shadow *= calculate_contact_shadow(in.world_position.xyz, in.frag_coord.xy, L, contact_shadow_steps);
+        }
+
+        @if(TRACED_FORWARD_LIGHT) {
+        let to_light = view_bindings::clustered_lights.data[light_id].position_radius.xyz - in.world_position.xyz;
+        shadow *= forward_light::visibility(in.world_position.xyz, in.world_normal, normalize(to_light), length(to_light));
         }
 
         let light_contrib = lighting::spot_light(light_id, &lighting_input, enable_diffuse);
@@ -581,6 +608,8 @@ fn apply_pbr_lighting(
     }
 
     // directional lights (direct)
+    @if(TRACED_FORWARD_LIGHT)
+    var traced_directional_irradiance = vec3(0.0);
     let n_directional_lights = view_bindings::lights.n_directional_lights;
     for (var i: u32 = 0u; i < n_directional_lights; i = i + 1u) {
         // check if this light should be skipped, which occurs if this light does not intersect with the view
@@ -611,6 +640,13 @@ fn apply_pbr_lighting(
                     mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_CONTACT_SHADOWS_ENABLED_BIT) != 0u {
             let L = view_bindings::lights.directional_lights[i].direction_to_light;
             shadow *= calculate_contact_shadow(in.world_position.xyz, in.frag_coord.xy, L, contact_shadow_steps);
+        }
+
+        // Fork: on a traced view a directional light keeps its sharp diffuse, shadowed by a traced ray; what it
+        // brings is taken out of the world cache's irradiance below.
+        @if(TRACED_FORWARD_LIGHT) {
+        shadow *= forward_light::visibility(in.world_position.xyz, in.world_normal, (*light).direction_to_light, TRACED_DIRECTIONAL_LIGHT_DISTANCE);
+        traced_directional_irradiance += (*light).color.rgb * saturate(dot(in.N, (*light).direction_to_light)) * shadow;
         }
 
         var light_contrib = lighting::directional_light(i, &lighting_input, enable_diffuse);
@@ -658,6 +694,11 @@ fn apply_pbr_lighting(
         var light = lighting::unpack_clustered_rect_light(clustering::get_clusterable_object_id(i));
 @if(!AVAILABLE_STORAGE_BUFFER_BINDINGS__GE_3)
         var light = view_bindings::lights.rect_lights[i];
+        // Fork: on a traced view the diffuse part is in the world cache's irradiance (the specular part is not
+        // shadowed there).
+        @if(TRACED_FORWARD_LIGHT)
+        let enable_diffuse = false;
+        @else
         let enable_diffuse = true;
         let light_contrib = lighting::rect_light(&light, &lighting_input, enable_diffuse);
         direct_light += light_contrib;
@@ -670,7 +711,7 @@ fn apply_pbr_lighting(
     }
 }
 
-    @if(STANDARD_MATERIAL_DIFFUSE_TRANSMISSION)
+    @if(STANDARD_MATERIAL_DIFFUSE_TRANSMISSION && !TRACED_FORWARD_LIGHT)
     // NOTE: We use the diffuse transmissive color, the second Lambertian lobe's calculated
     // world position, inverted normal and view vectors, and the following simplified
     // values for a fully diffuse transmitted light contribution approximation:
@@ -695,7 +736,27 @@ fn apply_pbr_lighting(
     var indirect_light = vec3(0.0f);
     var found_diffuse_indirect = false;
 
-@if(LIGHTMAP) {
+    // Fork: on a traced view, the light arriving here (direct and indirect, shadowed and occluded) is the world
+    // cache's irradiance; the directional lights' share of it is already in `direct_light`, sharper than the
+    // cache's cells. The environment is seen only where a ray along the reflection leaves the scene.
+    @if(TRACED_FORWARD_LIGHT)
+    let traced_irradiance = forward_light::irradiance(in.world_position.xyz, in.N, view_bindings::view.world_position, in.frag_coord.xy);
+    @if(TRACED_FORWARD_LIGHT)
+    let traced_sky = forward_light::visibility(in.world_position.xyz, in.world_normal, R, TRACED_DIRECTIONAL_LIGHT_DISTANCE);
+@if(TRACED_FORWARD_LIGHT) {
+    let traced_other_irradiance = max(traced_irradiance - traced_directional_irradiance, vec3(0.0));
+    indirect_light += diffuse_color * (traced_other_irradiance / PI) * diffuse_occlusion;
+    found_diffuse_indirect = true;
+    // Where the reflection meets the scene, it shows surroundings about as bright as the light arriving here.
+    indirect_light += (1.0 - traced_sky) * TRACED_SURROUNDINGS_ALBEDO * (traced_irradiance / PI)
+        * (F0 * F_ab.x + F_ab.y) * specular_occlusion;
+}
+@if(STANDARD_MATERIAL_DIFFUSE_TRANSMISSION && TRACED_FORWARD_LIGHT) {
+    let traced_transmitted_irradiance = forward_light::irradiance(diffuse_transmissive_lobe_world_position.xyz, -in.N, view_bindings::view.world_position, in.frag_coord.xy);
+    transmitted_light += diffuse_transmissive_color * (traced_transmitted_irradiance / PI);
+}
+
+@if(LIGHTMAP && !TRACED_FORWARD_LIGHT) {
     indirect_light += in.lightmap_light * diffuse_color;
     found_diffuse_indirect = true;
 }
@@ -746,15 +807,22 @@ fn apply_pbr_lighting(
     );
 
     indirect_light += environment_light.diffuse * diffuse_occlusion;
+    @if(TRACED_FORWARD_LIGHT)
+    let environment_specular = environment_light.specular * traced_sky;
+    @else
+    let environment_specular = environment_light.specular;
     if (!use_ssr) {
-        indirect_light += environment_light.specular * specular_occlusion;
+        indirect_light += environment_specular * specular_occlusion;
     }
 }
 
     // Ambient light (indirect)
     // If we are lightmapped, disable the ambient contribution if requested.
     // This is to avoid double-counting ambient light. (It might be part of the lightmap)
-    @if(LIGHTMAP)
+    // Fork: on a traced view the ambient light is the tracer's (in the world cache's irradiance above).
+    @if(TRACED_FORWARD_LIGHT)
+    let enable_ambient = false;
+    @elif(LIGHTMAP)
     let enable_ambient = (view_bindings::lights.ambient_light_flags & mesh_view_types::AMBIENT_LIGHT_FLAGS_AFFECTS_LIGHTMAPPED_MESHES_BIT) != 0u;
     @else   // LIGHTMAP
     let enable_ambient = true;

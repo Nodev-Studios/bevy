@@ -8,7 +8,7 @@ use bevy_ecs::{
     query::Has,
     system::{Commands, ResMut},
 };
-use bevy_pbr::deferred::SkipDeferredLighting;
+use bevy_pbr::{deferred::SkipDeferredLighting, TracedForwardLight, TracedForwardLightBindGroup};
 use bevy_render::{sync_world::RenderEntity, MainWorld};
 
 pub fn extract_solari_lighting(mut main_world: ResMut<MainWorld>, mut commands: Commands) {
@@ -29,7 +29,7 @@ pub fn extract_solari_lighting(mut main_world: ResMut<MainWorld>, mut commands: 
         if let Some(mut solari_lighting) = solari_lighting
             && camera.is_active
         {
-            entity_commands.insert((solari_lighting.clone(), SkipDeferredLighting));
+            entity_commands.insert((solari_lighting.clone(), SkipDeferredLighting, TracedForwardLight));
             solari_lighting.reset = false;
             if denoiser_inputs {
                 entity_commands.insert(SolariDenoiserInputs);
@@ -46,6 +46,8 @@ pub fn extract_solari_lighting(mut main_world: ResMut<MainWorld>, mut commands: 
                 SolariLighting,
                 SolariLightingResources,
                 SkipDeferredLighting,
+                TracedForwardLight,
+                TracedForwardLightBindGroup,
                 SolariDenoiserInputs,
                 SolariSkipSpecularMotionVectors,
                 ViewDenoiserGuideTextures,

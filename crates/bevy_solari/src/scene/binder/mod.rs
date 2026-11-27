@@ -69,6 +69,12 @@ impl RaytracingSceneBindings {
         self.lights.note_translations_consumed();
     }
 
+    /// This frame's TLAS, once the scene's bind group is ready for this frame (the same structure it binds).
+    pub fn current_tlas(&self) -> Option<&Tlas> {
+        self.bind_group.as_ref()?;
+        self.tlas.structures[self.tlas.current_index].as_ref()
+    }
+
     /// The light array as of this frame's prepare, in the order shaders index `light_sources`: each light's kind
     /// and render-world entity (map it to the main world through its `MainEntity`).
     ///

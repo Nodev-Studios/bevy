@@ -394,6 +394,7 @@ pub fn check_views_need_specialization(
             Has<ExtractedAtmosphere>,
             Has<ScreenSpaceReflectionsUniform>,
             Has<ContactShadows>,
+            Has<TracedForwardLight>,
         ),
     )>,
     mut seen_views: Local<HashSet<RetainedViewEntity>>,
@@ -413,7 +414,7 @@ pub fn check_views_need_specialization(
         projection,
         distance_fog,
         (has_environment_maps, has_irradiance_volumes),
-        (has_oit, has_atmosphere, has_ssr, has_contact_shadows),
+        (has_oit, has_atmosphere, has_ssr, has_contact_shadows, traced_forward_light),
     ) in views.iter_mut()
     {
         seen_views.insert(view.retained_view_entity);
@@ -463,6 +464,10 @@ pub fn check_views_need_specialization(
 
         if has_contact_shadows {
             view_key |= MeshPipelineKey::CONTACT_SHADOWS;
+        }
+
+        if traced_forward_light {
+            view_key |= MeshPipelineKey::TRACED_FORWARD_LIGHT;
         }
 
         if view.invert_culling {
@@ -3137,7 +3142,10 @@ bitflags::bitflags! {
         const INVERT_CULLING                    = 1 << 22;
         const PREPASS_READS_MATERIAL            = 1 << 23;
         const CONTACT_SHADOWS                   = 1 << 24;
-        const LAST_FLAG                         = Self::CONTACT_SHADOWS.bits();
+        /// The view's forward-shaded materials take their light from a ray tracer: see
+        /// [`TracedForwardLight`](crate::TracedForwardLight).
+        const TRACED_FORWARD_LIGHT              = 1 << 25;
+        const LAST_FLAG                         = Self::TRACED_FORWARD_LIGHT.bits();
 
         const ALL_PREPASS_BITS                  = Self::DEPTH_PREPASS.bits()
                                                 | Self::NORMAL_PREPASS.bits()

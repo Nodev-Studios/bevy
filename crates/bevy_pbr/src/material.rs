@@ -499,6 +499,8 @@ pub struct MaterialPipelineKey<M: Material> {
 #[derive(Resource, Clone)]
 pub struct MaterialPipeline {
     pub mesh_pipeline: MeshPipeline,
+    /// The bind group a ray tracer gives forward-shaded materials on its views, if one does.
+    pub traced_forward_light: Option<TracedForwardLightLayout>,
 }
 
 pub struct MaterialPipelineSpecializer {
@@ -542,6 +544,23 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
             .layout
             .insert(3, self.properties.material_layout.as_ref().unwrap().clone());
 
+        // On a traced view, the forward shading takes its light from the tracer (`TracedForwardLight`).
+        if concrete_mesh_key.contains(MeshPipelineKey::TRACED_FORWARD_LIGHT)
+            && let Some(traced) = &self.pipeline.traced_forward_light
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            debug_assert_eq!(descriptor.layout.len(), TRACED_FORWARD_LIGHT_BIND_GROUP_INDEX);
+            descriptor.layout.push(traced.layout.clone());
+            fragment.shader_defs.push("TRACED_FORWARD_LIGHT".into());
+            fragment.shader_defs.push(ShaderDefVal::UInt(
+                "TRACED_FORWARD_LIGHT_BIND_GROUP".into(),
+                TRACED_FORWARD_LIGHT_BIND_GROUP_INDEX as u32,
+            ));
+            fragment
+                .shader_defs
+                .extend(traced.shader_defs.iter().cloned());
+        }
+
         if key
             .mesh_key
             .downcast::<MeshPipelineKey>()
@@ -582,9 +601,14 @@ impl SpecializedMeshPipeline for MaterialPipelineSpecializer {
     }
 }
 
-pub fn init_material_pipeline(mut commands: Commands, mesh_pipeline: Res<MeshPipeline>) {
+pub fn init_material_pipeline(
+    mut commands: Commands,
+    mesh_pipeline: Res<MeshPipeline>,
+    traced_forward_light: Option<Res<TracedForwardLightLayout>>,
+) {
     commands.insert_resource(MaterialPipeline {
         mesh_pipeline: mesh_pipeline.clone(),
+        traced_forward_light: traced_forward_light.map(|layout| layout.clone()),
     });
 }
 
@@ -594,6 +618,7 @@ pub type DrawMaterial = (
     SetMeshViewBindingArrayBindGroup<1>,
     SetMeshBindGroup<2>,
     SetMaterialBindGroup<MATERIAL_BIND_GROUP_INDEX>,
+    SetTracedForwardLightBindGroup<TRACED_FORWARD_LIGHT_BIND_GROUP_INDEX>,
     DrawMesh,
 );
 
@@ -1571,10 +1596,14 @@ pub fn base_specialize(
     world.resource_scope(
         |world, mut pipelines: Mut<SpecializedMeshPipelines<MaterialPipelineSpecializer>>| {
             let mesh_pipeline = world.resource::<MeshPipeline>().clone();
+            let traced_forward_light = world.get_resource::<TracedForwardLightLayout>().cloned();
             let pipeline_cache = world.resource::<PipelineCache>();
 
             let specializer = MaterialPipelineSpecializer {
-                pipeline: MaterialPipeline { mesh_pipeline },
+                pipeline: MaterialPipeline {
+                    mesh_pipeline,
+                    traced_forward_light,
+                },
                 properties: properties.clone(),
             };
 

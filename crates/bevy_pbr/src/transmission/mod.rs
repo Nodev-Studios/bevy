@@ -1,6 +1,7 @@
 mod node;
 mod phase;
 mod texture;
+mod traced_light;
 
 use bevy_app::{App, Plugin};
 use bevy_core_pipeline::{
@@ -17,6 +18,7 @@ use bevy_render::{
 pub use node::main_transmissive_pass_3d;
 pub use phase::Transmissive3d;
 pub use texture::ViewTransmissionTexture;
+pub use traced_light::*;
 
 use texture::prepare_core_3d_transmission_textures;
 

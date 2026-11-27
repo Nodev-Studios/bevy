@@ -5,7 +5,7 @@ mod types;
 
 use bevy_asset::embedded_asset;
 use bevy_shader::load_shader_library;
-pub use binder::prepare_raytracing_scene_resources;
+pub use binder::{prepare_raytracing_scene_bind_group, prepare_raytracing_scene_resources};
 pub use binder::{
     RaytracingLightKind, RaytracingSceneBindings, RaytracingSceneNeedsPreviousFrameData,
 };
@@ -24,9 +24,7 @@ use bevy_render::{
     renderer::{RenderDevice, RenderGraph, RenderGraphSystems},
     ExtractSchedule, GpuResourceAppExt, Render, RenderApp, RenderSystems,
 };
-use binder::{
-    build_raytracing_tlas, prepare_raytracing_scene_bind_group, TlasInstanceSetupPipeline,
-};
+use binder::{build_raytracing_tlas, TlasInstanceSetupPipeline};
 use blas::{compact_raytracing_blas, delete_raytracing_blas, prepare_raytracing_blas, BlasManager};
 use extract::{
     extract_raytracing_directional_lights, extract_raytracing_environment_map_light,
