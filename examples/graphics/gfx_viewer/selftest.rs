@@ -152,8 +152,7 @@ enum Kind {
         reference: String,
     },
     /// Where the scene's meshes of `class` can be seen: hidden from the camera (`paint: false`), then drawn
-    /// flat and unlit in [`CLASS_PAINT`] (`paint: true`); the blocks that differ between the two are the class's
-    /// own. Run on Raster, whose opaque path draws any mesh, so the mask does not depend on the paths under test.
+    /// flat and unlit in [`CLASS_PAINT`] (`paint: true`); the blocks that turn to the paint are the class's own. Run on Raster, whose opaque path draws any mesh, so the mask does not depend on the paths under test.
     MaskClass {
         class: MaterialClass,
         paint: bool,
@@ -1739,17 +1738,21 @@ const HIDDEN_LAYER: usize = 31;
 const CLASS_BLOCK: usize = 8;
 /// The mean absolute difference (8-bit, per channel) that makes a block count as changed. to tune.
 const CLASS_BLOCK_CHANGE: f64 = 4.0;
-/// The share of the blocks a class covers that must change. to tune: on `dev`'s binary, where glass was drawn
-/// nowhere, noise moved at most 2.9 % (`StainedGlassLamp`, `RtLite`); with glass drawn the least was 8.8 % (Classroom's
-/// frosted windows, Raster).
-const CLASS_MIN_CHANGED_SHARE: f64 = 0.05;
+/// The share of the blocks where a class can be seen that must change. to tune: measured on the class's own
+/// blocks (its mask), a build that draws no glass moved at most 6 % (San Miguel, `Auto`) and drawn classes at least
+/// 76 % (San Miguel's glasses, `RtLite`), 2026-11-26.
+const CLASS_MIN_CHANGED_SHARE: f64 = 0.25;
 /// A class that can be seen on less of the screen than this is not checked. to tune.
 const CLASS_MIN_COVER: f64 = 0.005;
 /// The colour [`Kind::MaskClass`] paints a class with: flat, unlit and unlike any scene's surfaces.
 const CLASS_PAINT: Color = Color::srgb(1.0, 0.0, 1.0);
-/// The mean absolute difference (8-bit, per channel) that makes a block part of a class's mask: painted against
-/// hidden differs by far more where the class shows; bloom and anti-aliasing spill a little around it. to tune.
-const CLASS_MASK_CHANGE: f64 = 16.0;
+/// How far red and blue must each be above green (8-bit) for a pixel to show [`CLASS_PAINT`] after tonemapping.
+/// to tune.
+const CLASS_PAINT_MARGIN: i32 = 60;
+/// The pixels of a block that must turn to the paint (painted, not hidden) for the block to be part of a class's
+/// mask. Testing for the paint's colour, not for any difference, keeps the frames' own flicker (specular glints
+/// under temporal anti-aliasing) out of the mask. to tune.
+const CLASS_MASK_PIXELS: usize = 4;
 
 /// What [`hide_class`] or [`paint_class`] changed, to put back.
 #[derive(Resource, Default)]
@@ -1957,7 +1960,7 @@ fn paint_class(world: &mut World, class: MaterialClass) {
     world.insert_resource(painted);
 }
 
-/// The blocks where `painted` differs from `hidden` by more than [`CLASS_MASK_CHANGE`].
+/// The blocks where at least [`CLASS_MASK_PIXELS`] pixels show the paint in `painted` and not in `hidden`.
 fn class_mask(hidden: Option<&Vec<u8>>, painted: &[u8], width: Option<usize>) -> Option<Vec<bool>> {
     let (hidden, width) = (hidden?, width?);
     if hidden.len() != painted.len() || width == 0 || !painted.len().is_multiple_of(width * 3) {
@@ -1968,10 +1971,25 @@ fn class_mask(hidden: Option<&Vec<u8>>, painted: &[u8], width: Option<usize>) ->
     let mut mask = Vec::with_capacity(columns * rows);
     for by in 0..rows {
         for bx in 0..columns {
-            mask.push(block_difference(hidden, painted, width, bx, by) > CLASS_MASK_CHANGE);
+            let mut paint = 0;
+            for y in by * CLASS_BLOCK..(by + 1) * CLASS_BLOCK {
+                for x in bx * CLASS_BLOCK..(bx + 1) * CLASS_BLOCK {
+                    let i = (y * width + x) * 3;
+                    if is_paint(&painted[i..i + 3]) && !is_paint(&hidden[i..i + 3]) {
+                        paint += 1;
+                    }
+                }
+            }
+            mask.push(paint >= CLASS_MASK_PIXELS);
         }
     }
     Some(mask)
+}
+
+/// Whether an RGB8 pixel shows [`CLASS_PAINT`]: red and blue well above green.
+fn is_paint(rgb: &[u8]) -> bool {
+    let (r, g, b) = (i32::from(rgb[0]), i32::from(rgb[1]), i32::from(rgb[2]));
+    r - g > CLASS_PAINT_MARGIN && b - g > CLASS_PAINT_MARGIN
 }
 
 /// The mean absolute difference (8-bit, per channel) of block (`bx`, `by`) between two RGB8 frames.
