@@ -10,7 +10,8 @@
 //! - what resolved is what the step asked for, or a [`Fallback`] of the right kind says why not;
 //! - the camera carries the effects the resolved rung and the overrides call for (the apply layer did its job);
 //! - each class of material in the scene ([`MaterialClass`]: glass, blended) shows: hidden from the camera alone,
-//!   the frame changes where it covers the screen (one step per class per preset, added when the scene opens);
+//!   the frame changes where it can be seen (one step per class per preset, added when the scene opens; where it
+//!   can be seen comes from two Raster steps per class and scene, [`Kind::MaskClass`]);
 //! - each control did what it says: the lamp, exposure, lamp-intensity, sun and coverage steps differ from the
 //!   frame before them; a click moved the setting it clicked; a bookmark brings the camera back; the bake
 //!   loaded, unloaded and loaded again; the split view's left half shows the other set and its right half the
@@ -150,6 +151,13 @@ enum Kind {
         class: MaterialClass,
         reference: String,
     },
+    /// Where the scene's meshes of `class` can be seen: hidden from the camera (`paint: false`), then drawn
+    /// flat and unlit in [`CLASS_PAINT`] (`paint: true`); the blocks that differ between the two are the class's
+    /// own. Run on Raster, whose opaque path draws any mesh, so the mask does not depend on the paths under test.
+    MaskClass {
+        class: MaterialClass,
+        paint: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -215,6 +223,10 @@ pub struct SelfTest {
     started: Instant,
     capture: Arc<Mutex<Option<Image>>>,
     references: HashMap<String, Vec<u8>>,
+    /// The frame of the last [`Kind::MaskClass`] step that hid a class, by class.
+    mask_hidden: HashMap<MaterialClass, Vec<u8>>,
+    /// The blocks ([`CLASS_BLOCK`]) where a class can be seen, by scene and class: see [`Kind::MaskClass`].
+    class_masks: HashMap<(usize, MaterialClass), Vec<bool>>,
     /// What a step's action recorded for its check (a bookmark's view, a click's pointer state).
     noted: serde_json::Map<String, Value>,
     bookmark: Option<Transform>,
@@ -294,6 +306,8 @@ impl SelfTest {
             started: Instant::now(),
             capture: Arc::default(),
             references: HashMap::new(),
+            mask_hidden: HashMap::new(),
+            class_masks: HashMap::new(),
             noted: serde_json::Map::new(),
             bookmark: None,
             results: Vec::new(),
@@ -925,6 +939,13 @@ fn act(world: &mut World, test: &mut SelfTest, current: &Step) {
         Kind::HideClass { class, .. } => {
             hide_class(world, *class);
         }
+        Kind::MaskClass { class, paint } => {
+            if *paint {
+                paint_class(world, *class);
+            } else {
+                hide_class(world, *class);
+            }
+        }
     }
 }
 
@@ -1363,10 +1384,32 @@ fn evaluate(world: &mut World, test: &mut SelfTest, current: &Step, image: Image
                 world,
                 *class,
                 test.references.get(reference).map(Vec::as_slice),
+                test.class_masks
+                    .get(&(current.scene, *class))
+                    .map(Vec::as_slice),
                 &rgb,
                 width,
                 &mut extra,
             ));
+        }
+        Kind::MaskClass { class, paint: false } => {
+            test.mask_hidden.insert(*class, rgb.clone());
+        }
+        Kind::MaskClass { class, paint: true } => {
+            let width = image_width(world);
+            match class_mask(test.mask_hidden.get(class), &rgb, width) {
+                Some(mask) => {
+                    let share = mask.iter().filter(|&&seen| seen).count() as f64
+                        / mask.len().max(1) as f64;
+                    extra.insert("class".into(), json!(class.name()));
+                    extra.insert("class_seen_share".into(), json!(share));
+                    test.class_masks.insert((current.scene, *class), mask);
+                }
+                None => failures.push(format!(
+                    "no frame with the {} meshes hidden to compare with",
+                    class.name()
+                )),
+            }
         }
         Kind::Plain | Kind::ShowUi => {}
     }
@@ -1661,7 +1704,7 @@ fn finish(world: &mut World, test: &mut SelfTest) {
 
 /// A class of material that a rung can lose without the frame going black (glass drawn nowhere, blended
 /// surfaces dropped). To add one (mirrors), extend [`MaterialClass::ALL`] and [`MaterialClass::of`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MaterialClass {
     /// `specular_transmission` on a material that does not blend: glass, drawn by the transmissive pass.
     Transmissive,
@@ -1700,14 +1743,20 @@ const CLASS_BLOCK_CHANGE: f64 = 4.0;
 /// nowhere, noise moved at most 2.9 % (`StainedGlassLamp`, `RtLite`); with glass drawn the least was 8.8 % (Classroom's
 /// frosted windows, Raster).
 const CLASS_MIN_CHANGED_SHARE: f64 = 0.05;
-/// A class whose meshes cover less of the screen than this (by their bounding boxes) is not checked. to tune.
+/// A class that can be seen on less of the screen than this is not checked. to tune.
 const CLASS_MIN_COVER: f64 = 0.005;
+/// The colour [`Kind::MaskClass`] paints a class with: flat, unlit and unlike any scene's surfaces.
+const CLASS_PAINT: Color = Color::srgb(1.0, 0.0, 1.0);
+/// The mean absolute difference (8-bit, per channel) that makes a block part of a class's mask: painted against
+/// hidden differs by far more where the class shows; bloom and anti-aliasing spill a little around it. to tune.
+const CLASS_MASK_CHANGE: f64 = 16.0;
 
-/// What [`hide_class`] changed, to put back.
+/// What [`hide_class`] or [`paint_class`] changed, to put back.
 #[derive(Resource, Default)]
 struct HiddenClass {
     meshes: Vec<(Entity, Option<RenderLayers>)>,
     lights: Vec<(Entity, Option<RenderLayers>)>,
+    materials: Vec<(Entity, MeshMaterial3d<StandardMaterial>)>,
 }
 
 /// The visible meshes of `class` in the world.
@@ -1793,25 +1842,61 @@ fn screen_rects(world: &mut World, meshes: &[Entity]) -> Vec<[f32; 4]> {
 
 /// After a preset's own step on a scene, adds a [`Kind::HideClass`] step for each class the scene shows.
 fn plan_class_steps(world: &mut World, test: &mut SelfTest, current: &Step) {
-    let scene = &world.resource::<Catalog>().entries[current.scene].name;
+    let scene = world.resource::<Catalog>().entries[current.scene].name.clone();
     if current.kind != Kind::Plain
         || current.name != format!("{scene}-{}", preset_name(current.settings.preset))
     {
         return;
     }
+    let classes: Vec<_> = MaterialClass::ALL
+        .into_iter()
+        .filter(|&class| !class_meshes(world, class).is_empty())
+        .collect();
     let mut added = Vec::new();
-    for class in MaterialClass::ALL {
-        let meshes = class_meshes(world, class);
-        if meshes.is_empty() {
-            continue;
+    // The first time a scene shows a class, where it can be seen is measured on Raster (two steps per class),
+    // and this preset's frame is captured again after them, as the reference of its hiding step: the rung's
+    // history then settles the same way for both frames.
+    let mut reference = current.name.clone();
+    let unmasked: Vec<_> = classes
+        .iter()
+        .copied()
+        .filter(|&class| !test.class_masks.contains_key(&(current.scene, class)))
+        .collect();
+    if !unmasked.is_empty() {
+        let raster = GraphicsSettings {
+            preset: GraphicsPreset::Raster,
+            ..current.settings.clone()
+        };
+        for &class in &unmasked {
+            for paint in [false, true] {
+                added.push(Step {
+                    name: format!(
+                        "{scene}-mask-{}-{}",
+                        class.name(),
+                        if paint { "painted" } else { "hidden" }
+                    ),
+                    scene: current.scene,
+                    settings: raster.clone(),
+                    kind: Kind::MaskClass { class, paint },
+                });
+            }
         }
+        reference = format!("{}-again", current.name);
+        added.push(Step {
+            name: reference.clone(),
+            scene: current.scene,
+            settings: current.settings.clone(),
+            kind: Kind::Plain,
+        });
+    }
+    for class in classes {
         added.push(Step {
             name: format!("{}-without-{}", current.name, class.name()),
             scene: current.scene,
             settings: current.settings.clone(),
             kind: Kind::HideClass {
                 class,
-                reference: current.name.clone(),
+                reference: reference.clone(),
             },
         });
     }
@@ -1848,11 +1933,69 @@ fn hide_class(world: &mut World, class: MaterialClass) {
     world.insert_resource(hidden);
 }
 
-/// Puts back what [`hide_class`] changed.
+/// Draws the meshes of `class` with one flat, unlit material of [`CLASS_PAINT`].
+fn paint_class(world: &mut World, class: MaterialClass) {
+    show_hidden_class(world);
+    let meshes = class_meshes(world, class);
+    let paint = world
+        .resource_mut::<Assets<StandardMaterial>>()
+        .add(StandardMaterial {
+            base_color: CLASS_PAINT,
+            unlit: true,
+            ..default()
+        });
+    let mut painted = HiddenClass::default();
+    for entity in meshes {
+        let Some(material) = world.get::<MeshMaterial3d<StandardMaterial>>(entity).cloned() else {
+            continue;
+        };
+        world
+            .entity_mut(entity)
+            .insert(MeshMaterial3d(paint.clone()));
+        painted.materials.push((entity, material));
+    }
+    world.insert_resource(painted);
+}
+
+/// The blocks where `painted` differs from `hidden` by more than [`CLASS_MASK_CHANGE`].
+fn class_mask(hidden: Option<&Vec<u8>>, painted: &[u8], width: Option<usize>) -> Option<Vec<bool>> {
+    let (hidden, width) = (hidden?, width?);
+    if hidden.len() != painted.len() || width == 0 || !painted.len().is_multiple_of(width * 3) {
+        return None;
+    }
+    let height = painted.len() / (width * 3);
+    let (columns, rows) = (width / CLASS_BLOCK, height / CLASS_BLOCK);
+    let mut mask = Vec::with_capacity(columns * rows);
+    for by in 0..rows {
+        for bx in 0..columns {
+            mask.push(block_difference(hidden, painted, width, bx, by) > CLASS_MASK_CHANGE);
+        }
+    }
+    Some(mask)
+}
+
+/// The mean absolute difference (8-bit, per channel) of block (`bx`, `by`) between two RGB8 frames.
+fn block_difference(a: &[u8], b: &[u8], width: usize, bx: usize, by: usize) -> f64 {
+    let mut sum = 0.0;
+    for y in by * CLASS_BLOCK..(by + 1) * CLASS_BLOCK {
+        let row = y * width * 3;
+        for i in row + bx * CLASS_BLOCK * 3..row + (bx + 1) * CLASS_BLOCK * 3 {
+            sum += (a[i] as f64 - b[i] as f64).abs();
+        }
+    }
+    sum / (CLASS_BLOCK * CLASS_BLOCK * 3) as f64
+}
+
+/// Puts back what [`hide_class`] or [`paint_class`] changed.
 fn show_hidden_class(world: &mut World) {
     let Some(hidden) = world.remove_resource::<HiddenClass>() else {
         return;
     };
+    for (entity, material) in hidden.materials {
+        if let Ok(mut entity) = world.get_entity_mut(entity) {
+            entity.insert(material);
+        }
+    }
     for (entity, layers) in hidden.meshes.into_iter().chain(hidden.lights) {
         let Ok(mut entity) = world.get_entity_mut(entity) else {
             continue;
@@ -1868,11 +2011,13 @@ fn show_hidden_class(world: &mut World) {
     }
 }
 
-/// The frame without `class` must differ from `before` (with it) in enough of the blocks the class covers.
+/// The frame without `class` must differ from `before` (with it) in enough of the blocks where the class can be
+/// seen: its `mask` ([`Kind::MaskClass`]), or else the blocks its meshes' bounding boxes cover.
 fn check_hidden_class(
     world: &mut World,
     class: MaterialClass,
     before: Option<&[u8]>,
+    mask: Option<&[bool]>,
     after: &[u8],
     width: Option<usize>,
     extra: &mut serde_json::Map<String, Value>,
@@ -1898,28 +2043,31 @@ fn check_hidden_class(
     }
     let height = after.len() / (width * 3);
     let (columns, rows) = (width / CLASS_BLOCK, height / CLASS_BLOCK);
+    let mask = mask.filter(|mask| mask.len() == columns * rows);
+    extra.insert(
+        "class_measured_on".into(),
+        json!(if mask.is_some() { "mask" } else { "bounding boxes" }),
+    );
     let (mut covered, mut changed) = (0usize, 0usize);
     for by in 0..rows {
         for bx in 0..columns {
-            let (cx, cy) = (
-                (bx as f32 + 0.5) / columns as f32,
-                (by as f32 + 0.5) / rows as f32,
-            );
-            if !rects
-                .iter()
-                .any(|r| cx >= r[0] && cx <= r[2] && cy >= r[1] && cy <= r[3])
-            {
+            let seen = match mask {
+                Some(mask) => mask[by * columns + bx],
+                None => {
+                    let (cx, cy) = (
+                        (bx as f32 + 0.5) / columns as f32,
+                        (by as f32 + 0.5) / rows as f32,
+                    );
+                    rects
+                        .iter()
+                        .any(|r| cx >= r[0] && cx <= r[2] && cy >= r[1] && cy <= r[3])
+                }
+            };
+            if !seen {
                 continue;
             }
             covered += 1;
-            let mut sum = 0.0;
-            for y in by * CLASS_BLOCK..(by + 1) * CLASS_BLOCK {
-                let row = y * width * 3;
-                for i in row + bx * CLASS_BLOCK * 3..row + (bx + 1) * CLASS_BLOCK * 3 {
-                    sum += (before[i] as f64 - after[i] as f64).abs();
-                }
-            }
-            if sum / (CLASS_BLOCK * CLASS_BLOCK * 3) as f64 > CLASS_BLOCK_CHANGE {
+            if block_difference(before, after, width, bx, by) > CLASS_BLOCK_CHANGE {
                 changed += 1;
             }
         }
@@ -1931,14 +2079,14 @@ fn check_hidden_class(
     if cover < CLASS_MIN_COVER {
         extra.insert(
             "class_unchecked".into(),
-            json!("its meshes cover too little of the screen"),
+            json!("it can be seen on too little of the screen"),
         );
         return None;
     }
     (share < CLASS_MIN_CHANGED_SHARE).then(|| {
         format!(
-            "hiding the {} meshes changed {:.2} % of the {covered} blocks they cover (at least {:.0} % \
-             wanted): they are not drawn",
+            "hiding the {} meshes changed {:.2} % of the {covered} blocks where they can be seen (at least \
+             {:.0} % wanted): they are not drawn",
             class.name(),
             share * 100.0,
             CLASS_MIN_CHANGED_SHARE * 100.0
