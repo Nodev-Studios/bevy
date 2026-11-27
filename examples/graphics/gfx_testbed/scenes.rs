@@ -23,6 +23,7 @@ pub fn spawn(name: &str, world: &mut World) -> Option<Scene> {
         "many-lights" => world.run_system_cached(many_lights),
         "glass" => world.run_system_cached(glass),
         "glass-off" => world.run_system_cached(glass_off),
+        "glass-shade" => world.run_system_cached(glass_shade),
         _ => return None,
     };
     Some(scene.expect("scene systems take only resources the default plugins provide"))
@@ -432,5 +433,103 @@ fn glass_room(
         orbit: glass_orbit,
         fov: 1.2,
         assets: vec![checker.untyped()],
+    }
+}
+
+fn glass_shade_camera(_frame: u32) -> Transform {
+    Transform::from_xyz(0.0, 1.5, 5.5).looking_at(Vec3::new(0.0, 0.7, 0.0), Vec3::Y)
+}
+
+/// Glass in the shade (E7): the same two objects twice, once in the sun and once inside a shed that keeps the
+/// sun off them, on a grey ground under a high sun and no sky. Each set is a glass sphere (`specular_transmission`
+/// 0.3, a pale base colour, like San Miguel's glasses), a blended sphere (`AlphaMode::Blend`, white at alpha 0.5,
+/// like its fountain's water) and, as the reference, an opaque white one. The shed is open toward the camera, on
+/// the side away from the sun.
+///
+/// Forward-shaded surfaces on a traced rung must take the traced light: inside the shed they are lit only by light
+/// bounced off the ground, so the shaded glass and water must be darker than their sunlit twins about as much as
+/// the opaque sphere is (`tools/gfx-check/glass-shade.sh` measures the ratios). Before E7 the glass and water were
+/// lit by the unshadowed sun on the traced rungs.
+///
+/// On Raster the shed casts a shadow map: the shaded set is dark there as well.
+fn glass_shade(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) -> Scene {
+    let grey = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.6, 0.6, 0.6),
+        perceptual_roughness: 0.8,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(traceable(Plane3d::new(Vec3::Y, Vec2::splat(12.0))))),
+        MeshMaterial3d(grey.clone()),
+    ));
+    // The shed: x -4.4..-0.4, z -1.6..1.6, 2 m high; a roof, a back wall and the wall facing the sun (+x).
+    let shed = [
+        (Vec3::new(4.2, 0.1, 3.6), Vec3::new(-2.4, 2.05, 0.0)),
+        (Vec3::new(4.2, 2.0, 0.1), Vec3::new(-2.4, 1.0, -1.75)),
+        (Vec3::new(0.1, 2.0, 3.6), Vec3::new(-0.35, 1.0, 0.0)),
+    ];
+    for (size, position) in shed {
+        commands.spawn((
+            Mesh3d(meshes.add(traceable(Cuboid::from_size(size)))),
+            MeshMaterial3d(grey.clone()),
+            Transform::from_translation(position),
+        ));
+    }
+
+    let sphere = meshes.add(traceable(Sphere::new(0.4).mesh().uv(64, 32)));
+    let glass = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.8, 0.8, 0.8),
+        specular_transmission: 0.3,
+        perceptual_roughness: 0.05,
+        ior: 1.5,
+        ..default()
+    });
+    let water = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 1.0, 1.0, 0.5),
+        alpha_mode: AlphaMode::Blend,
+        perceptual_roughness: 0.1,
+        ..default()
+    });
+    // The reference: an opaque white sphere, lit by the traced rungs' own shading.
+    let opaque = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.8, 0.8, 0.8),
+        perceptual_roughness: 0.6,
+        ..default()
+    });
+    // Shaded set at x = -3.1, -2.1 and -1.1, sunlit set at x = 1.1, 2.1 and 3.1: opaque, glass, water in the
+    // shade, mirrored in the sun.
+    for (x, material) in [
+        (-3.1, opaque.clone()),
+        (-2.1, glass.clone()),
+        (-1.1, water.clone()),
+        (1.1, water),
+        (2.1, glass),
+        (3.1, opaque),
+    ] {
+        commands.spawn((
+            Mesh3d(sphere.clone()),
+            MeshMaterial3d(material),
+            Transform::from_xyz(x, 0.6, 0.6),
+        ));
+    }
+
+    // High sun from the right (+x), a little from behind: the shed's right wall and roof shade its inside.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 10_000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::default().looking_to(Vec3::new(-0.8, -1.0, 0.15), Vec3::Y),
+    ));
+
+    Scene {
+        orbit: glass_shade_camera,
+        fov: 0.9,
+        assets: Vec::new(),
     }
 }

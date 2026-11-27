@@ -10,6 +10,7 @@
 //   target/release/gfx-check run tools/gfx-check/golden.ron
 //   target/release/gfx-check budget --golden tools/gfx-check/golden target/gfx-check/golden
 //   target/release/gfx-check budget --golden tools/gfx-check/golden-radv target/gfx-check/golden
+//   tools/gfx-check/glass-shade.sh target/gfx-check/golden
 //   # after an intended change of the image, with the change's reason in the commit:
 //   target/release/gfx-check budget --golden tools/gfx-check/golden --write-golden target/gfx-check/golden
 //   target/release/gfx-check budget --golden tools/gfx-check/golden-radv --write-golden \
@@ -20,7 +21,9 @@
         (name: "AMD", resolutions: ["1920x1080"]),
     ],
     // `glass`: glass and a window on every rung (the traced rungs light the floor through the window).
-    scenes: ["interior", "many-lights", "glass"],
+    // `glass-shade`: glass and water in a shed and in the sun; `tools/gfx-check/glass-shade.sh <results>` checks
+    // that the shaded ones take the traced light (E7).
+    scenes: ["interior", "many-lights", "glass", "glass-shade"],
     warmup: 300,
     frames: 30,
     seconds: 300,

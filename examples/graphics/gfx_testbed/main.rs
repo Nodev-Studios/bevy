@@ -65,7 +65,7 @@ use bevy::anti_alias::dlss::{
 const USAGE: &str = "\
 gfx_testbed: renders a scene one way, measures it, and writes report.json, screenshots and log.txt.
 
-  --scene interior|many-lights|glass|glass-off|mirrors
+  --scene interior|many-lights|glass|glass-off|glass-shade|mirrors
                                  the scene (default interior; the baked-GI flags below add more)
   --mode raster|solari|reference how the frame is lit (default raster): the deferred rasterizer, Solari's
                                  realtime lighting, or Solari's path tracer accumulating a ground truth
