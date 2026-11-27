@@ -49,3 +49,17 @@ scene = "glass"
 file = "raster-glass.png"
 tolerance = 0.12
 written_from = [0.059, 0.024, 0.027]
+
+[[image]]
+run = "auto"
+scene = "glass-shade"
+file = "auto-glass-shade.png"
+tolerance = 0.1
+written_from = [0.018, 0.021, 0.019]
+
+[[image]]
+run = "raster"
+scene = "glass-shade"
+file = "raster-glass-shade.png"
+tolerance = 0.1
+written_from = [0.018, 0.013, 0.021]
